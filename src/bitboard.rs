@@ -113,7 +113,7 @@ impl Display for BitBoard {
                 let c = if test { '1' } else { '0' };
                 write!(f, "{c} ")?;
             }
-            writeln!(f, "")?;
+            writeln!(f)?;
         }
 
         writeln!(f, "  a b c d e f g h")

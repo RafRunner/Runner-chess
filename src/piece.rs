@@ -56,19 +56,52 @@ impl PieceKind {
         Self::Queen,
         Self::King,
     ];
+
+    pub const fn index(self) -> usize {
+        self as usize
+    }
 }
 
 #[derive(Debug)]
 pub struct PieceParseError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Piece(u8);
+#[repr(u8)]
+pub enum Piece {
+    WhitePawn = 0,
+    WhiteKnight,
+    WhiteBishop,
+    WhiteRook,
+    WhiteQueen,
+    WhiteKing,
+
+    BlackPawn,
+    BlackKnight,
+    BlackBishop,
+    BlackRook,
+    BlackQueen,
+    BlackKing,
+}
 
 impl Piece {
+    pub const ALL: [Self; 12] = [
+        Self::WhitePawn,
+        Self::WhiteKnight,
+        Self::WhiteBishop,
+        Self::WhiteRook,
+        Self::WhiteQueen,
+        Self::WhiteKing,
+        Self::BlackPawn,
+        Self::BlackKnight,
+        Self::BlackBishop,
+        Self::BlackRook,
+        Self::BlackQueen,
+        Self::BlackKing,
+    ];
     const CHARS: &'static [u8; 12] = b"PNBRQKpnbrqk";
 
     pub const fn new(color: Color, kind: PieceKind) -> Self {
-        Self(color as u8 * 6 + kind as u8)
+        Self::ALL[color.index() * 6 + kind.index()]
     }
 
     pub fn from_fen(p: char) -> Result<Self, PieceParseError> {
@@ -80,15 +113,22 @@ impl Piece {
             .position(|c| c == &(p as u8))
             .ok_or(PieceParseError)?;
 
-        Ok(Self(index as u8))
+        Ok(Self::ALL[index])
     }
 
     pub const fn kind(self) -> PieceKind {
-        unsafe { std::mem::transmute(self.0 % 6) }
+        match self {
+            Self::WhitePawn | Self::BlackPawn => PieceKind::Pawn,
+            Self::WhiteKnight | Self::BlackKnight => PieceKind::Knight,
+            Self::WhiteBishop | Self::BlackBishop => PieceKind::Bishop,
+            Self::WhiteRook | Self::BlackRook => PieceKind::Rook,
+            Self::WhiteQueen | Self::BlackQueen => PieceKind::Queen,
+            Self::WhiteKing | Self::BlackKing => PieceKind::King,
+        }
     }
 
     pub const fn color(self) -> Color {
-        if self.0 > 5 {
+        if self as u8 > 5 {
             Color::Black
         } else {
             Color::White
@@ -96,11 +136,11 @@ impl Piece {
     }
 
     pub const fn index(self) -> usize {
-        self.0 as usize
+        self as usize
     }
 
     pub const fn to_char(self) -> char {
-        Self::CHARS[self.0 as usize] as char
+        Self::CHARS[self as usize] as char
     }
 }
 
@@ -162,7 +202,8 @@ mod tests {
 
     #[test]
     fn piece_is_one_byte() {
-        assert_eq!(std::mem::size_of::<Piece>(), 1);
+        assert_eq!(size_of::<Piece>(), 1);
+        assert_eq!(size_of::<Option<Piece>>(), 1);
     }
 
     #[test]
