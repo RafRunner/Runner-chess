@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, ops};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Square(u8);
@@ -144,13 +144,13 @@ mod tests {
     #[test]
     fn to_algebraic_test() {
         let cases = [
-            // (file, rank, nome)
+            // (file, rank, name)
             (0, 0, "a1"),
             (7, 0, "h1"),
             (0, 7, "a8"),
             (7, 7, "h8"),
             (4, 3, "e4"),
-            (3, 4, "d5"), // file e rank trocados em relação a e4
+            (3, 4, "d5"), // file and rank swapped relative to e4
         ];
         for (file, rank, name) in cases {
             let sq = Square::from_file_and_rank(file, rank);
@@ -158,7 +158,7 @@ mod tests {
             assert_eq!(sq.to_string(), name);
         }
 
-        // todas as 64 casas: o nome gerado volta para a mesma casa
+        // all 64 squares: the generated name maps back to the same square
         for i in 0..64 {
             let sq = Square::new(i);
             let name = sq.to_algebraic();
@@ -167,7 +167,7 @@ mod tests {
         }
     }
 
-    /// cada constante precisa ter o índice que o nome dela diz
+    /// each constant must have the index its name says
     #[test]
     fn constants_match_their_names() {
         use Square as S;

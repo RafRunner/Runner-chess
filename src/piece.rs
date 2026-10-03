@@ -157,9 +157,9 @@ mod tests {
 
     #[test]
     fn from_fen_rejects_invalid_chars() {
-        // 'Ő' é U+0150: um `as u8` trunca para 0x50, que é b'P'
+        // 'Ő' is U+0150: `as u8` truncates it to 0x50, which is b'P'
         for c in ['x', 'X', '1', '.', ' ', 'Ő'] {
-            assert!(Piece::from_fen(c).is_err(), "deveria rejeitar: {c:?}");
+            assert!(Piece::from_fen(c).is_err(), "should reject: {c:?}");
         }
     }
 }

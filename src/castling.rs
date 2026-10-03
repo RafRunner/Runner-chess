@@ -117,7 +117,7 @@ mod tests {
     const H8: usize = 63;
     const SPECIAL: [usize; 6] = [A1, E1, H1, A8, E8, H8];
 
-    /// as 16 combinações possíveis de direitos, montadas só com `|`
+    /// all 16 possible combinations of rights, built only with `|`
     fn every_combination() -> impl Iterator<Item = CR> {
         (0..16u8).map(|subset| {
             SINGLE
@@ -132,7 +132,7 @@ mod tests {
     fn rights_are_independent() {
         for a in SINGLE {
             for b in SINGLE.into_iter().filter(|&b| b != a) {
-                assert!(!a.has(b), "{a:?} não deveria conter {b:?}");
+                assert!(!a.has(b), "{a:?} should not contain {b:?}");
             }
         }
         let distinct: HashSet<CR> = every_combination().collect();
@@ -157,10 +157,10 @@ mod tests {
 
         let white = CR::WK | CR::WQ;
         assert!(CR::ALL.has(white));
-        // ter só um dos dois não basta
+        // having only one of the two is not enough
         assert!(!CR::WK.has(white));
 
-        // NONE é subconjunto de qualquer coisa
+        // NONE is a subset of everything
         for rights in every_combination() {
             assert!(rights.has(CR::NONE), "{rights:?}");
         }
@@ -184,7 +184,7 @@ mod tests {
         assert_eq!(CR::ALL - CR::WK, CR::WQ | CR::BK | CR::BQ);
         assert_eq!(CR::ALL - (CR::WK | CR::WQ), CR::BK | CR::BQ);
         assert_eq!(CR::ALL - CR::ALL, CR::NONE);
-        // remover algo ausente não muda nada
+        // removing something absent changes nothing
         assert_eq!(CR::WK - CR::BQ, CR::WK);
         assert_eq!(CR::NONE - CR::WK, CR::NONE);
 
@@ -208,7 +208,7 @@ mod tests {
         assert_eq!(CR::WQ.to_fen(), "Q");
         assert_eq!(CR::BK.to_fen(), "k");
         assert_eq!(CR::BQ.to_fen(), "q");
-        // a ordem do texto não depende da ordem em que os direitos foram somados
+        // the text order does not depend on the order the rights were combined in
         assert_eq!((CR::BQ | CR::WK).to_fen(), "Kq");
         assert_eq!((CR::BK | CR::WQ).to_fen(), "Qk");
         assert_eq!(CR::ALL.to_string(), "KQkq");
@@ -219,26 +219,26 @@ mod tests {
         let white = CR::WK | CR::WQ;
         let black = CR::BK | CR::BQ;
         let cases = [
-            // (de, para, direitos perdidos)
-            (E1, 12, white),           // rei branco anda
-            (E1, 6, white),            // roque curto branco
-            (A1, 24, CR::WQ),          // torre a1 sai
-            (H1, 31, CR::WK),          // torre h1 sai
-            (E8, 52, black),           // rei preto anda
-            (E8, 58, black),           // roque longo preto
-            (A8, 32, CR::BQ),          // torre a8 sai
-            (H8, 39, CR::BK),          // torre h8 sai
-            (27, A8, CR::BQ),          // captura em a8
-            (36, H1, CR::WK),          // captura em h1
-            (A1, A8, CR::WQ | CR::BQ), // torre captura torre
-            (H8, H1, CR::BK | CR::WK), // torre captura torre
+            // (from, to, lost rights)
+            (E1, 12, white),           // white king moves
+            (E1, 6, white),            // white castles kingside
+            (A1, 24, CR::WQ),          // a1 rook moves
+            (H1, 31, CR::WK),          // h1 rook moves
+            (E8, 52, black),           // black king moves
+            (E8, 58, black),           // black castles queenside
+            (A8, 32, CR::BQ),          // a8 rook moves
+            (H8, 39, CR::BK),          // h8 rook moves
+            (27, A8, CR::BQ),          // capture on a8
+            (36, H1, CR::WK),          // capture on h1
+            (A1, A8, CR::WQ | CR::BQ), // rook takes rook
+            (H8, H1, CR::BK | CR::WK), // rook takes rook
         ];
         for (from, to, lost) in cases {
             for rights in every_combination() {
                 assert_eq!(
                     rights.update_move(from, to),
                     rights - lost,
-                    "{rights:?} em {from}->{to}"
+                    "{rights:?} on {from}->{to}"
                 );
             }
         }
@@ -252,7 +252,7 @@ mod tests {
                     assert_eq!(
                         rights.update_move(from, to),
                         rights,
-                        "{rights:?} em {from}->{to}"
+                        "{rights:?} on {from}->{to}"
                     );
                 }
             }
