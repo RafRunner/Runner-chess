@@ -132,11 +132,15 @@ impl Board {
     /// bitboards, or out-of-bounds indexing. Positions that are unreachable but
     /// harmless (9 pawns, same-colored bishops, ...) are accepted on purpose.
     pub fn sanity_check(&self) -> Result<(), BoardInconsistencyError> {
-        self.check_king(Color::White)?;
-        self.check_king(Color::Black)?;
+        if self.pieces(Piece::WhiteKing).count_ones() != 1 {
+            return Err(BoardInconsistencyError);
+        }
+        if self.pieces(Piece::BlackKing).count_ones() != 1 {
+            return Err(BoardInconsistencyError);
+        }
 
-        let white_pawns = self.pieces[Piece::new(Color::White, PieceKind::Pawn)];
-        let black_pawns = self.pieces[Piece::new(Color::Black, PieceKind::Pawn)];
+        let white_pawns = self.pieces[Piece::WhitePawn];
+        let black_pawns = self.pieces[Piece::BlackPawn];
 
         if (white_pawns | black_pawns) & (BitBoard::RANK_1 | BitBoard::RANK_8) != BitBoard::EMPTY {
             return Err(BoardInconsistencyError);
@@ -151,11 +155,12 @@ impl Board {
         // moves, but a FEN with a dozen queens can overflow the list.
         // TODO (only if check evasion assumes it): at most 2 checkers on the
         // side to move.
+        use CastlingRights as CR;
         let rules = [
-            (CastlingRights::WK, Color::White, Square::E1, Square::H1),
-            (CastlingRights::WQ, Color::White, Square::E1, Square::A1),
-            (CastlingRights::BK, Color::Black, Square::E8, Square::H8),
-            (CastlingRights::BQ, Color::Black, Square::E8, Square::A8),
+            (CR::WHITE_SHORT, Color::White, Square::E1, Square::H1),
+            (CR::WHITE_LONG, Color::White, Square::E1, Square::A1),
+            (CR::BLACK_SHORT, Color::Black, Square::E8, Square::H8),
+            (CR::BLACK_LONG, Color::Black, Square::E8, Square::A8),
         ];
         for (right, color, king_sq, rook_sq) in rules {
             let king = Some(Piece::new(color, PieceKind::King));
@@ -195,17 +200,6 @@ impl Board {
         }
 
         Ok(())
-    }
-
-    fn check_king(&self, color: Color) -> Result<(), BoardInconsistencyError> {
-        let king = Piece::new(color, PieceKind::King);
-        let bb = self.pieces[king];
-
-        if bb.count_ones() == 1 {
-            Ok(())
-        } else {
-            Err(BoardInconsistencyError)
-        }
     }
 }
 
@@ -291,8 +285,8 @@ mod tests {
     #[test]
     fn startpos_pawn_bitboards() {
         let b = Board::from_fen(STARTPOS).unwrap();
-        let wp = Piece::new(Color::White, PieceKind::Pawn);
-        let bp = Piece::new(Color::Black, PieceKind::Pawn);
+        let wp = Piece::WhitePawn;
+        let bp = Piece::BlackPawn;
         assert_eq!(b.pieces(wp), BitBoard::new(0x0000_0000_0000_FF00));
         assert_eq!(b.pieces(bp), BitBoard::new(0x00FF_0000_0000_0000));
     }
@@ -407,11 +401,11 @@ mod tests {
         use CastlingRights as CR;
         assert_eq!(castling_of("-").unwrap(), CR::NONE);
         assert_eq!(castling_of("KQkq").unwrap(), CR::ALL);
-        assert_eq!(castling_of("K").unwrap(), CR::WK);
-        assert_eq!(castling_of("Q").unwrap(), CR::WQ);
-        assert_eq!(castling_of("k").unwrap(), CR::BK);
-        assert_eq!(castling_of("q").unwrap(), CR::BQ);
-        assert_eq!(castling_of("Kq").unwrap(), CR::WK | CR::BQ);
+        assert_eq!(castling_of("K").unwrap(), CR::WHITE_SHORT);
+        assert_eq!(castling_of("Q").unwrap(), CR::WHITE_LONG);
+        assert_eq!(castling_of("k").unwrap(), CR::BLACK_SHORT);
+        assert_eq!(castling_of("q").unwrap(), CR::BLACK_LONG);
+        assert_eq!(castling_of("Kq").unwrap(), CR::WHITE_SHORT | CR::BLACK_LONG);
     }
 
     #[test]

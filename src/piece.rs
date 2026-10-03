@@ -194,10 +194,10 @@ mod tests {
 
     #[test]
     fn index_layout_is_stable() {
-        assert_eq!(Piece::new(Color::White, PieceKind::Pawn).index(), 0);
-        assert_eq!(Piece::new(Color::White, PieceKind::King).index(), 5);
-        assert_eq!(Piece::new(Color::Black, PieceKind::Pawn).index(), 6);
-        assert_eq!(Piece::new(Color::Black, PieceKind::King).index(), 11);
+        assert_eq!(Piece::WhitePawn.index(), 0);
+        assert_eq!(Piece::WhiteKing.index(), 5);
+        assert_eq!(Piece::BlackPawn.index(), 6);
+        assert_eq!(Piece::BlackKing.index(), 11);
     }
 
     #[test]

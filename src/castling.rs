@@ -11,19 +11,19 @@ pub struct CastlingParseError;
 impl CastlingRights {
     pub const ALL: Self = Self(0b1111);
     pub const NONE: Self = Self(0b0000);
-    pub const WK: Self = Self(0b0001);
-    pub const WQ: Self = Self(0b0010);
-    pub const BK: Self = Self(0b0100);
-    pub const BQ: Self = Self(0b1000);
+    pub const WHITE_SHORT: Self = Self(0b0001);
+    pub const WHITE_LONG: Self = Self(0b0010);
+    pub const BLACK_SHORT: Self = Self(0b0100);
+    pub const BLACK_LONG: Self = Self(0b1000);
 
     const CASTLE_MASK: [u8; 64] = {
         let mut m = [0b1111u8; 64];
-        m[Square::A1.index()] = !Self::WQ.0 & 0b1111; // a1
-        m[Square::H1.index()] = !Self::WK.0 & 0b1111; // h1
-        m[Square::E1.index()] = !(Self::WK.0 | Self::WQ.0) & 0b1111; // e1
-        m[Square::A8.index()] = !Self::BQ.0 & 0b1111; // a8
-        m[Square::H8.index()] = !Self::BK.0 & 0b1111; // h8
-        m[Square::E8.index()] = !(Self::BK.0 | Self::BQ.0) & 0b1111; // e8
+        m[Square::A1.index()] = !Self::WHITE_LONG.0 & 0b1111; // a1
+        m[Square::H1.index()] = !Self::WHITE_SHORT.0 & 0b1111; // h1
+        m[Square::E1.index()] = !(Self::WHITE_SHORT.0 | Self::WHITE_LONG.0) & 0b1111; // e1
+        m[Square::A8.index()] = !Self::BLACK_LONG.0 & 0b1111; // a8
+        m[Square::H8.index()] = !Self::BLACK_SHORT.0 & 0b1111; // h8
+        m[Square::E8.index()] = !(Self::BLACK_SHORT.0 | Self::BLACK_LONG.0) & 0b1111; // e8
         m
     };
 
@@ -37,16 +37,16 @@ impl CastlingRights {
 
     pub fn to_fen(self) -> String {
         let mut fen = String::new();
-        if self.has(Self::WK) {
+        if self.has(Self::WHITE_SHORT) {
             fen.push('K');
         }
-        if self.has(Self::WQ) {
+        if self.has(Self::WHITE_LONG) {
             fen.push('Q');
         }
-        if self.has(Self::BK) {
+        if self.has(Self::BLACK_SHORT) {
             fen.push('k');
         }
-        if self.has(Self::BQ) {
+        if self.has(Self::BLACK_LONG) {
             fen.push('q');
         }
         if fen.is_empty() {
@@ -61,10 +61,10 @@ impl CastlingRights {
         if fen != "-" {
             for c in fen.chars() {
                 let right = match c {
-                    'K' => Self::WK,
-                    'Q' => Self::WQ,
-                    'k' => Self::BK,
-                    'q' => Self::BQ,
+                    'K' => Self::WHITE_SHORT,
+                    'Q' => Self::WHITE_LONG,
+                    'k' => Self::BLACK_SHORT,
+                    'q' => Self::BLACK_LONG,
                     _ => return Err(CastlingParseError),
                 };
                 if castling.has(right) {
@@ -106,16 +106,17 @@ mod tests {
 
     use super::*;
     use CastlingRights as CR;
+    use Square as S;
 
-    const SINGLE: [CR; 4] = [CR::WK, CR::WQ, CR::BK, CR::BQ];
+    const SINGLE: [CR; 4] = [
+        CR::WHITE_SHORT,
+        CR::WHITE_LONG,
+        CR::BLACK_SHORT,
+        CR::BLACK_LONG,
+    ];
 
-    const A1: usize = 0;
-    const E1: usize = 4;
-    const H1: usize = 7;
-    const A8: usize = 56;
-    const E8: usize = 60;
-    const H8: usize = 63;
-    const SPECIAL: [usize; 6] = [A1, E1, H1, A8, E8, H8];
+    /// initial king and rook squares, the only ones that affect castling rights
+    const SPECIAL: [Square; 6] = [S::A1, S::E1, S::H1, S::A8, S::E8, S::H8];
 
     /// all 16 possible combinations of rights, built only with `|`
     fn every_combination() -> impl Iterator<Item = CR> {
@@ -152,13 +153,13 @@ mod tests {
             assert!(!CR::NONE.has(r));
             assert!(r.has(r));
         }
-        assert!(!CR::WK.has(CR::WQ));
-        assert!(!CR::WK.has(CR::BK));
+        assert!(!CR::WHITE_SHORT.has(CR::WHITE_LONG));
+        assert!(!CR::WHITE_SHORT.has(CR::BLACK_SHORT));
 
-        let white = CR::WK | CR::WQ;
+        let white = CR::WHITE_SHORT | CR::WHITE_LONG;
         assert!(CR::ALL.has(white));
         // having only one of the two is not enough
-        assert!(!CR::WK.has(white));
+        assert!(!CR::WHITE_SHORT.has(white));
 
         // NONE is a subset of everything
         for rights in every_combination() {
@@ -181,12 +182,18 @@ mod tests {
 
     #[test]
     fn remove_clears_only_given_rights() {
-        assert_eq!(CR::ALL - CR::WK, CR::WQ | CR::BK | CR::BQ);
-        assert_eq!(CR::ALL - (CR::WK | CR::WQ), CR::BK | CR::BQ);
+        assert_eq!(
+            CR::ALL - CR::WHITE_SHORT,
+            CR::WHITE_LONG | CR::BLACK_SHORT | CR::BLACK_LONG
+        );
+        assert_eq!(
+            CR::ALL - (CR::WHITE_SHORT | CR::WHITE_LONG),
+            CR::BLACK_SHORT | CR::BLACK_LONG
+        );
         assert_eq!(CR::ALL - CR::ALL, CR::NONE);
         // removing something absent changes nothing
-        assert_eq!(CR::WK - CR::BQ, CR::WK);
-        assert_eq!(CR::NONE - CR::WK, CR::NONE);
+        assert_eq!(CR::WHITE_SHORT - CR::BLACK_LONG, CR::WHITE_SHORT);
+        assert_eq!(CR::NONE - CR::WHITE_SHORT, CR::NONE);
 
         for a in every_combination() {
             assert_eq!(a - CR::NONE, a);
@@ -204,39 +211,39 @@ mod tests {
     fn to_fen_uses_canonical_order() {
         assert_eq!(CR::NONE.to_fen(), "-");
         assert_eq!(CR::ALL.to_fen(), "KQkq");
-        assert_eq!(CR::WK.to_fen(), "K");
-        assert_eq!(CR::WQ.to_fen(), "Q");
-        assert_eq!(CR::BK.to_fen(), "k");
-        assert_eq!(CR::BQ.to_fen(), "q");
+        assert_eq!(CR::WHITE_SHORT.to_fen(), "K");
+        assert_eq!(CR::WHITE_LONG.to_fen(), "Q");
+        assert_eq!(CR::BLACK_SHORT.to_fen(), "k");
+        assert_eq!(CR::BLACK_LONG.to_fen(), "q");
         // the text order does not depend on the order the rights were combined in
-        assert_eq!((CR::BQ | CR::WK).to_fen(), "Kq");
-        assert_eq!((CR::BK | CR::WQ).to_fen(), "Qk");
+        assert_eq!((CR::BLACK_LONG | CR::WHITE_SHORT).to_fen(), "Kq");
+        assert_eq!((CR::BLACK_SHORT | CR::WHITE_LONG).to_fen(), "Qk");
         assert_eq!(CR::ALL.to_string(), "KQkq");
     }
 
     #[test]
     fn update_move_on_king_and_rook_squares() {
-        let white = CR::WK | CR::WQ;
-        let black = CR::BK | CR::BQ;
+        let white = CR::WHITE_SHORT | CR::WHITE_LONG;
+        let black = CR::BLACK_SHORT | CR::BLACK_LONG;
         let cases = [
             // (from, to, lost rights)
-            (E1, 12, white),           // white king moves
-            (E1, 6, white),            // white castles kingside
-            (A1, 24, CR::WQ),          // a1 rook moves
-            (H1, 31, CR::WK),          // h1 rook moves
-            (E8, 52, black),           // black king moves
-            (E8, 58, black),           // black castles queenside
-            (A8, 32, CR::BQ),          // a8 rook moves
-            (H8, 39, CR::BK),          // h8 rook moves
-            (27, A8, CR::BQ),          // capture on a8
-            (36, H1, CR::WK),          // capture on h1
-            (A1, A8, CR::WQ | CR::BQ), // rook takes rook
-            (H8, H1, CR::BK | CR::WK), // rook takes rook
+            (S::E1, S::E2, white),                           // white king moves
+            (S::E1, S::G1, white),                           // white castles kingside
+            (S::A1, S::A4, CR::WHITE_LONG),                  // a1 rook moves
+            (S::H1, S::H4, CR::WHITE_SHORT),                 // h1 rook moves
+            (S::E8, S::E7, black),                           // black king moves
+            (S::E8, S::C8, black),                           // black castles queenside
+            (S::A8, S::A5, CR::BLACK_LONG),                  // a8 rook moves
+            (S::H8, S::H5, CR::BLACK_SHORT),                 // h8 rook moves
+            (S::D5, S::A8, CR::BLACK_LONG),                  // capture on a8
+            (S::E4, S::H1, CR::WHITE_SHORT),                 // capture on h1
+            (S::A1, S::A8, CR::WHITE_LONG | CR::BLACK_LONG), // rook takes rook
+            (S::H8, S::H1, CR::BLACK_SHORT | CR::WHITE_SHORT), // rook takes rook
         ];
         for (from, to, lost) in cases {
             for rights in every_combination() {
                 assert_eq!(
-                    rights.update_move(from, to),
+                    rights.update_move(from.index(), to.index()),
                     rights - lost,
                     "{rights:?} on {from}->{to}"
                 );
@@ -246,11 +253,13 @@ mod tests {
 
     #[test]
     fn update_move_elsewhere_keeps_rights() {
-        for from in (0..64).filter(|sq| !SPECIAL.contains(sq)) {
-            for to in (0..64).filter(|sq| !SPECIAL.contains(sq)) {
+        let ordinary = || (0..64).map(S::new).filter(|sq| !SPECIAL.contains(sq));
+        for from in ordinary() {
+            // a piece can't move to its own square
+            for to in ordinary().filter(|&to| to != from) {
                 for rights in every_combination() {
                     assert_eq!(
-                        rights.update_move(from, to),
+                        rights.update_move(from.index(), to.index()),
                         rights,
                         "{rights:?} on {from}->{to}"
                     );
