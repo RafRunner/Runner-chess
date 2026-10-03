@@ -1,4 +1,4 @@
-use std::ops;
+use std::{fmt::Display, ops};
 
 use crate::square::Square;
 
@@ -101,6 +101,22 @@ impl ops::BitOr for BitBoard {
 impl ops::BitOrAssign for BitBoard {
     fn bitor_assign(&mut self, rhs: Self) {
         *self = Self(self.0 | rhs.0)
+    }
+}
+
+impl Display for BitBoard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for rank in (0..8).rev() {
+            write!(f, "{} ", rank + 1)?;
+            for file in 0..8 {
+                let test = self.0 & 1 << (rank * 8 + file) != 0;
+                let c = if test { '1' } else { '0' };
+                write!(f, "{c} ")?;
+            }
+            writeln!(f, "")?;
+        }
+
+        writeln!(f, "  a b c d e f g h")
     }
 }
 

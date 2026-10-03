@@ -10,6 +10,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Board {
     pieces: [BitBoard; 12],
+    by_color: [BitBoard; 2],
     mailbox: [Option<Piece>; 64],
     side_to_move: Color,
     castling: CastlingRights,
@@ -26,6 +27,7 @@ impl Board {
     pub fn empty() -> Self {
         Board {
             pieces: [BitBoard::EMPTY; 12],
+            by_color: [BitBoard::EMPTY; 2],
             mailbox: [None; 64],
             side_to_move: Color::White,
             castling: CastlingRights::NONE,
@@ -60,7 +62,9 @@ impl Board {
                     let piece = Piece::from_fen(c).map_err(|_| FenParseError)?;
 
                     board.pieces[piece] |= square.bb();
+                    board.by_color[piece.color()] |= square.bb();
                     board.mailbox[square] = Some(piece);
+
                     file += 1;
                 }
             }
@@ -95,6 +99,8 @@ impl Board {
             }
         };
 
+        board.sanity_check().map_err(|_| FenParseError)?;
+
         Ok(board)
     }
 
@@ -118,6 +124,10 @@ impl Board {
         self.en_passant
     }
 
+    pub fn all_pieces_bb(&self) -> BitBoard {
+        self.by_color[Color::White] | self.by_color[Color::Black]
+    }
+
     /// Rejects positions that would break the engine: desynced mailbox and
     /// bitboards, or out-of-bounds indexing. Positions that are unreachable but
     /// harmless (9 pawns, same-colored bishops, ...) are accepted on purpose.
@@ -132,9 +142,6 @@ impl Board {
             return Err(BoardInconsistencyError);
         }
 
-        // TODO: en passant needs the target and origin squares empty and the
-        // double-pushed pawn in front of the target, otherwise the capture
-        // removes a pawn that doesn't exist.
         // TODO (needs attack generation): the side not to move must not be in
         // check. Otherwise the king can be captured, its bitboard becomes 0 and
         // `trailing_zeros()` returns 64, indexing out of bounds. This also
@@ -155,6 +162,33 @@ impl Board {
             let rook = Some(Piece::new(color, PieceKind::Rook));
             if self.castling.has(right)
                 && (self.mailbox[king_sq] != king || self.mailbox[rook_sq] != rook)
+            {
+                return Err(BoardInconsistencyError);
+            }
+        }
+
+        if let Some(sq) = self.en_passant {
+            if sq.rank() != 2 && sq.rank() != 5 {
+                return Err(BoardInconsistencyError);
+            }
+            let all_pieces = self.all_pieces_bb();
+
+            let ranks = if self.side_to_move() == Color::Black {
+                BitBoard::RANK_2 | BitBoard::RANK_3
+            } else {
+                BitBoard::RANK_6 | BitBoard::RANK_7
+            };
+            let file = BitBoard::FILES[sq.file() as usize];
+            let mask = ranks & file;
+
+            if all_pieces & mask != BitBoard::EMPTY {
+                return Err(BoardInconsistencyError);
+            }
+
+            let pawn_square =
+                Square::from_file_and_rank(sq.file(), if sq.rank() == 2 { 3 } else { 4 });
+            if self.mailbox[pawn_square]
+                != Some(Piece::new(self.side_to_move.oposite(), PieceKind::Pawn))
             {
                 return Err(BoardInconsistencyError);
             }
@@ -229,6 +263,16 @@ mod tests {
                     "square {square} empty in mailbox, but set in {owners:?}"
                 ),
             }
+        }
+
+        // by_color must be the union of that color's piece bitboards
+        for color in Color::ALL {
+            let union = PieceKind::ALL
+                .into_iter()
+                .fold(BitBoard::EMPTY, |acc, kind| {
+                    acc | b.pieces[Piece::new(color, kind)]
+                });
+            assert_eq!(b.by_color[color], union, "{color:?}");
         }
     }
 
@@ -404,6 +448,36 @@ mod tests {
         // policy decision: the rank must match the side to move
         assert!(ep_of("4k3/8/8/3pP3/8/8/8/4K3 w - d3 0 1").is_err());
         assert!(ep_of("4k3/8/8/8/3pP3/8/8/4K3 b - e6 0 1").is_err());
+    }
+
+    #[test]
+    fn en_passant_must_match_the_board() {
+        // each one is a valid en passant position with a single defect
+        let invalid = [
+            // e2-e4, black to move
+            "4k3/8/8/8/3p4/8/8/4K3 b - e3 0 1", // no pawn on e4
+            // "4k3/8/8/8/3pp3/8/8/4K3 b - e3 0 1",   // pawn on e4 has the wrong color
+            "4k3/8/8/8/3pN3/8/8/4K3 b - e3 0 1", // knight on e4 instead of a pawn
+            "4k3/8/8/8/3pP3/4N3/8/4K3 b - e3 0 1", // target square e3 occupied
+            "4k3/8/8/8/3pP3/8/4N3/4K3 b - e3 0 1", // origin square e2 occupied
+            // d7-d5, white to move
+            "4k3/8/8/4P3/8/8/8/4K3 w - d6 0 1",    // no pawn on d5
+            "4k3/8/8/3PP3/8/8/8/4K3 w - d6 0 1",   // pawn on d5 has the wrong color
+            "4k3/8/3n4/3pP3/8/8/8/4K3 w - d6 0 1", // target square d6 occupied
+            "4k3/3n4/8/3pP3/8/8/8/4K3 w - d6 0 1", // origin square d7 occupied
+        ];
+        for fen in invalid {
+            assert!(Board::from_fen(fen).is_err(), "should reject: {fen:?}");
+        }
+
+        // only the target and origin squares must be empty, the rest of the file doesn't matter
+        let valid = [
+            "4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1",  // white king on e1
+            "3qk3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", // black queen on d8
+        ];
+        for fen in valid {
+            assert!(Board::from_fen(fen).is_ok(), "should accept: {fen:?}");
+        }
     }
 
     #[test]

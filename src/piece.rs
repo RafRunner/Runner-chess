@@ -9,6 +9,31 @@ pub enum Color {
 
 impl Color {
     pub const ALL: [Color; 2] = [Color::White, Color::Black];
+
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+
+    pub const fn oposite(self) -> Self {
+        match self {
+            Self::White => Self::Black,
+            Self::Black => Self::White,
+        }
+    }
+}
+
+impl<T> ops::Index<Color> for [T; 2] {
+    type Output = T;
+
+    fn index(&self, index: Color) -> &Self::Output {
+        &self[index.index()]
+    }
+}
+
+impl<T> ops::IndexMut<Color> for [T; 2] {
+    fn index_mut(&mut self, index: Color) -> &mut Self::Output {
+        &mut self[index.index()]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
