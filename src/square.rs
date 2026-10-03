@@ -1,5 +1,7 @@
 use std::{fmt::Display, ops};
 
+use crate::bitboard::BitBoard;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Square(u8);
 
@@ -96,8 +98,8 @@ impl Square {
         self.0 as usize
     }
 
-    pub const fn bb(self) -> u64 {
-        1 << self.0
+    pub const fn bb(self) -> BitBoard {
+        BitBoard::new(1 << self.0)
     }
 
     pub const fn file(self) -> u8 {
@@ -128,6 +130,20 @@ impl Square {
         let rank = self.rank();
 
         format!("{}{}", (file + b'a') as char, (rank + b'1') as char)
+    }
+}
+
+impl<T> ops::Index<Square> for [T; 64] {
+    type Output = T;
+
+    fn index(&self, index: Square) -> &Self::Output {
+        &self[index.index()]
+    }
+}
+
+impl<T> ops::IndexMut<Square> for [T; 64] {
+    fn index_mut(&mut self, index: Square) -> &mut Self::Output {
+        &mut self[index.index()]
     }
 }
 

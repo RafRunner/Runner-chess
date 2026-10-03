@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, ops};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -76,6 +76,20 @@ impl Piece {
 
     pub const fn to_char(self) -> char {
         Self::CHARS[self.0 as usize] as char
+    }
+}
+
+impl<T> ops::Index<Piece> for [T; 12] {
+    type Output = T;
+
+    fn index(&self, index: Piece) -> &Self::Output {
+        &self[index.index()]
+    }
+}
+
+impl<T> ops::IndexMut<Piece> for [T; 12] {
+    fn index_mut(&mut self, index: Piece) -> &mut Self::Output {
+        &mut self[index.index()]
     }
 }
 

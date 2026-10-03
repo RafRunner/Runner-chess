@@ -1,15 +1,15 @@
 use std::fmt::{Display, Formatter};
 
 use crate::{
-    bitboard,
+    bitboard::BitBoard,
     castling::CastlingRights,
     piece::{Color, Piece, PieceKind},
-    square::{self, Square},
+    square::Square,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Board {
-    pieces: [u64; 12],
+    pieces: [BitBoard; 12],
     mailbox: [Option<Piece>; 64],
     side_to_move: Color,
     castling: CastlingRights,
@@ -25,7 +25,7 @@ pub struct BoardInconsistencyError;
 impl Board {
     pub fn empty() -> Self {
         Board {
-            pieces: [0; 12],
+            pieces: [BitBoard::EMPTY; 12],
             mailbox: [None; 64],
             side_to_move: Color::White,
             castling: CastlingRights::NONE,
@@ -56,9 +56,11 @@ impl Board {
                     }
                     file += n as usize;
                 } else {
+                    let square = Square::from_file_and_rank(file as u8, rank_idx as u8);
                     let piece = Piece::from_fen(c).map_err(|_| FenParseError)?;
-                    board.pieces[piece.index()] |= 1 << (rank_idx * 8 + file);
-                    board.mailbox[rank_idx * 8 + file] = Some(piece);
+
+                    board.pieces[piece] |= square.bb();
+                    board.mailbox[square] = Some(piece);
                     file += 1;
                 }
             }
@@ -97,7 +99,23 @@ impl Board {
     }
 
     pub fn piece_at(&self, sq: Square) -> Option<Piece> {
-        self.mailbox[sq.index()]
+        self.mailbox[sq]
+    }
+
+    pub fn pieces(&self, piece: Piece) -> BitBoard {
+        self.pieces[piece]
+    }
+
+    pub fn side_to_move(&self) -> Color {
+        self.side_to_move
+    }
+
+    pub fn castling(&self) -> CastlingRights {
+        self.castling
+    }
+
+    pub fn en_passant(&self) -> Option<Square> {
+        self.en_passant
     }
 
     /// Rejects positions that would break the engine: desynced mailbox and
@@ -107,10 +125,10 @@ impl Board {
         self.check_king(Color::White)?;
         self.check_king(Color::Black)?;
 
-        let white_pawns = self.pieces[Piece::new(Color::White, PieceKind::Pawn).index()];
-        let black_pawns = self.pieces[Piece::new(Color::Black, PieceKind::Pawn).index()];
+        let white_pawns = self.pieces[Piece::new(Color::White, PieceKind::Pawn)];
+        let black_pawns = self.pieces[Piece::new(Color::Black, PieceKind::Pawn)];
 
-        if (white_pawns | black_pawns) & (bitboard::RANK_1 | bitboard::RANK_8) != 0 {
+        if (white_pawns | black_pawns) & (BitBoard::RANK_1 | BitBoard::RANK_8) != BitBoard::EMPTY {
             return Err(BoardInconsistencyError);
         }
 
@@ -136,7 +154,7 @@ impl Board {
             let king = Some(Piece::new(color, PieceKind::King));
             let rook = Some(Piece::new(color, PieceKind::Rook));
             if self.castling.has(right)
-                && (self.piece_at(king_sq) != king || self.piece_at(rook_sq) != rook)
+                && (self.mailbox[king_sq] != king || self.mailbox[rook_sq] != rook)
             {
                 return Err(BoardInconsistencyError);
             }
@@ -147,7 +165,7 @@ impl Board {
 
     fn check_king(&self, color: Color) -> Result<(), BoardInconsistencyError> {
         let king = Piece::new(color, PieceKind::King);
-        let bb = self.pieces[king.index()];
+        let bb = self.pieces[king];
 
         if bb.count_ones() == 1 {
             Ok(())
@@ -162,8 +180,7 @@ impl Display for Board {
         for rank in (0..8).rev() {
             write!(f, "{} ", rank + 1)?;
             for file in 0..8 {
-                let c = self
-                    .piece_at(Square::from_file_and_rank(file, rank))
+                let c = self.mailbox[Square::from_file_and_rank(file, rank)]
                     .map_or('.', Piece::to_char);
                 write!(f, "{c} ")?;
             }
@@ -201,13 +218,15 @@ mod tests {
     /// mailbox and bitboards must describe exactly the same position
     fn assert_consistent(b: &Board) {
         for sq in 0..64 {
-            let bit = 1u64 << sq;
-            let owners: Vec<usize> = (0..12).filter(|&i| b.pieces[i] & bit != 0).collect();
+            let square = Square::new(sq as u8);
+            let owners: Vec<usize> = (0..12)
+                .filter(|&i| b.pieces[i] & square.bb() != BitBoard::EMPTY)
+                .collect();
             match b.mailbox[sq] {
-                Some(piece) => assert_eq!(owners, vec![piece.index()], "square {sq}"),
+                Some(piece) => assert_eq!(owners, vec![piece.index()], "square {square}"),
                 None => assert!(
                     owners.is_empty(),
-                    "square {sq} empty in mailbox, but set in {owners:?}"
+                    "square {square} empty in mailbox, but set in {owners:?}"
                 ),
             }
         }
@@ -228,10 +247,10 @@ mod tests {
     #[test]
     fn startpos_pawn_bitboards() {
         let b = Board::from_fen(STARTPOS).unwrap();
-        let wp = Piece::new(Color::White, PieceKind::Pawn).index();
-        let bp = Piece::new(Color::Black, PieceKind::Pawn).index();
-        assert_eq!(b.pieces[wp], 0x0000_0000_0000_FF00);
-        assert_eq!(b.pieces[bp], 0x00FF_0000_0000_0000);
+        let wp = Piece::new(Color::White, PieceKind::Pawn);
+        let bp = Piece::new(Color::Black, PieceKind::Pawn);
+        assert_eq!(b.pieces(wp), BitBoard::new(0x0000_0000_0000_FF00));
+        assert_eq!(b.pieces(bp), BitBoard::new(0x00FF_0000_0000_0000));
     }
 
     #[test]
@@ -319,16 +338,16 @@ mod tests {
     }
 
     fn side_of(field: &str) -> Result<Color, FenParseError> {
-        Board::from_fen(&format!("4k3/8/8/8/8/8/8/4K3 {field} - - 0 1")).map(|b| b.side_to_move)
+        Board::from_fen(&format!("4k3/8/8/8/8/8/8/4K3 {field} - - 0 1")).map(|b| b.side_to_move())
     }
 
     /// kings and rooks on their initial squares: any combination of rights is possible
     fn castling_of(field: &str) -> Result<CastlingRights, FenParseError> {
-        Board::from_fen(&format!("r3k2r/8/8/8/8/8/8/R3K2R w {field} - 0 1")).map(|b| b.castling)
+        Board::from_fen(&format!("r3k2r/8/8/8/8/8/8/R3K2R w {field} - 0 1")).map(|b| b.castling())
     }
 
     fn ep_of(fen: &str) -> Result<Option<Square>, FenParseError> {
-        Board::from_fen(fen).map(|b| b.en_passant)
+        Board::from_fen(fen).map(|b| b.en_passant())
     }
 
     #[test]
