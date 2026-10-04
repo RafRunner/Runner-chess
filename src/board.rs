@@ -17,11 +17,35 @@ pub struct Board {
     en_passant: Option<Square>,
 }
 
-#[derive(Debug)]
-pub struct FenParseError;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FenParseError {
+    MissingField(&'static str),
+    WrongRankCount(usize),
+    WrongRankLength(u8),
+    ZeroDigit,
+    InvalidPiece(char),
+    InvalidSideToMove,
+    InvalidCastling,
+    InvalidEnPassant,
+    EnPassantSideMismatch(Square),
+    IllegalPosition(BoardInconsistencyError),
+}
 
-#[derive(Debug)]
-pub struct BoardInconsistencyError;
+impl From<BoardInconsistencyError> for FenParseError {
+    fn from(err: BoardInconsistencyError) -> Self {
+        Self::IllegalPosition(err)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoardInconsistencyError {
+    KingCount(Color),
+    PawnOnBackRank,
+    CastlingWithoutPieces(CastlingRights),
+    EnPassantWrongRank(Square),
+    EnPassantBlocked(Square),
+    EnPassantWithoutPawn(Square),
+}
 
 impl Board {
     pub fn empty() -> Self {
@@ -38,28 +62,30 @@ impl Board {
     pub fn from_fen(fen: &str) -> Result<Self, FenParseError> {
         let mut board = Self::empty();
         let mut parts = fen.split_whitespace();
-        let pieces = parts.next().ok_or(FenParseError)?;
+        let pieces = parts
+            .next()
+            .ok_or(FenParseError::MissingField("piece placement"))?;
 
         let ranks: Vec<&str> = pieces.split("/").collect();
         if ranks.len() != 8 {
-            return Err(FenParseError);
+            return Err(FenParseError::WrongRankCount(ranks.len()));
         }
 
         for (rank_idx, rank) in ranks.iter().rev().enumerate() {
             let mut file: usize = 0;
             for c in rank.chars() {
                 if file > 7 {
-                    return Err(FenParseError);
+                    return Err(FenParseError::WrongRankLength(rank_idx as u8 + 1));
                 }
 
                 if let Some(n) = c.to_digit(10) {
                     if n == 0 {
-                        return Err(FenParseError);
+                        return Err(FenParseError::ZeroDigit);
                     }
                     file += n as usize;
                 } else {
                     let square = Square::from_file_and_rank(file as u8, rank_idx as u8);
-                    let piece = Piece::from_fen(c).map_err(|_| FenParseError)?;
+                    let piece = Piece::from_fen(c).map_err(|_| FenParseError::InvalidPiece(c))?;
 
                     board.pieces[piece] |= square.bb();
                     board.by_color[piece.color()] |= square.bb();
@@ -70,36 +96,44 @@ impl Board {
             }
 
             if file != 8 {
-                return Err(FenParseError);
+                return Err(FenParseError::WrongRankLength(rank_idx as u8 + 1));
             }
         }
 
-        let side_to_move = parts.next().ok_or(FenParseError)?;
+        let side_to_move = parts
+            .next()
+            .ok_or(FenParseError::MissingField("side to move"))?;
         board.side_to_move = match side_to_move {
             "w" => Color::White,
             "b" => Color::Black,
-            _ => return Err(FenParseError),
+            _ => return Err(FenParseError::InvalidSideToMove),
         };
 
-        let castle = parts.next().ok_or(FenParseError)?;
-        board.castling = CastlingRights::from_fen(castle).map_err(|_| FenParseError)?;
+        let castle = parts
+            .next()
+            .ok_or(FenParseError::MissingField("castling"))?;
+        board.castling =
+            CastlingRights::from_fen(castle).map_err(|_| FenParseError::InvalidCastling)?;
 
-        let en_passant = parts.next().ok_or(FenParseError)?;
+        let en_passant = parts
+            .next()
+            .ok_or(FenParseError::MissingField("en passant"))?;
         board.en_passant = match en_passant {
             "-" => None,
             square => {
-                let square = Square::from_algebraic(square).map_err(|_| FenParseError)?;
+                let square =
+                    Square::from_algebraic(square).map_err(|_| FenParseError::InvalidEnPassant)?;
                 if board.side_to_move == Color::White && square.rank() != 5
                     || board.side_to_move == Color::Black && square.rank() != 2
                 {
-                    return Err(FenParseError);
+                    return Err(FenParseError::EnPassantSideMismatch(square));
                 } else {
                     Some(square)
                 }
             }
         };
 
-        board.sanity_check().map_err(|_| FenParseError)?;
+        board.sanity_check()?;
 
         Ok(board)
     }
@@ -133,17 +167,17 @@ impl Board {
     /// harmless (9 pawns, same-colored bishops, ...) are accepted on purpose.
     pub fn sanity_check(&self) -> Result<(), BoardInconsistencyError> {
         if self.pieces(Piece::WhiteKing).count_ones() != 1 {
-            return Err(BoardInconsistencyError);
+            return Err(BoardInconsistencyError::KingCount(Color::White));
         }
         if self.pieces(Piece::BlackKing).count_ones() != 1 {
-            return Err(BoardInconsistencyError);
+            return Err(BoardInconsistencyError::KingCount(Color::Black));
         }
 
         let white_pawns = self.pieces[Piece::WhitePawn];
         let black_pawns = self.pieces[Piece::BlackPawn];
 
         if (white_pawns | black_pawns) & (BitBoard::RANK_1 | BitBoard::RANK_8) != BitBoard::EMPTY {
-            return Err(BoardInconsistencyError);
+            return Err(BoardInconsistencyError::PawnOnBackRank);
         }
 
         // TODO (needs attack generation): the side not to move must not be in
@@ -168,13 +202,13 @@ impl Board {
             if self.castling.has(right)
                 && (self.mailbox[king_sq] != king || self.mailbox[rook_sq] != rook)
             {
-                return Err(BoardInconsistencyError);
+                return Err(BoardInconsistencyError::CastlingWithoutPieces(right));
             }
         }
 
         if let Some(sq) = self.en_passant {
             if sq.rank() != 2 && sq.rank() != 5 {
-                return Err(BoardInconsistencyError);
+                return Err(BoardInconsistencyError::EnPassantWrongRank(sq));
             }
             let all_pieces = self.all_pieces_bb();
 
@@ -187,7 +221,7 @@ impl Board {
             let mask = ranks & file;
 
             if all_pieces & mask != BitBoard::EMPTY {
-                return Err(BoardInconsistencyError);
+                return Err(BoardInconsistencyError::EnPassantBlocked(sq));
             }
 
             let pawn_square =
@@ -195,7 +229,7 @@ impl Board {
             if self.mailbox[pawn_square]
                 != Some(Piece::new(self.side_to_move.oposite(), PieceKind::Pawn))
             {
-                return Err(BoardInconsistencyError);
+                return Err(BoardInconsistencyError::EnPassantWithoutPawn(sq));
             }
         }
 
@@ -351,27 +385,29 @@ mod tests {
     #[test]
     fn valid_fens_are_consistent() {
         for fen in VALID {
-            let b = Board::from_fen(fen).unwrap_or_else(|_| panic!("failed: {fen}"));
+            let b = Board::from_fen(fen).unwrap_or_else(|err| panic!("{fen}: {err:?}"));
             assert_consistent(&b);
         }
     }
 
     #[test]
     fn invalid_fens_are_rejected() {
+        use FenParseError as E;
         // each one is the position "4k3/8/8/8/8/8/8/4K3 w - - 0 1" with a single defect
+        #[rustfmt::skip]
         let invalid = [
-            "",
-            "4k3/8/8/8/8/8/4K3 w - - 0 1",           // 7 ranks
-            "4k3/8/8/8/8/8/8/8/4K3 w - - 0 1",       // 9 ranks
-            "4k3/8/8/8/7/8/8/4K3 w - - 0 1",         // short rank
-            "4k3/8/8/8/9/8/8/4K3 w - - 0 1",         // long rank (digit)
-            "4k3/8/8/8/4p4/8/8/4K3 w - - 0 1",       // long rank (mixed)
-            "4k3/8/8/8/8/8/PPPPPPPPP/4K3 w - - 0 1", // long rank (pieces)
-            "4k3/8/8/8/08/8/8/4K3 w - - 0 1",        // zero digit
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKXNR w KQkq - 0 1", // invalid piece
+            ("", E::MissingField("piece placement")),
+            ("4k3/8/8/8/8/8/4K3 w - - 0 1", E::WrongRankCount(7)),
+            ("4k3/8/8/8/8/8/8/8/4K3 w - - 0 1", E::WrongRankCount(9)),
+            ("4k3/8/8/8/7/8/8/4K3 w - - 0 1", E::WrongRankLength(4)),         // short rank
+            ("4k3/8/8/8/9/8/8/4K3 w - - 0 1", E::WrongRankLength(4)),         // long rank (digit)
+            ("4k3/8/8/8/4p4/8/8/4K3 w - - 0 1", E::WrongRankLength(4)),       // long rank (mixed)
+            ("4k3/8/8/8/8/8/PPPPPPPPP/4K3 w - - 0 1", E::WrongRankLength(2)), // long rank (pieces)
+            ("4k3/8/8/8/08/8/8/4K3 w - - 0 1", E::ZeroDigit),
+            ("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKXNR w KQkq - 0 1", E::InvalidPiece('X')),
         ];
-        for fen in invalid {
-            assert!(Board::from_fen(fen).is_err(), "should reject: {fen:?}");
+        for (fen, err) in invalid {
+            assert_eq!(Board::from_fen(fen).unwrap_err(), err, "{fen:?}");
         }
     }
 
@@ -388,12 +424,20 @@ mod tests {
         Board::from_fen(fen).map(|b| b.en_passant())
     }
 
+    /// the rule `sanity_check` rejected the position for
+    fn inconsistency_of(fen: &str) -> BoardInconsistencyError {
+        match Board::from_fen(fen) {
+            Err(FenParseError::IllegalPosition(err)) => err,
+            other => panic!("{fen:?}: expected an illegal position, got {other:?}"),
+        }
+    }
+
     #[test]
     fn side_to_move_parse() {
         assert_eq!(side_of("w").unwrap(), Color::White);
         assert_eq!(side_of("b").unwrap(), Color::Black);
-        assert!(side_of("x").is_err());
-        assert!(side_of("W").is_err());
+        assert_eq!(side_of("x").unwrap_err(), FenParseError::InvalidSideToMove);
+        assert_eq!(side_of("W").unwrap_err(), FenParseError::InvalidSideToMove);
     }
 
     #[test]
@@ -411,10 +455,17 @@ mod tests {
     #[test]
     fn castling_invalid() {
         for field in ["X", "K-", "KQkqX", "kK2"] {
-            assert!(castling_of(field).is_err(), "should reject: {field:?}");
+            assert_eq!(
+                castling_of(field).unwrap_err(),
+                FenParseError::InvalidCastling,
+                "{field:?}"
+            );
         }
         // policy decision: reject repeated rights
-        assert!(castling_of("KK").is_err());
+        assert_eq!(
+            castling_of("KK").unwrap_err(),
+            FenParseError::InvalidCastling
+        );
     }
 
     #[test]
@@ -435,33 +486,59 @@ mod tests {
     #[test]
     fn en_passant_invalid() {
         // position where "d6" would be valid: only the en passant field changes
-        for field in ["e4", "i6", "e", "e66", "E6", "6e", "--"] {
+        for field in ["i6", "e", "e66", "E6", "6e", "--"] {
             let fen = format!("4k3/8/8/3pP3/8/8/8/4K3 w - {field} 0 1");
-            assert!(ep_of(&fen).is_err(), "should reject: {field:?}");
+            assert_eq!(
+                ep_of(&fen).unwrap_err(),
+                FenParseError::InvalidEnPassant,
+                "{field:?}"
+            );
         }
         // policy decision: the rank must match the side to move
-        assert!(ep_of("4k3/8/8/3pP3/8/8/8/4K3 w - d3 0 1").is_err());
-        assert!(ep_of("4k3/8/8/8/3pP3/8/8/4K3 b - e6 0 1").is_err());
+        let mismatch = [
+            ("4k3/8/8/3pP3/8/8/8/4K3 w - e4 0 1", Square::E4),
+            ("4k3/8/8/3pP3/8/8/8/4K3 w - d3 0 1", Square::D3),
+            ("4k3/8/8/8/3pP3/8/8/4K3 b - e6 0 1", Square::E6),
+        ];
+        for (fen, sq) in mismatch {
+            assert_eq!(
+                ep_of(fen).unwrap_err(),
+                FenParseError::EnPassantSideMismatch(sq),
+                "{fen}"
+            );
+        }
     }
 
     #[test]
     fn en_passant_must_match_the_board() {
+        use BoardInconsistencyError::{EnPassantBlocked, EnPassantWithoutPawn};
+
         // each one is a valid en passant position with a single defect
-        let invalid = [
-            // e2-e4, black to move
-            "4k3/8/8/8/3p4/8/8/4K3 b - e3 0 1", // no pawn on e4
-            // "4k3/8/8/8/3pp3/8/8/4K3 b - e3 0 1",   // pawn on e4 has the wrong color
+        let without_pawn = [
+            "4k3/8/8/8/3p4/8/8/4K3 b - e3 0 1",  // no pawn on e4
+            "4k3/8/8/8/3pp3/8/8/4K3 b - e3 0 1", // pawn on e4 has the wrong color
             "4k3/8/8/8/3pN3/8/8/4K3 b - e3 0 1", // knight on e4 instead of a pawn
+            "4k3/8/8/4P3/8/8/8/4K3 w - d6 0 1",  // no pawn on d5
+            "4k3/8/8/3PP3/8/8/8/4K3 w - d6 0 1", // pawn on d5 has the wrong color
+        ];
+        for fen in without_pawn {
+            assert!(
+                matches!(inconsistency_of(fen), EnPassantWithoutPawn(_)),
+                "{fen:?}"
+            );
+        }
+
+        let blocked = [
             "4k3/8/8/8/3pP3/4N3/8/4K3 b - e3 0 1", // target square e3 occupied
             "4k3/8/8/8/3pP3/8/4N3/4K3 b - e3 0 1", // origin square e2 occupied
-            // d7-d5, white to move
-            "4k3/8/8/4P3/8/8/8/4K3 w - d6 0 1",    // no pawn on d5
-            "4k3/8/8/3PP3/8/8/8/4K3 w - d6 0 1",   // pawn on d5 has the wrong color
             "4k3/8/3n4/3pP3/8/8/8/4K3 w - d6 0 1", // target square d6 occupied
             "4k3/3n4/8/3pP3/8/8/8/4K3 w - d6 0 1", // origin square d7 occupied
         ];
-        for fen in invalid {
-            assert!(Board::from_fen(fen).is_err(), "should reject: {fen:?}");
+        for fen in blocked {
+            assert!(
+                matches!(inconsistency_of(fen), EnPassantBlocked(_)),
+                "{fen:?}"
+            );
         }
 
         // only the target and origin squares must be empty, the rest of the file doesn't matter
@@ -476,12 +553,19 @@ mod tests {
 
     #[test]
     fn missing_fields_rejected() {
-        for fen in [
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR",
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w",
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq",
-        ] {
-            assert!(Board::from_fen(fen).is_err(), "should reject: {fen:?}");
+        let placement = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR";
+        let cases = [
+            ("", "side to move"),
+            (" w", "castling"),
+            (" w KQkq", "en passant"),
+        ];
+        for (rest, field) in cases {
+            let fen = format!("{placement}{rest}");
+            assert_eq!(
+                Board::from_fen(&fen).unwrap_err(),
+                FenParseError::MissingField(field),
+                "{fen:?}"
+            );
         }
     }
 
