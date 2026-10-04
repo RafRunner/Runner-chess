@@ -59,6 +59,10 @@ impl BitBoard {
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
+
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
 }
 
 impl Iterator for BitBoard {
