@@ -1,6 +1,6 @@
 use std::{fmt::Display, ops};
 
-use crate::square::Square;
+use crate::{chess_move::Move, square::Square};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CastlingRights(u8);
@@ -31,8 +31,8 @@ impl CastlingRights {
         self.0 | right.0 == self.0
     }
 
-    pub fn update_move(self, from: usize, to: usize) -> Self {
-        Self(self.0 & Self::CASTLE_MASK[from] & Self::CASTLE_MASK[to])
+    pub fn update_move(self, mv: Move) -> Self {
+        Self(self.0 & Self::CASTLE_MASK[mv.from()] & Self::CASTLE_MASK[mv.to()])
     }
 
     pub fn to_fen(self) -> String {
@@ -103,6 +103,8 @@ impl ops::Sub for CastlingRights {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+
+    use crate::chess_move::MoveKind;
 
     use super::*;
     use CastlingRights as CR;
@@ -243,7 +245,7 @@ mod tests {
         for (from, to, lost) in cases {
             for rights in every_combination() {
                 assert_eq!(
-                    rights.update_move(from.index(), to.index()),
+                    rights.update_move(Move::new(from, to, MoveKind::Normal)),
                     rights - lost,
                     "{rights:?} on {from}->{to}"
                 );
@@ -259,7 +261,7 @@ mod tests {
             for to in ordinary().filter(|&to| to != from) {
                 for rights in every_combination() {
                     assert_eq!(
-                        rights.update_move(from.index(), to.index()),
+                        rights.update_move(Move::new(from, to, MoveKind::Normal)),
                         rights,
                         "{rights:?} on {from}->{to}"
                     );

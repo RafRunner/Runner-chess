@@ -1,8 +1,11 @@
-use std::{fmt::Display, ops};
+use std::{
+    fmt::{Debug, Display},
+    ops,
+};
 
 use crate::bitboard::BitBoard;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Square(u8);
 
 #[derive(Debug)]
@@ -148,6 +151,12 @@ impl<T> ops::IndexMut<Square> for [T; 64] {
 }
 
 impl Display for Square {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_algebraic())
+    }
+}
+
+impl Debug for Square {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.to_algebraic())
     }

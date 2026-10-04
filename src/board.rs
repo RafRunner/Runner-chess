@@ -3,6 +3,7 @@ use std::fmt::{Display, Formatter};
 use crate::{
     bitboard::BitBoard,
     castling::CastlingRights,
+    chess_move::{Move, MoveKind},
     piece::{Color, Piece, PieceKind},
     square::Square,
 };
@@ -162,10 +163,15 @@ impl Board {
         self.by_color[Color::White] | self.by_color[Color::Black]
     }
 
+    /// Needs to be called on the board BEFORE the move is made
+    pub fn is_capture(&self, mv: Move) -> bool {
+        self.mailbox[mv.to()].is_some() || mv.kind() == MoveKind::EnPassant
+    }
+
     /// Rejects positions that would break the engine: desynced mailbox and
     /// bitboards, or out-of-bounds indexing. Positions that are unreachable but
     /// harmless (9 pawns, same-colored bishops, ...) are accepted on purpose.
-    pub fn sanity_check(&self) -> Result<(), BoardInconsistencyError> {
+    fn sanity_check(&self) -> Result<(), BoardInconsistencyError> {
         if self.pieces(Piece::WhiteKing).count_ones() != 1 {
             return Err(BoardInconsistencyError::KingCount(Color::White));
         }
@@ -207,7 +213,9 @@ impl Board {
         }
 
         if let Some(sq) = self.en_passant {
-            if sq.rank() != 2 && sq.rank() != 5 {
+            if self.side_to_move() == Color::Black && sq.rank() != 2
+                || self.side_to_move() == Color::White && sq.rank() != 5
+            {
                 return Err(BoardInconsistencyError::EnPassantWrongRank(sq));
             }
             let all_pieces = self.all_pieces_bb();
@@ -549,6 +557,81 @@ mod tests {
         for fen in valid {
             assert!(Board::from_fen(fen).is_ok(), "should accept: {fen:?}");
         }
+    }
+
+    /// boards built by `make_move` skip `from_fen`'s checks, so `sanity_check`
+    /// must reject an en passant square on the wrong rank by itself
+    #[test]
+    fn en_passant_rank_must_match_side_to_move() {
+        use BoardInconsistencyError::EnPassantWrongRank;
+
+        // every other en passant check passes: e2 and e3 are empty and there's
+        // an enemy pawn on e4, but with white to move e3 is impossible
+        let mut b = Board::from_fen("4k3/8/8/8/4p3/8/8/4K3 w - - 0 1").unwrap();
+        b.en_passant = Some(Square::E3);
+        assert_eq!(b.sanity_check(), Err(EnPassantWrongRank(Square::E3)));
+
+        // the same for black to move: d6 and d7 are empty and there's a white pawn on d5
+        let mut b = Board::from_fen("4k3/8/8/3P4/8/8/8/4K3 b - - 0 1").unwrap();
+        b.en_passant = Some(Square::D6);
+        assert_eq!(b.sanity_check(), Err(EnPassantWrongRank(Square::D6)));
+    }
+
+    #[test]
+    fn king_count() {
+        use BoardInconsistencyError::KingCount;
+        let cases = [
+            ("4k3/8/8/8/8/8/8/8 w - - 0 1", KingCount(Color::White)), // no white king
+            ("8/8/8/8/8/8/8/4K3 w - - 0 1", KingCount(Color::Black)), // no black king
+            ("4k3/8/8/8/8/8/8/3KK3 w - - 0 1", KingCount(Color::White)), // two white kings
+            ("3kk3/8/8/8/8/8/8/4K3 w - - 0 1", KingCount(Color::Black)), // two black kings
+        ];
+        for (fen, err) in cases {
+            assert_eq!(inconsistency_of(fen), err, "{fen:?}");
+        }
+    }
+
+    #[test]
+    fn pawns_on_back_rank() {
+        for fen in [
+            "4k2P/8/8/8/8/8/8/4K3 w - - 0 1", // white pawn on h8
+            "4k3/8/8/8/8/8/8/P3K3 w - - 0 1", // white pawn on a1
+            "4k3/8/8/8/8/8/8/4K2p w - - 0 1", // black pawn on h1
+            "p3k3/8/8/8/8/8/8/4K3 w - - 0 1", // black pawn on a8
+        ] {
+            assert_eq!(
+                inconsistency_of(fen),
+                BoardInconsistencyError::PawnOnBackRank,
+                "{fen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn castling_needs_king_and_rook_on_initial_squares() {
+        use BoardInconsistencyError::CastlingWithoutPieces;
+        use CastlingRights as CR;
+
+        // each one is "r3k2r/8/8/8/8/8/8/R3K2R" with a single piece missing, moved or replaced
+        let invalid = [
+            ("r3k2r/8/8/8/8/8/8/R3K3 w K - 0 1", CR::WHITE_SHORT), // no rook on h1
+            ("r3k2r/8/8/8/8/8/8/4K2R w Q - 0 1", CR::WHITE_LONG),  // no rook on a1
+            ("r3k3/8/8/8/8/8/8/R3K2R w k - 0 1", CR::BLACK_SHORT), // no rook on h8
+            ("4k2r/8/8/8/8/8/8/R3K2R w q - 0 1", CR::BLACK_LONG),  // no rook on a8
+            ("r3k2r/8/8/8/8/8/8/R4K1R w K - 0 1", CR::WHITE_SHORT), // white king on f1
+            ("r2k3r/8/8/8/8/8/8/R3K2R w q - 0 1", CR::BLACK_LONG), // black king on d8
+            ("r3k2r/8/8/8/8/8/8/R3K2r w K - 0 1", CR::WHITE_SHORT), // black rook on h1
+        ];
+        for (fen, right) in invalid {
+            assert_eq!(
+                inconsistency_of(fen),
+                CastlingWithoutPieces(right),
+                "{fen:?}"
+            );
+        }
+
+        // a missing rook only matters for its own right
+        assert!(Board::from_fen("r3k2r/8/8/8/8/8/8/R3K3 w Qkq - 0 1").is_ok());
     }
 
     #[test]

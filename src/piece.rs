@@ -56,9 +56,14 @@ impl PieceKind {
         Self::Queen,
         Self::King,
     ];
+    const CHARS: &'static [u8; 6] = b"pnbrqk";
 
     pub const fn index(self) -> usize {
         self as usize
+    }
+
+    pub const fn to_char(self) -> char {
+        Self::CHARS[self.index()] as char
     }
 }
 
