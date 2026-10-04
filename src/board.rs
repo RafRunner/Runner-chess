@@ -1,11 +1,12 @@
 use std::fmt::{Display, Formatter};
 
 use crate::{
+    attacks::{bishop_attacks, rook_attacks, KING_ATTACKS, KNIGHT_ATTACKS, PAWN_ATTACKS},
     bitboard::BitBoard,
     castling::CastlingRights,
     chess_move::{Move, MoveKind},
     piece::{Color, Piece, PieceKind},
-    square::Square,
+    square::{Delta, Square},
 };
 
 #[derive(Debug, Clone)]
@@ -41,6 +42,7 @@ impl From<BoardInconsistencyError> for FenParseError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoardInconsistencyError {
     KingCount(Color),
+    KingCanBeCaptured(Color),
     PawnOnBackRank,
     CastlingWithoutPieces(CastlingRights),
     EnPassantWrongRank(Square),
@@ -168,10 +170,35 @@ impl Board {
         self.mailbox[mv.to()].is_some() || mv.kind() == MoveKind::EnPassant
     }
 
+    pub fn attackers_by(&self, sq: Square, by: Color) -> BitBoard {
+        let pawns = self.pieces[Piece::new(by, PieceKind::Pawn)];
+        let knights = self.pieces[Piece::new(by, PieceKind::Knight)];
+        let bishops = self.pieces[Piece::new(by, PieceKind::Bishop)];
+        let rooks = self.pieces[Piece::new(by, PieceKind::Rook)];
+        let queens = self.pieces[Piece::new(by, PieceKind::Queen)];
+        let king = self.pieces[Piece::new(by, PieceKind::King)];
+
+        let occupied = self.all_pieces_bb();
+
+        (PAWN_ATTACKS[by.oposite()][sq] & pawns)
+            | (KNIGHT_ATTACKS[sq] & knights)
+            | (KING_ATTACKS[sq] & king)
+            | (bishop_attacks(sq, occupied) & (bishops | queens))
+            | (rook_attacks(sq, occupied) & (rooks | queens))
+    }
+
+    pub fn is_square_attacked(&self, sq: Square, by: Color) -> bool {
+        !self.attackers_by(sq, by).is_empty()
+    }
+
     /// Rejects positions that would break the engine: desynced mailbox and
     /// bitboards, or out-of-bounds indexing. Positions that are unreachable but
     /// harmless (9 pawns, same-colored bishops, ...) are accepted on purpose.
     fn sanity_check(&self) -> Result<(), BoardInconsistencyError> {
+        let us = self.side_to_move();
+        let them = us.oposite();
+        let white_to_move = us == Color::White;
+
         if self.pieces(Piece::WhiteKing).count_ones() != 1 {
             return Err(BoardInconsistencyError::KingCount(Color::White));
         }
@@ -186,10 +213,6 @@ impl Board {
             return Err(BoardInconsistencyError::PawnOnBackRank);
         }
 
-        // TODO (needs attack generation): the side not to move must not be in
-        // check. Otherwise the king can be captured, its bitboard becomes 0 and
-        // `trailing_zeros()` returns 64, indexing out of bounds. This also
-        // covers adjacent kings.
         // TODO (only if the move list has a fixed capacity): at most 16 pieces
         // per side and 8 pawns. Reachable positions have at most 218 legal
         // moves, but a FEN with a dozen queens can overflow the list.
@@ -213,18 +236,16 @@ impl Board {
         }
 
         if let Some(sq) = self.en_passant {
-            if self.side_to_move() == Color::Black && sq.rank() != 2
-                || self.side_to_move() == Color::White && sq.rank() != 5
-            {
+            let (ep_rank, delta, ranks) = if white_to_move {
+                (5, Delta::SOUTH, BitBoard::RANK_6 | BitBoard::RANK_7)
+            } else {
+                (2, Delta::NORTH, BitBoard::RANK_2 | BitBoard::RANK_3)
+            };
+            if ep_rank != sq.rank() {
                 return Err(BoardInconsistencyError::EnPassantWrongRank(sq));
             }
             let all_pieces = self.all_pieces_bb();
 
-            let ranks = if self.side_to_move() == Color::Black {
-                BitBoard::RANK_2 | BitBoard::RANK_3
-            } else {
-                BitBoard::RANK_6 | BitBoard::RANK_7
-            };
             let file = BitBoard::FILES[sq.file() as usize];
             let mask = ranks & file;
 
@@ -232,13 +253,16 @@ impl Board {
                 return Err(BoardInconsistencyError::EnPassantBlocked(sq));
             }
 
-            let pawn_square =
-                Square::from_file_and_rank(sq.file(), if sq.rank() == 2 { 3 } else { 4 });
-            if self.mailbox[pawn_square]
-                != Some(Piece::new(self.side_to_move.oposite(), PieceKind::Pawn))
-            {
+            let pawn_square = sq.offset(delta).expect("en passant rank was checked above");
+
+            if self.mailbox[pawn_square] != Some(Piece::new(them, PieceKind::Pawn)) {
                 return Err(BoardInconsistencyError::EnPassantWithoutPawn(sq));
             }
+        }
+
+        let mut enemy_king = self.pieces[Piece::new(them, PieceKind::King)];
+        if self.is_square_attacked(enemy_king.next().unwrap(), us) {
+            return Err(BoardInconsistencyError::KingCanBeCaptured(them));
         }
 
         Ok(())
@@ -632,6 +656,151 @@ mod tests {
 
         // a missing rook only matters for its own right
         assert!(Board::from_fen("r3k2r/8/8/8/8/8/8/R3K3 w Qkq - 0 1").is_ok());
+    }
+
+    #[test]
+    fn side_not_to_move_cannot_be_in_check() {
+        use BoardInconsistencyError::KingCanBeCaptured;
+
+        // legal with the checked side to move, illegal with the other one,
+        // since it could capture the king
+        #[rustfmt::skip]
+        let cases = [
+            ("4k3/8/8/8/8/8/4R3/4K3", Color::Black), // rook e2
+            ("4k3/3P4/8/8/8/8/8/4K3", Color::Black), // pawn d7
+            ("4k3/8/3N4/8/8/8/8/4K3", Color::Black), // knight d6
+            ("4k3/8/8/1B6/8/8/8/4K3", Color::Black), // bishop b5
+            ("4k3/8/8/8/Q7/8/8/4K3",  Color::Black), // queen a4
+            ("4k3/8/8/8/8/8/3p4/4K3", Color::White), // pawn d2
+            ("4k3/4r3/8/8/8/8/8/4K3", Color::White), // rook e7
+        ];
+        let side = |color: Color| match color {
+            Color::White => "w",
+            Color::Black => "b",
+        };
+        for (placement, checked) in cases {
+            let legal = format!("{placement} {} - - 0 1", side(checked));
+            assert!(Board::from_fen(&legal).is_ok(), "should accept: {legal:?}");
+
+            let illegal = format!("{placement} {} - - 0 1", side(checked.oposite()));
+            assert_eq!(
+                inconsistency_of(&illegal),
+                KingCanBeCaptured(checked),
+                "{illegal:?}"
+            );
+        }
+
+        // adjacent kings attack each other, whoever is to move
+        let adjacent = "8/8/8/8/8/8/3k4/4K3";
+        assert_eq!(
+            inconsistency_of(&format!("{adjacent} w - - 0 1")),
+            KingCanBeCaptured(Color::Black)
+        );
+        assert_eq!(
+            inconsistency_of(&format!("{adjacent} b - - 0 1")),
+            KingCanBeCaptured(Color::White)
+        );
+
+        // not a check: the rook is blocked, and a pawn doesn't attack straight ahead
+        for fen in [
+            "4k3/8/8/4n3/8/8/4R3/4K3 w - - 0 1",
+            "4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+        ] {
+            assert!(Board::from_fen(fen).is_ok(), "should accept: {fen:?}");
+        }
+    }
+
+    /// squares in index order, so failures print as a readable list
+    fn squares_of(bb: BitBoard) -> Vec<Square> {
+        bb.collect()
+    }
+
+    #[test]
+    fn attackers_by_known_squares() {
+        use Color::{Black, White};
+        use Square as S;
+
+        #[rustfmt::skip]
+        let cases: [(&str, Square, Color, &[Square]); 23] = [
+            // one attacker of each kind, all aiming at d4
+            ("k7/8/8/8/8/2P5/8/7K w - - 0 1",     S::D4, White, &[S::C3]),
+            ("k7/8/8/4p3/8/8/8/7K w - - 0 1",     S::D4, Black, &[S::E5]),
+            ("k7/8/8/8/8/5N2/8/7K w - - 0 1",     S::D4, White, &[S::F3]),
+            ("k7/8/8/8/8/8/8/6BK w - - 0 1",      S::D4, White, &[S::G1]),
+            ("k7/8/8/8/8/8/8/3R3K w - - 0 1",     S::D4, White, &[S::D1]),
+            ("k7/8/8/8/8/8/8/3Q3K w - - 0 1",     S::D4, White, &[S::D1]), // queen as a rook
+            ("k7/8/8/8/8/8/8/6QK w - - 0 1",      S::D4, White, &[S::G1]), // queen as a bishop
+            ("k7/8/8/8/8/4K3/8/8 w - - 0 1",      S::D4, White, &[S::E3]),
+            // all of them together, and none of them is black
+            ("k7/8/8/8/8/2P2N2/8/3R2BK w - - 0 1", S::D4, White, &[S::C3, S::F3, S::D1, S::G1]),
+            ("k7/8/8/8/8/2P2N2/8/3R2BK w - - 0 1", S::D4, Black, &[]),
+            // pawns only attack diagonally forward
+            ("k7/8/8/8/8/3P4/8/7K w - - 0 1",     S::D4, White, &[]), // d3 pushes to d4
+            ("k7/8/8/2P5/8/8/8/7K w - - 0 1",     S::D4, White, &[]), // c5 is past d4
+            ("k7/8/8/2P5/8/8/8/7K w - - 0 1",     S::D6, White, &[S::C5]),
+            ("k7/8/8/8/8/2p5/8/7K w - - 0 1",     S::D4, Black, &[]), // c3 is past d4 for black
+            ("k7/8/8/8/8/2p5/8/7K w - - 0 1",     S::D2, Black, &[S::C3]),
+            // sliders stop at the first piece, of either color
+            ("k7/8/8/8/8/3p4/8/3R3K w - - 0 1",   S::D4, White, &[]),
+            ("k7/8/8/8/8/3p4/8/3R3K w - - 0 1",   S::D3, White, &[S::D1]), // the blocker itself
+            ("k7/8/8/8/8/4N3/8/6BK w - - 0 1",    S::D4, White, &[]),
+            // an occupied target is still attacked: that's a capture, or a check
+            ("k7/8/8/8/3n4/8/8/3R3K w - - 0 1",   S::D4, White, &[S::D1]),
+            (STARTPOS, S::F3, White, &[S::E2, S::G2, S::G1]),
+            (STARTPOS, S::C6, Black, &[S::B7, S::D7, S::B8]),
+            (STARTPOS, S::F3, Black, &[]),
+            (STARTPOS, S::E4, White, &[]),
+        ];
+        for (fen, sq, by, expected) in cases {
+            let b = Board::from_fen(fen).unwrap_or_else(|err| panic!("{fen}: {err:?}"));
+            let expected = expected.iter().fold(BitBoard::EMPTY, |acc, s| acc | s.bb());
+            assert_eq!(
+                squares_of(b.attackers_by(sq, by)),
+                squares_of(expected),
+                "{fen} {sq} by {by:?}"
+            );
+            assert_eq!(
+                b.is_square_attacked(sq, by),
+                !expected.is_empty(),
+                "{fen} {sq} by {by:?}"
+            );
+        }
+    }
+
+    /// `attackers_by` looks from the target square; this looks from each piece instead
+    fn attackers_by_definition(b: &Board, sq: Square, by: Color) -> BitBoard {
+        let occupied = b.all_pieces_bb();
+        b.by_color[by]
+            .filter(|&from| {
+                let attacks = match b.mailbox[from].unwrap().kind() {
+                    PieceKind::Pawn => PAWN_ATTACKS[by][from],
+                    PieceKind::Knight => KNIGHT_ATTACKS[from],
+                    PieceKind::Bishop => bishop_attacks(from, occupied),
+                    PieceKind::Rook => rook_attacks(from, occupied),
+                    PieceKind::Queen => {
+                        bishop_attacks(from, occupied) | rook_attacks(from, occupied)
+                    }
+                    PieceKind::King => KING_ATTACKS[from],
+                };
+                !(attacks & sq.bb()).is_empty()
+            })
+            .fold(BitBoard::EMPTY, |acc, from| acc | from.bb())
+    }
+
+    #[test]
+    fn attackers_by_matches_definition() {
+        for fen in VALID {
+            let b = Board::from_fen(fen).unwrap();
+            for sq in (0..64).map(Square::new) {
+                for by in Color::ALL {
+                    assert_eq!(
+                        squares_of(b.attackers_by(sq, by)),
+                        squares_of(attackers_by_definition(&b, sq, by)),
+                        "{fen} {sq} by {by:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
