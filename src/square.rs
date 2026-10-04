@@ -11,6 +11,28 @@ pub struct Square(u8);
 #[derive(Debug)]
 pub struct SquareParseError;
 
+/// a displacement in files and ranks, from white's point of view (north is towards rank 8)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Delta {
+    file: i8,
+    rank: i8,
+}
+
+impl Delta {
+    pub const NORTH: Self = Self::new(0, 1);
+    pub const SOUTH: Self = Self::new(0, -1);
+    pub const EAST: Self = Self::new(1, 0);
+    pub const WEST: Self = Self::new(-1, 0);
+    pub const NORTH_EAST: Self = Self::new(1, 1);
+    pub const NORTH_WEST: Self = Self::new(-1, 1);
+    pub const SOUTH_EAST: Self = Self::new(1, -1);
+    pub const SOUTH_WEST: Self = Self::new(-1, -1);
+
+    pub const fn new(file: i8, rank: i8) -> Self {
+        Self { file, rank }
+    }
+}
+
 impl Square {
     pub const A1: Self = Self(0);
     pub const B1: Self = Self(1);
@@ -113,6 +135,18 @@ impl Square {
         self.0 / 8
     }
 
+    /// the square `delta` away, or `None` if it falls off the board
+    pub const fn offset(self, delta: Delta) -> Option<Self> {
+        let file = self.file() as i8 + delta.file;
+        let rank = self.rank() as i8 + delta.rank;
+
+        if file >= 0 && file < 8 && rank >= 0 && rank < 8 {
+            Some(Self::from_file_and_rank(file as u8, rank as u8))
+        } else {
+            None
+        }
+    }
+
     pub fn from_algebraic(s: &str) -> Result<Self, SquareParseError> {
         if let [file, rank] = s.as_bytes() {
             if !(b'a'..=b'h').contains(file) {
@@ -212,5 +246,42 @@ mod tests {
         }
         assert_eq!(S::E4.to_algebraic(), "e4");
         assert_eq!(S::from_algebraic("d5").unwrap(), S::D5);
+    }
+
+    #[test]
+    fn offset_moves_by_files_and_ranks() {
+        use Square as S;
+        let cases = [
+            (Delta::NORTH, S::E5),
+            (Delta::SOUTH, S::E3),
+            (Delta::EAST, S::F4),
+            (Delta::WEST, S::D4),
+            (Delta::NORTH_EAST, S::F5),
+            (Delta::NORTH_WEST, S::D5),
+            (Delta::SOUTH_EAST, S::F3),
+            (Delta::SOUTH_WEST, S::D3),
+            (Delta::new(2, -1), S::G3),
+        ];
+        for (delta, to) in cases {
+            assert_eq!(S::E4.offset(delta), Some(to), "{delta:?}");
+        }
+    }
+
+    /// some of these stay inside 0..64 when added to the index (h1 + east is a2),
+    /// so the board edge has to come from the file and rank
+    #[test]
+    fn offset_off_the_board_is_none() {
+        use Square as S;
+        let cases = [
+            (S::H1, Delta::EAST),
+            (S::A1, Delta::WEST),
+            (S::A1, Delta::SOUTH),
+            (S::H8, Delta::NORTH),
+            (S::A8, Delta::NORTH_WEST),
+            (S::G1, Delta::new(2, 1)), // a knight jump that would wrap to a3
+        ];
+        for (from, delta) in cases {
+            assert_eq!(from.offset(delta), None, "{from} + {delta:?}");
+        }
     }
 }
