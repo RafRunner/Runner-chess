@@ -1,3 +1,4 @@
+pub mod movegen;
 use std::fmt::{Display, Formatter};
 
 use crate::{
