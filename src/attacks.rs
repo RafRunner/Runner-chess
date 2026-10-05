@@ -1,6 +1,6 @@
 use crate::{
     bitboard::BitBoard,
-    piece::Color,
+    piece::{Color, Piece, PieceKind},
     square::{Delta, Square},
 };
 
@@ -20,6 +20,17 @@ pub fn rook_attacks(sq: Square, occupied: BitBoard) -> BitBoard {
         | directional_attacks(sq, occupied, Delta::SOUTH)
         | directional_attacks(sq, occupied, Delta::EAST)
         | directional_attacks(sq, occupied, Delta::WEST)
+}
+
+pub fn attacks(piece: Piece, sq: Square, occupied: BitBoard) -> BitBoard {
+    match piece.kind() {
+        PieceKind::Pawn => PAWN_ATTACKS[piece.color()][sq],
+        PieceKind::Knight => KNIGHT_ATTACKS[sq],
+        PieceKind::Bishop => bishop_attacks(sq, occupied),
+        PieceKind::Rook => rook_attacks(sq, occupied),
+        PieceKind::Queen => bishop_attacks(sq, occupied) | rook_attacks(sq, occupied),
+        PieceKind::King => KING_ATTACKS[sq],
+    }
 }
 
 fn directional_attacks(mut sq: Square, occupied: BitBoard, delta: Delta) -> BitBoard {

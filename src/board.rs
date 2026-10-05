@@ -149,6 +149,10 @@ impl Board {
         self.pieces[piece]
     }
 
+    pub fn by_color(&self, color: Color) -> BitBoard {
+        self.by_color[color]
+    }
+
     pub fn side_to_move(&self) -> Color {
         self.side_to_move
     }
@@ -293,7 +297,7 @@ impl Display for Board {
 
 #[cfg(test)]
 mod tests {
-    use crate::piece::PieceKind;
+    use crate::{attacks::attacks, piece::PieceKind};
 
     use super::*;
 
@@ -772,17 +776,8 @@ mod tests {
         let occupied = b.all_pieces_bb();
         b.by_color[by]
             .filter(|&from| {
-                let attacks = match b.mailbox[from].unwrap().kind() {
-                    PieceKind::Pawn => PAWN_ATTACKS[by][from],
-                    PieceKind::Knight => KNIGHT_ATTACKS[from],
-                    PieceKind::Bishop => bishop_attacks(from, occupied),
-                    PieceKind::Rook => rook_attacks(from, occupied),
-                    PieceKind::Queen => {
-                        bishop_attacks(from, occupied) | rook_attacks(from, occupied)
-                    }
-                    PieceKind::King => KING_ATTACKS[from],
-                };
-                !(attacks & sq.bb()).is_empty()
+                let targets = attacks(b.mailbox[from].unwrap(), from, occupied);
+                !(targets & sq.bb()).is_empty()
             })
             .fold(BitBoard::EMPTY, |acc, from| acc | from.bb())
     }
