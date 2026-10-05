@@ -1,3 +1,4 @@
+pub mod make_move;
 pub mod movegen;
 use std::fmt::{Display, Formatter};
 
@@ -49,6 +50,7 @@ pub enum BoardInconsistencyError {
     EnPassantWrongRank(Square),
     EnPassantBlocked(Square),
     EnPassantWithoutPawn(Square),
+    Desynced(&'static str),
 }
 
 impl Board {
@@ -196,6 +198,11 @@ impl Board {
         !self.attackers_by(sq, by).is_empty()
     }
 
+    pub fn is_in_check(&self, color: Color) -> bool {
+        let mut king = self.pieces[Piece::new(color, PieceKind::King)];
+        self.is_square_attacked(king.next().unwrap(), color.oposite())
+    }
+
     /// Rejects positions that would break the engine: desynced mailbox and
     /// bitboards, or out-of-bounds indexing. Positions that are unreachable but
     /// harmless (9 pawns, same-colored bishops, ...) are accepted on purpose.
@@ -265,9 +272,48 @@ impl Board {
             }
         }
 
-        let mut enemy_king = self.pieces[Piece::new(them, PieceKind::King)];
-        if self.is_square_attacked(enemy_king.next().unwrap(), us) {
+        if self.is_in_check(them) {
             return Err(BoardInconsistencyError::KingCanBeCaptured(them));
+        }
+
+        self.assert_invariants()?;
+
+        Ok(())
+    }
+
+    fn assert_invariants(&self) -> Result<(), BoardInconsistencyError> {
+        for sq in BitBoard::FULL {
+            for p in Piece::ALL {
+                let in_bb = (self.pieces[p] & sq.bb()) != BitBoard::EMPTY;
+                let in_mailbox = self.mailbox[sq] == Some(p);
+
+                if in_bb != in_mailbox {
+                    return Err(BoardInconsistencyError::Desynced(
+                        "Mailbox and BitBoards out of sync",
+                    ));
+                }
+            }
+        }
+
+        let mut expected = [BitBoard::EMPTY; 2];
+        for p in Piece::ALL {
+            expected[p.color()] |= self.pieces[p];
+        }
+
+        if self.by_color[Color::White] != expected[Color::White] {
+            return Err(BoardInconsistencyError::Desynced(
+                "White BitBoards out of sync",
+            ));
+        }
+        if self.by_color[Color::Black] != expected[Color::Black] {
+            return Err(BoardInconsistencyError::Desynced(
+                "Black BitBoards out of sync",
+            ));
+        }
+        if self.by_color[Color::White] & self.by_color[Color::Black] != BitBoard::EMPTY {
+            return Err(BoardInconsistencyError::Desynced(
+                "White and Black BitBoard overlap",
+            ));
         }
 
         Ok(())

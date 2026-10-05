@@ -7,6 +7,7 @@ pub struct BitBoard(u64);
 
 impl BitBoard {
     pub const EMPTY: Self = Self(0);
+    pub const FULL: Self = Self(u64::MAX);
 
     pub const RANK_1: Self = Self(0xFF);
     pub const RANK_2: Self = Self(Self::RANK_1.0 << 8);
@@ -138,7 +139,7 @@ impl Display for BitBoard {
             write!(f, "{} ", rank + 1)?;
             for file in 0..8 {
                 let test = self.0 & 1 << (rank * 8 + file) != 0;
-                let c = if test { '1' } else { '0' };
+                let c = if test { '1' } else { '.' };
                 write!(f, "{c} ")?;
             }
             writeln!(f)?;
