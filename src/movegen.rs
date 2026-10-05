@@ -1,26 +1,26 @@
 use std::iter;
 
 use crate::{
-    attacks::attacks,
+    attacks::{attacks, PAWN_ATTACKS},
+    bitboard::BitBoard,
     board::Board,
     castling::CastlingRights,
     chess_move::{Move, MoveKind},
     piece::{Color, Piece, PieceKind},
-    square::Square,
+    square::{Delta, Square},
 };
 
 impl Board {
     pub fn generate_moves(&self, moves: &mut Vec<Move>) {
         let us = self.side_to_move();
         let them = us.oposite();
-        // let white_to_move = us == Color::White;
+        let white_to_move = us == Color::White;
 
         let our_pieces = self.by_color(us);
         let their_pieces = self.by_color(them);
         let occupied = our_pieces | their_pieces;
 
-        let king_sq = self.pieces(Piece::new(us, PieceKind::King)).next().unwrap();
-
+        // Normal Pieces
         let kinds = [
             PieceKind::Knight,
             PieceKind::Bishop,
@@ -71,6 +71,7 @@ impl Board {
         ];
 
         for (color, right, king_to, must_be_empty, must_not_be_attacked) in castle_checks {
+            let king_sq = self.pieces(Piece::new(us, PieceKind::King)).next().unwrap();
             if us == color
                 && self.castling().has(right)
                 && (must_be_empty & occupied).is_empty()
@@ -82,6 +83,70 @@ impl Board {
                 moves.push(Move::new(king_sq, king_to, MoveKind::Castle));
             }
         }
+
+        // Pawns
+        let (starting_rank, delta, needs_empty) = if white_to_move {
+            (
+                BitBoard::RANK_2,
+                Delta::NORTH,
+                BitBoard::RANK_3 | BitBoard::RANK_4,
+            )
+        } else {
+            (
+                BitBoard::RANK_7,
+                Delta::SOUTH,
+                BitBoard::RANK_6 | BitBoard::RANK_5,
+            )
+        };
+        let pawns = self.pieces(Piece::new(us, PieceKind::Pawn));
+        let pawns_on_home = starting_rank & pawns;
+        for from in pawns_on_home {
+            if BitBoard::FILES[from.file() as usize] & needs_empty & occupied == BitBoard::EMPTY {
+                moves.push(Move::new(
+                    from,
+                    from.offset(delta * 2).unwrap(),
+                    MoveKind::DoublePush,
+                ));
+            }
+        }
+
+        let single_move = if white_to_move {
+            pawns << 8
+        } else {
+            pawns >> 8
+        } & !occupied;
+        for to in single_move {
+            let from = to.offset(-delta).unwrap();
+            Self::add_pawn_moves(from, to, moves);
+        }
+
+        for from in pawns {
+            for to in PAWN_ATTACKS[us][from] & their_pieces {
+                Self::add_pawn_moves(from, to, moves);
+            }
+        }
+
+        if let Some(to) = self.en_passant() {
+            for from in PAWN_ATTACKS[them][to] & pawns {
+                moves.push(Move::new(from, to, MoveKind::EnPassant))
+            }
+        }
+    }
+
+    fn add_pawn_moves(from: Square, to: Square, moves: &mut Vec<Move>) {
+        let possible_promotions = [
+            PieceKind::Knight,
+            PieceKind::Bishop,
+            PieceKind::Rook,
+            PieceKind::Queen,
+        ];
+        if to.rank() == 0 || to.rank() == 7 {
+            for kind in possible_promotions {
+                moves.push(Move::new(from, to, MoveKind::Promotion(kind)));
+            }
+        } else {
+            moves.push(Move::new(from, to, MoveKind::Normal));
+        }
     }
 }
 
@@ -92,8 +157,7 @@ mod tests {
     use super::*;
     use Square as S;
 
-    // the four positions also have pawns, so these only become perft
-    // references once pawn moves are generated
+    // the perft reference positions, plus kiwipete with black to move
     const POSITIONS: [&str; 5] = [
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
         "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -122,6 +186,10 @@ mod tests {
         names
     }
 
+    fn expected(names: &[&str]) -> Vec<String> {
+        sorted(names.iter().map(|s| s.to_string()).collect())
+    }
+
     /// destination of every move starting on `from`
     fn targets_from(fen: &str, from: Square) -> Vec<String> {
         let (_, moves) = generate(fen);
@@ -135,10 +203,41 @@ mod tests {
     }
 
     fn assert_targets(cases: &[(&str, Square, &[&str])]) {
-        for &(fen, from, expected) in cases {
-            let expected = sorted(expected.iter().map(|s| s.to_string()).collect());
-            assert_eq!(targets_from(fen, from), expected, "{fen} from {from}");
+        for &(fen, from, names) in cases {
+            assert_eq!(
+                targets_from(fen, from),
+                expected(names),
+                "{fen} from {from}"
+            );
         }
+    }
+
+    /// every move starting on `from`, in UCI, so promotions show the piece
+    fn uci_from(fen: &str, from: Square) -> Vec<String> {
+        let (_, moves) = generate(fen);
+        sorted(
+            moves
+                .iter()
+                .filter(|mv| mv.from() == from)
+                .map(|mv| mv.to_uci())
+                .collect(),
+        )
+    }
+
+    fn assert_uci_from(cases: &[(&str, Square, &[&str])]) {
+        for &(fen, from, names) in cases {
+            assert_eq!(uci_from(fen, from), expected(names), "{fen} from {from}");
+        }
+    }
+
+    /// kind of the generated move written as `uci`
+    fn kind_of(fen: &str, uci: &str) -> MoveKind {
+        let (_, moves) = generate(fen);
+        moves
+            .iter()
+            .find(|mv| mv.to_uci() == uci)
+            .unwrap_or_else(|| panic!("{fen}: {uci} was not generated"))
+            .kind()
     }
 
     #[test]
@@ -221,15 +320,118 @@ mod tests {
             ("r3k2r/8/8/8/8/8/b7/R3K2R w KQkq - 0 1", &["e1c1", "e1g1"]),
             ("r3k2r/B7/8/8/8/8/8/R3K2R b KQkq - 0 1", &["e8c8", "e8g8"]),
         ];
-        for (fen, expected) in cases {
+        for (fen, names) in cases {
             let (_, moves) = generate(fen);
             let castles = moves
                 .iter()
                 .filter(|mv| mv.kind() == MoveKind::Castle)
                 .map(|mv| mv.to_uci())
                 .collect();
-            let expected = sorted(expected.iter().map(|s| s.to_string()).collect());
-            assert_eq!(sorted(castles), expected, "{fen}");
+            assert_eq!(sorted(castles), expected(names), "{fen}");
+        }
+    }
+
+    #[test]
+    fn pawn_pushes() {
+        #[rustfmt::skip]
+        assert_uci_from(&[
+            ("7k/8/8/8/8/8/4P3/K7 w - - 0 1", S::E2, &["e2e3", "e2e4"]),
+            ("7k/8/8/8/8/4P3/8/K7 w - - 0 1", S::E3, &["e3e4"]), // double push only from the start
+            ("7k/4p3/8/8/8/8/8/K7 b - - 0 1", S::E7, &["e7e6", "e7e5"]),
+            ("7k/8/4p3/8/8/8/8/K7 b - - 0 1", S::E6, &["e6e5"]),
+            ("7k/8/8/8/8/8/P7/4K3 w - - 0 1", S::A2, &["a2a3", "a2a4"]),
+            ("7k/8/8/8/8/8/7P/K7 w - - 0 1",  S::H2, &["h2h3", "h2h4"]),
+            // a piece of either color right in front blocks both pushes
+            ("7k/8/8/8/8/4n3/4P3/K7 w - - 0 1", S::E2, &[]),
+            ("7k/8/8/8/8/4N3/4P3/K7 w - - 0 1", S::E2, &[]),
+            ("7k/4p3/4N3/8/8/8/8/K7 b - - 0 1", S::E7, &[]),
+            // two squares ahead it only blocks the double push
+            ("7k/8/8/8/4n3/8/4P3/K7 w - - 0 1", S::E2, &["e2e3"]),
+            ("7k/4p3/8/4N3/8/8/8/K7 b - - 0 1", S::E7, &["e7e6"]),
+        ]);
+        let white = "7k/8/8/8/8/8/4P3/K7 w - - 0 1";
+        assert_eq!(kind_of(white, "e2e3"), MoveKind::Normal);
+        assert_eq!(kind_of(white, "e2e4"), MoveKind::DoublePush);
+        assert_eq!(
+            kind_of("7k/4p3/8/8/8/8/8/K7 b - - 0 1", "e7e5"),
+            MoveKind::DoublePush
+        );
+    }
+
+    #[test]
+    fn pawn_captures() {
+        #[rustfmt::skip]
+        assert_uci_from(&[
+            ("7k/8/8/8/8/3n1n2/4P3/K7 w - - 0 1", S::E2, &["e2d3", "e2e3", "e2e4", "e2f3"]),
+            ("7k/4p3/3N1N2/8/8/8/8/K7 b - - 0 1", S::E7, &["e7d6", "e7e5", "e7e6", "e7f6"]),
+            // never its own pieces
+            ("7k/8/8/8/8/3N1N2/4P3/K7 w - - 0 1", S::E2, &["e2e3", "e2e4"]),
+            // only forward
+            ("7k/8/8/8/8/8/4P3/K2n1n2 w - - 0 1", S::E2, &["e2e3", "e2e4"]),
+            // no wrapping around the edge of the board
+            ("7k/8/8/8/8/1n5n/P7/4K3 w - - 0 1", S::A2, &["a2a3", "a2a4", "a2b3"]),
+            ("7k/8/8/8/8/n5n1/7P/4K3 w - - 0 1", S::H2, &["h2g3", "h2h3", "h2h4"]),
+        ]);
+        assert_eq!(
+            kind_of("7k/8/8/8/8/3n1n2/4P3/K7 w - - 0 1", "e2d3"),
+            MoveKind::Normal
+        );
+    }
+
+    #[test]
+    fn pawn_promotions() {
+        #[rustfmt::skip]
+        assert_uci_from(&[
+            ("7k/4P3/8/8/8/8/8/K7 w - - 0 1", S::E7, &["e7e8q", "e7e8r", "e7e8b", "e7e8n"]),
+            // capturing onto the last rank promotes too
+            ("3r3k/4P3/8/8/8/8/8/K7 w - - 0 1", S::E7, &[
+                "e7e8q", "e7e8r", "e7e8b", "e7e8n",
+                "e7d8q", "e7d8r", "e7d8b", "e7d8n",
+            ]),
+            ("7k/8/8/8/8/8/3p4/K3R3 b - - 0 1", S::D2, &[
+                "d2d1q", "d2d1r", "d2d1b", "d2d1n",
+                "d2e1q", "d2e1r", "d2e1b", "d2e1n",
+            ]),
+            // blocked, and nothing to capture
+            ("4r2k/4P3/8/8/8/8/8/K7 w - - 0 1", S::E7, &[]),
+        ]);
+        assert_eq!(
+            kind_of("7k/4P3/8/8/8/8/8/K7 w - - 0 1", "e7e8n"),
+            MoveKind::Promotion(PieceKind::Knight)
+        );
+    }
+
+    #[test]
+    fn en_passant() {
+        #[rustfmt::skip]
+        let cases: [(&str, &[&str]); 5] = [
+            ("7k/8/8/3pP3/8/8/8/K7 w - d6 0 1",  &["e5d6"]),
+            ("7k/8/8/2PpP3/8/8/8/K7 w - d6 0 1", &["c5d6", "e5d6"]), // from both sides
+            ("7k/8/8/8/3pP3/8/8/K7 b - e3 0 1",  &["d4e3"]),
+            ("7k/8/8/3pP3/8/8/8/K7 w - - 0 1",   &[]), // the last move wasn't d7-d5
+            ("7k/8/8/3p2P1/8/8/8/K7 w - d6 0 1", &[]), // no pawn beside d5
+        ];
+        for (fen, names) in cases {
+            let (_, moves) = generate(fen);
+            let captures = moves
+                .iter()
+                .filter(|mv| mv.kind() == MoveKind::EnPassant)
+                .map(|mv| mv.to_uci())
+                .collect();
+            assert_eq!(sorted(captures), expected(names), "{fen}");
+        }
+
+        // the capturing pawn can still push, and d6 isn't also generated as a normal move
+        assert_uci_from(&[("7k/8/8/3pP3/8/8/8/K7 w - d6 0 1", S::E5, &["e5d6", "e5e6"])]);
+    }
+
+    /// pseudo-legal: in the third position b5b6 is pinned and Kb6 is attacked by
+    /// c7, so after the legality filter these become perft(1) = 20, 48 and 14
+    #[test]
+    fn pseudo_legal_move_counts() {
+        let cases = [(POSITIONS[0], 20), (POSITIONS[1], 48), (POSITIONS[3], 16)];
+        for (fen, count) in cases {
+            assert_eq!(generate(fen).1.len(), count, "{fen}");
         }
     }
 

@@ -33,6 +33,22 @@ impl Delta {
     }
 }
 
+impl ops::Mul<i8> for Delta {
+    type Output = Delta;
+
+    fn mul(self, rhs: i8) -> Self::Output {
+        Self::new(self.file * rhs, self.rank * rhs)
+    }
+}
+
+impl ops::Neg for Delta {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self::new(-self.file, -self.rank)
+    }
+}
+
 impl Square {
     pub const A1: Self = Self(0);
     pub const B1: Self = Self(1);

@@ -108,6 +108,22 @@ impl ops::BitOrAssign for BitBoard {
     }
 }
 
+impl ops::Shl<u8> for BitBoard {
+    type Output = Self;
+
+    fn shl(self, rhs: u8) -> Self::Output {
+        Self(self.0 << rhs)
+    }
+}
+
+impl ops::Shr<u8> for BitBoard {
+    type Output = Self;
+
+    fn shr(self, rhs: u8) -> Self::Output {
+        Self(self.0 >> rhs)
+    }
+}
+
 impl ops::Not for BitBoard {
     type Output = Self;
 
