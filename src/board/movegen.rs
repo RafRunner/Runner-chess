@@ -5,7 +5,7 @@ use crate::{
     bitboard::BitBoard,
     board::Board,
     castling::CastlingRights,
-    chess_move::{Move, MoveKind},
+    chess_move::{Move, MoveKind, PromotionPiece},
     piece::{Color, Piece, PieceKind},
     square::{Delta, Square},
 };
@@ -33,7 +33,15 @@ impl Board {
             for from in self.pieces(piece) {
                 let targets = attacks(piece, from, occupied) & !our_pieces;
                 for to in targets {
-                    moves.push(Move::new(from, to, MoveKind::Normal));
+                    moves.push(Move::new(
+                        from,
+                        to,
+                        if self.piece_at(to).is_some() {
+                            MoveKind::Capture
+                        } else {
+                            MoveKind::Normal
+                        },
+                    ));
                 }
             }
         }
@@ -117,12 +125,12 @@ impl Board {
         } & !occupied;
         for to in single_move {
             let from = to.offset(-delta).unwrap();
-            Self::add_pawn_moves(from, to, moves);
+            self.add_pawn_moves(from, to, moves);
         }
 
         for from in pawns {
             for to in PAWN_ATTACKS[us][from] & their_pieces {
-                Self::add_pawn_moves(from, to, moves);
+                self.add_pawn_moves(from, to, moves);
             }
         }
 
@@ -133,19 +141,30 @@ impl Board {
         }
     }
 
-    fn add_pawn_moves(from: Square, to: Square, moves: &mut Vec<Move>) {
-        let possible_promotions = [
-            PieceKind::Knight,
-            PieceKind::Bishop,
-            PieceKind::Rook,
-            PieceKind::Queen,
-        ];
+    fn add_pawn_moves(&self, from: Square, to: Square, moves: &mut Vec<Move>) {
+        let is_capture = self.piece_at(to).is_some();
         if to.rank() == 0 || to.rank() == 7 {
-            for kind in possible_promotions {
-                moves.push(Move::new(from, to, MoveKind::Promotion(kind)));
+            for kind in PromotionPiece::ALL {
+                moves.push(Move::new(
+                    from,
+                    to,
+                    if is_capture {
+                        MoveKind::PromotionCapture(kind)
+                    } else {
+                        MoveKind::Promotion(kind)
+                    },
+                ));
             }
         } else {
-            moves.push(Move::new(from, to, MoveKind::Normal));
+            moves.push(Move::new(
+                from,
+                to,
+                if is_capture {
+                    MoveKind::Capture
+                } else {
+                    MoveKind::Normal
+                },
+            ));
         }
     }
 }
@@ -363,7 +382,7 @@ mod tests {
         ]);
         assert_eq!(
             kind_of("7k/8/8/8/8/3n1n2/4P3/K7 w - - 0 1", "e2d3"),
-            MoveKind::Normal
+            MoveKind::Capture
         );
     }
 
@@ -386,7 +405,7 @@ mod tests {
         ]);
         assert_eq!(
             kind_of("7k/4P3/8/8/8/8/8/K7 w - - 0 1", "e7e8n"),
-            MoveKind::Promotion(PieceKind::Knight)
+            MoveKind::Promotion(PromotionPiece::Knight)
         );
     }
 

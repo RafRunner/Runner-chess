@@ -8,7 +8,6 @@ use crate::{
     attacks::{bishop_attacks, rook_attacks, KING_ATTACKS, KNIGHT_ATTACKS, PAWN_ATTACKS},
     bitboard::BitBoard,
     castling::CastlingRights,
-    chess_move::{Move, MoveKind},
     piece::{Color, Piece, PieceKind},
     square::{Delta, Square},
 };
@@ -227,11 +226,6 @@ impl Board {
 
     pub fn all_pieces_bb(&self) -> BitBoard {
         self.by_color[Color::White] | self.by_color[Color::Black]
-    }
-
-    /// Needs to be called on the board BEFORE the move is made
-    pub fn is_capture(&self, mv: Move) -> bool {
-        self.mailbox[mv.to()].is_some() || mv.kind() == MoveKind::EnPassant
     }
 
     pub fn attackers_by(&self, sq: Square, by: Color) -> BitBoard {

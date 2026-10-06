@@ -3,48 +3,130 @@ use std::fmt::Display;
 use crate::{piece::PieceKind, square::Square};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MoveKind {
-    Normal,
-    DoublePush,
-    EnPassant,
-    Castle,
-    Promotion(PieceKind),
+#[repr(u8)]
+pub enum PromotionPiece {
+    Knight = 0,
+    Bishop,
+    Rook,
+    Queen,
+}
+
+impl PromotionPiece {
+    pub const ALL: [PromotionPiece; 4] = [Self::Knight, Self::Bishop, Self::Rook, Self::Queen];
+
+    pub fn to_piece_kind(self) -> PieceKind {
+        match self {
+            PromotionPiece::Knight => PieceKind::Knight,
+            PromotionPiece::Bishop => PieceKind::Bishop,
+            PromotionPiece::Rook => PieceKind::Rook,
+            PromotionPiece::Queen => PieceKind::Queen,
+        }
+    }
+
+    pub fn to_char(self) -> char {
+        self.to_piece_kind().to_char()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Move {
-    from: Square,
-    to: Square,
-    kind: MoveKind,
+pub enum MoveKind {
+    Normal,
+    Capture,
+    DoublePush,
+    EnPassant,
+    Castle,
+    Promotion(PromotionPiece),
+    PromotionCapture(PromotionPiece),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Move(u16);
+
 impl Move {
-    pub fn new(from: Square, to: Square, kind: MoveKind) -> Self {
-        Self { from, to, kind }
+    const MOVE_MASK: u16 = 0b11_1111;
+    const TO_SHIFT: u16 = 6;
+    const FLAG_SHIFT: u16 = 12;
+
+    const NORMAL: u16 = 0b0000;
+    const DOUBLE_PUSH: u16 = 0b0001;
+    const CASTLE: u16 = 0b0010;
+    const CAPTURE: u16 = 0b0100;
+    const EN_PASSANT: u16 = 0b0101;
+    const PROMOTION: u16 = 0b1000;
+    const PROMOTION_CAPTURE: u16 = Self::PROMOTION | Self::CAPTURE;
+
+    pub const fn new(from: Square, to: Square, kind: MoveKind) -> Self {
+        let mut raw = from.index() as u16;
+        raw |= (to.index() as u16) << Self::TO_SHIFT;
+
+        let flags = match kind {
+            MoveKind::Normal => Self::NORMAL,
+            MoveKind::Capture => Self::CAPTURE,
+            MoveKind::DoublePush => Self::DOUBLE_PUSH,
+            MoveKind::EnPassant => Self::EN_PASSANT,
+            MoveKind::Castle => Self::CASTLE,
+            MoveKind::Promotion(piece) => Self::PROMOTION | piece as u16,
+            MoveKind::PromotionCapture(piece) => Self::PROMOTION_CAPTURE | piece as u16,
+        };
+
+        raw |= flags << Self::FLAG_SHIFT;
+
+        Self(raw)
     }
 
-    pub fn from(&self) -> Square {
-        self.from
+    pub const fn from(self) -> Square {
+        Square::new((self.0 & Self::MOVE_MASK) as u8)
     }
 
-    pub fn to(&self) -> Square {
-        self.to
+    pub const fn to(self) -> Square {
+        let to = self.0 & (Self::MOVE_MASK << Self::TO_SHIFT);
+        Square::new((to >> Self::TO_SHIFT) as u8)
     }
 
-    pub fn kind(&self) -> MoveKind {
-        self.kind
+    pub const fn kind(self) -> MoveKind {
+        let flags = self.flags();
+
+        if flags & Self::PROMOTION == Self::PROMOTION {
+            let piece = PromotionPiece::ALL[(flags & 0b11) as usize];
+
+            return if flags & Self::PROMOTION_CAPTURE == Self::PROMOTION_CAPTURE {
+                MoveKind::PromotionCapture(piece)
+            } else {
+                MoveKind::Promotion(piece)
+            };
+        }
+
+        match flags {
+            Self::NORMAL => MoveKind::Normal,
+            Self::DOUBLE_PUSH => MoveKind::DoublePush,
+            Self::CASTLE => MoveKind::Castle,
+            Self::CAPTURE => MoveKind::Capture,
+            Self::EN_PASSANT => MoveKind::EnPassant,
+            _ => panic!("invalid move flag"),
+        }
+    }
+
+    pub const fn is_capture(self) -> bool {
+        self.flags() & Self::CAPTURE == Self::CAPTURE
     }
 
     pub fn to_uci(&self) -> String {
-        let mut buffer = String::new();
-        buffer.push_str(&self.from.to_algebraic());
-        buffer.push_str(&self.to.to_algebraic());
+        let piece =
+            if let MoveKind::Promotion(piece) | MoveKind::PromotionCapture(piece) = self.kind() {
+                &piece.to_char().to_string()
+            } else {
+                ""
+            };
+        format!(
+            "{}{}{}",
+            self.from().to_algebraic(),
+            self.to().to_algebraic(),
+            piece
+        )
+    }
 
-        if let MoveKind::Promotion(kind) = self.kind {
-            buffer.push(kind.to_char());
-        }
-
-        buffer
+    const fn flags(self) -> u16 {
+        self.0 >> Self::FLAG_SHIFT
     }
 }
 

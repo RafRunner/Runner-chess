@@ -20,10 +20,21 @@ impl Board {
         let piece = self.piece_at(from).expect("No piece in 'from' square");
         let target = self.piece_at(to);
 
+        let delta = if white_to_move {
+            Delta::SOUTH
+        } else {
+            Delta::NORTH
+        };
+
         match mv.kind() {
-            MoveKind::Normal => {
+            MoveKind::Normal | MoveKind::Capture => {
                 next.move_piece(piece, from, to, None);
 
+                debug_assert_eq!(
+                    target.is_some(),
+                    mv.is_capture(),
+                    "{mv}: capture flag doesn't match the board"
+                );
                 if let Some(captured) = target {
                     next.pieces[captured] &= !to.bb();
                 }
@@ -31,25 +42,14 @@ impl Board {
             MoveKind::DoublePush => {
                 next.move_piece(piece, from, to, None);
 
-                let delta = if white_to_move {
-                    Delta::SOUTH
-                } else {
-                    Delta::NORTH
-                };
-
                 next.en_passant = Some(
                     to.offset(delta)
-                        .expect("Double Push: unexpected 'from' Square"),
+                        .expect("Double Push: unexpected 'to' Square"),
                 )
             }
             MoveKind::EnPassant => {
                 next.move_piece(piece, from, to, None);
 
-                let delta = if white_to_move {
-                    Delta::SOUTH
-                } else {
-                    Delta::NORTH
-                };
                 let captured = to
                     .offset(delta)
                     .expect("En Passant: unexpected 'to' Square");
@@ -76,11 +76,16 @@ impl Board {
 
                 next.move_piece(Piece::new(us, PieceKind::Rook), rook_from, rook_to, None);
             }
-            MoveKind::Promotion(piece_kind) => {
-                let new_piece = Some(Piece::new(us, piece_kind));
+            MoveKind::Promotion(kind) | MoveKind::PromotionCapture(kind) => {
+                let new_piece = Some(Piece::new(us, kind.to_piece_kind()));
 
                 next.move_piece(piece, from, to, new_piece);
 
+                debug_assert_eq!(
+                    target.is_some(),
+                    mv.is_capture(),
+                    "{mv}: capture flag doesn't match the board"
+                );
                 if let Some(captured) = target {
                     next.pieces[captured] &= !to.bb();
                 }
@@ -98,7 +103,7 @@ impl Board {
         next.side_to_move = them;
 
         // Clocks
-        if piece.kind() == PieceKind::Pawn || self.is_capture(mv) {
+        if piece.kind() == PieceKind::Pawn || mv.is_capture() {
             next.halfmove_clock = 0;
         } else {
             next.halfmove_clock += 1;
