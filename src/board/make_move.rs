@@ -8,11 +8,12 @@ use crate::{
 
 impl Board {
     pub fn make_move(&self, mv: Move) -> Self {
-        let mut after_move = self.clone();
-        after_move.en_passant = None;
+        let mut next = self.clone();
+        next.en_passant = None;
 
         let us = self.side_to_move;
         let them = us.oposite();
+        let white_to_move = us == Color::White;
 
         let from = mv.from();
         let to = mv.to();
@@ -21,43 +22,44 @@ impl Board {
 
         match mv.kind() {
             MoveKind::Normal => {
-                after_move.move_piece(piece, from, to, None);
+                next.move_piece(piece, from, to, None);
 
                 if let Some(captured) = target {
-                    after_move.pieces[captured] &= !to.bb();
+                    next.pieces[captured] &= !to.bb();
                 }
             }
-
             MoveKind::DoublePush => {
-                after_move.move_piece(piece, from, to, None);
+                next.move_piece(piece, from, to, None);
 
-                let delta = if us == Color::White {
-                    Delta::NORTH
-                } else {
+                let delta = if white_to_move {
                     Delta::SOUTH
+                } else {
+                    Delta::NORTH
                 };
 
-                after_move.en_passant = Some(
-                    from.offset(delta)
-                        .expect("Double Push: unexpected from Square"),
+                next.en_passant = Some(
+                    to.offset(delta)
+                        .expect("Double Push: unexpected 'from' Square"),
                 )
             }
             MoveKind::EnPassant => {
-                after_move.move_piece(piece, from, to, None);
+                next.move_piece(piece, from, to, None);
 
-                let delta = if us == Color::White {
+                let delta = if white_to_move {
                     Delta::SOUTH
                 } else {
                     Delta::NORTH
                 };
-                let captured = to.offset(delta).expect("En Passant: unexpected to Square");
+                let captured = to
+                    .offset(delta)
+                    .expect("En Passant: unexpected 'to' Square");
 
-                after_move.pieces[Piece::new(them, PieceKind::Pawn)] &= !captured.bb();
-                after_move.mailbox[captured] = None;
+                next.pieces[Piece::new(them, PieceKind::Pawn)] &= !captured.bb();
+                next.mailbox[captured] = None;
             }
             MoveKind::Castle => {
                 // move the king
-                after_move.move_piece(piece, from, to, None);
+                next.move_piece(piece, from, to, None);
 
                 // and the rook
                 let (rook_from, rook_to) = if to == Square::G1 {
@@ -72,31 +74,42 @@ impl Board {
                     panic!("Castling: unexpected to square")
                 };
 
-                after_move.move_piece(Piece::new(us, PieceKind::Rook), rook_from, rook_to, None);
+                next.move_piece(Piece::new(us, PieceKind::Rook), rook_from, rook_to, None);
             }
             MoveKind::Promotion(piece_kind) => {
                 let new_piece = Some(Piece::new(us, piece_kind));
 
-                after_move.move_piece(piece, from, to, new_piece);
+                next.move_piece(piece, from, to, new_piece);
 
                 if let Some(captured) = target {
-                    after_move.pieces[captured] &= !to.bb();
+                    next.pieces[captured] &= !to.bb();
                 }
             }
         }
 
-        after_move.by_color = [BitBoard::EMPTY; 2];
+        // Housekeeping
+        next.by_color = [BitBoard::EMPTY; 2];
 
         for piece in Piece::ALL {
-            after_move.by_color[piece.color()] |= after_move.pieces[piece];
+            next.by_color[piece.color()] |= next.pieces[piece];
         }
 
-        after_move.castling = self.castling.update_move(mv);
-        after_move.side_to_move = them;
+        next.castling = self.castling.update_move(mv);
+        next.side_to_move = them;
 
-        debug_assert!(after_move.sanity_check().is_ok());
+        // Clocks
+        if piece.kind() == PieceKind::Pawn || self.is_capture(mv) {
+            next.halfmove_clock = 0;
+        } else {
+            next.halfmove_clock += 1;
+        }
+        if !white_to_move {
+            next.fullmove_counter += 1;
+        }
 
-        after_move
+        debug_assert_eq!(next.check_invariants(), Ok(()));
+
+        next
     }
 
     fn move_piece(&mut self, piece: Piece, from: Square, to: Square, new_piece: Option<Piece>) {
@@ -112,298 +125,177 @@ impl Board {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::board::{
+        test_utils::{board, find_move},
+        Board,
+    };
 
-    const STARTPOS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-    const CASTLE_POS_W: &str = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
-    const CASTLE_POS_B: &str = "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1";
+    const CASTLING_WHITE: &str = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
+    const CASTLING_BLACK: &str = "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1";
 
-    // ---------- helpers ----------
-
-    fn board(fen: &str) -> Board {
-        Board::from_fen(fen).unwrap_or_else(|_| panic!("FEN inválido no teste: {fen}"))
+    /// plays `uci` on `fen` and compares the whole resulting FEN, clocks included
+    fn check(fen: &str, uci: &str, expected: &str) {
+        let before = board(fen);
+        let after = before.make_move(find_move(&before, uci));
+        // make_move's debug_assert does this too, but not in release builds
+        assert_eq!(after.check_invariants(), Ok(()), "{fen} {uci}");
+        assert_eq!(after.to_fen(), expected, "{fen} {uci}");
     }
-
-    fn mv(from: Square, to: Square, kind: MoveKind) -> Move {
-        Move::new(from, to, kind)
-    }
-
-    /// Compara tudo que o Board guarda, campo a campo, para a falha dizer o que quebrou.
-    fn assert_same_position(actual: &Board, expected: &Board) {
-        for sq in BitBoard::FULL {
-            assert_eq!(
-                actual.mailbox[sq], expected.mailbox[sq],
-                "mailbox em {sq:?}"
-            );
-        }
-        for p in Piece::ALL {
-            assert_eq!(actual.pieces[p], expected.pieces[p], "bitboard de {p:?}");
-        }
-        assert_eq!(actual.side_to_move, expected.side_to_move, "side_to_move");
-        assert_eq!(actual.castling, expected.castling, "direitos de roque");
-        assert_eq!(actual.en_passant, expected.en_passant, "casa de en passant");
-        // quando adicionar halfmove/fullmove, compare aqui também
-    }
-
-    fn check(fen: &str, m: Move, expected_fen: &str) {
-        let after = board(fen).make_move(m);
-        assert!(after.sanity_check().is_ok());
-        assert_same_position(&after, &board(expected_fen));
-    }
-
-    // ---------- lances normais ----------
 
     #[test]
-    fn quiet_knight_move() {
+    fn quiet_moves() {
         check(
-            STARTPOS,
-            mv(Square::G1, Square::F3, MoveKind::Normal),
+            Board::STARTPOS,
+            "g1f3",
             "rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R b KQkq - 1 1",
         );
-    }
-
-    #[test]
-    fn single_pawn_push() {
         check(
-            STARTPOS,
-            mv(Square::E2, Square::E3, MoveKind::Normal),
+            Board::STARTPOS,
+            "e2e3",
             "rnbqkbnr/pppppppp/8/8/8/4P3/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
         );
     }
 
     #[test]
-    fn white_pawn_capture() {
+    fn captures() {
         check(
             "4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1",
-            mv(Square::E4, Square::D5, MoveKind::Normal),
+            "e4d5",
             "4k3/8/8/3P4/8/8/8/4K3 b - - 0 1",
         );
-    }
-
-    #[test]
-    fn black_pawn_capture() {
         check(
             "4k3/8/8/3p4/4P3/8/8/4K3 b - - 0 1",
-            mv(Square::D5, Square::E4, MoveKind::Normal),
+            "d5e4",
             "4k3/8/8/8/4p3/8/8/4K3 w - - 0 2",
         );
-    }
-
-    #[test]
-    fn knight_captures_queen() {
         check(
             "4k3/8/8/3q4/8/4N3/8/4K3 w - - 0 1",
-            mv(Square::E3, Square::D5, MoveKind::Normal),
+            "e3d5",
             "4k3/8/8/3N4/8/8/8/4K3 b - - 0 1",
         );
     }
 
-    // ---------- avanço duplo / en passant ----------
-
     #[test]
-    fn white_double_push_sets_ep() {
+    fn double_push_sets_en_passant() {
         check(
-            STARTPOS,
-            mv(Square::E2, Square::E4, MoveKind::DoublePush),
+            Board::STARTPOS,
+            "e2e4",
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
         );
-    }
-
-    #[test]
-    fn black_double_push_sets_ep() {
         check(
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
-            mv(Square::D7, Square::D5, MoveKind::DoublePush),
+            "d7d5",
             "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2",
         );
     }
 
     #[test]
-    fn ep_square_cleared_after_other_move() {
+    fn any_other_move_clears_en_passant() {
         check(
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
-            mv(Square::G8, Square::F6, MoveKind::Normal),
+            "g8f6",
             "rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2",
         );
     }
 
+    /// the captured pawn is beside the capturing one, not on the target square
     #[test]
-    fn white_en_passant() {
+    fn en_passant_removes_the_pawn_behind() {
         check(
             "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
-            mv(Square::E5, Square::D6, MoveKind::EnPassant),
+            "e5d6",
             "4k3/8/3P4/8/8/8/8/4K3 b - - 0 1",
         );
-    }
-
-    #[test]
-    fn black_en_passant() {
         check(
             "4k3/8/8/8/3Pp3/8/8/4K3 b - d3 0 1",
-            mv(Square::E4, Square::D3, MoveKind::EnPassant),
+            "e4d3",
             "4k3/8/8/8/8/3p4/8/4K3 w - - 0 2",
         );
     }
 
-    // ---------- roque ----------
-
     #[test]
-    fn white_castle_kingside() {
-        check(
-            CASTLE_POS_W,
-            mv(Square::E1, Square::G1, MoveKind::Castle),
-            "r3k2r/8/8/8/8/8/8/R4RK1 b kq - 1 1",
-        );
-    }
-
-    #[test]
-    fn white_castle_queenside() {
-        check(
-            CASTLE_POS_W,
-            mv(Square::E1, Square::C1, MoveKind::Castle),
-            "r3k2r/8/8/8/8/8/8/2KR3R b kq - 1 1",
-        );
-    }
-
-    #[test]
-    fn black_castle_kingside() {
-        check(
-            CASTLE_POS_B,
-            mv(Square::E8, Square::G8, MoveKind::Castle),
-            "r4rk1/8/8/8/8/8/8/R3K2R w KQ - 1 2",
-        );
-    }
-
-    #[test]
-    fn black_castle_queenside() {
-        check(
-            CASTLE_POS_B,
-            mv(Square::E8, Square::C8, MoveKind::Castle),
-            "2kr3r/8/8/8/8/8/8/R3K2R w KQ - 1 2",
-        );
-    }
-
-    // ---------- direitos de roque ----------
-
-    #[test]
-    fn king_move_removes_both_rights() {
-        check(
-            CASTLE_POS_W,
-            mv(Square::E1, Square::F1, MoveKind::Normal),
-            "r3k2r/8/8/8/8/8/8/R4K1R b kq - 1 1",
-        );
-    }
-
-    #[test]
-    fn rook_move_removes_one_right() {
-        check(
-            CASTLE_POS_W,
-            mv(Square::A1, Square::B1, MoveKind::Normal),
-            "r3k2r/8/8/8/8/8/8/1R2K2R b Kkq - 1 1",
-        );
-    }
-
-    #[test]
-    fn capturing_rook_removes_both_sides_rights() {
-        // Th1xh8: branco perde K (torre saiu), preto perde k (torre capturada)
-        check(
-            CASTLE_POS_W,
-            mv(Square::H1, Square::H8, MoveKind::Normal),
-            "r3k2R/8/8/8/8/8/8/R3K3 b Qq - 0 1",
-        );
-    }
-
-    #[test]
-    fn black_capturing_rook_removes_rights() {
-        check(
-            CASTLE_POS_B,
-            mv(Square::A8, Square::A1, MoveKind::Normal),
-            "4k2r/8/8/8/8/8/8/r3K2R w Kk - 0 2",
-        );
-    }
-
-    // ---------- promoção ----------
-
-    #[test]
-    fn white_quiet_promotion_all_kinds() {
-        for (kind, ch) in [
-            (PieceKind::Queen, 'Q'),
-            (PieceKind::Rook, 'R'),
-            (PieceKind::Bishop, 'B'),
-            (PieceKind::Knight, 'N'),
-        ] {
-            check(
-                "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
-                mv(Square::A7, Square::A8, MoveKind::Promotion(kind)),
-                &format!("{ch}3k3/8/8/8/8/8/8/4K3 b - - 0 1"),
-            );
+    fn castling_moves_the_rook_too() {
+        #[rustfmt::skip]
+        let cases = [
+            (CASTLING_WHITE, "e1g1", "r3k2r/8/8/8/8/8/8/R4RK1 b kq - 1 1"),
+            (CASTLING_WHITE, "e1c1", "r3k2r/8/8/8/8/8/8/2KR3R b kq - 1 1"),
+            (CASTLING_BLACK, "e8g8", "r4rk1/8/8/8/8/8/8/R3K2R w KQ - 1 2"),
+            (CASTLING_BLACK, "e8c8", "2kr3r/8/8/8/8/8/8/R3K2R w KQ - 1 2"),
+        ];
+        for (fen, uci, expected) in cases {
+            check(fen, uci, expected);
         }
     }
 
     #[test]
-    fn white_capture_promotion() {
+    fn castling_rights_follow_king_and_rooks() {
+        #[rustfmt::skip]
+        let cases = [
+            (CASTLING_WHITE, "e1f1", "r3k2r/8/8/8/8/8/8/R4K1R b kq - 1 1"), // king moves
+            (CASTLING_WHITE, "a1b1", "r3k2r/8/8/8/8/8/8/1R2K2R b Kkq - 1 1"), // one rook moves
+            // a rook capturing a rook: one side loses it by moving, the other by capture
+            (CASTLING_WHITE, "h1h8", "r3k2R/8/8/8/8/8/8/R3K3 b Qq - 0 1"),
+            (CASTLING_BLACK, "a8a1", "4k2r/8/8/8/8/8/8/r3K2R w Kk - 0 2"),
+        ];
+        for (fen, uci, expected) in cases {
+            check(fen, uci, expected);
+        }
+    }
+
+    #[test]
+    fn promotions() {
+        for letter in ['q', 'r', 'b', 'n'] {
+            let piece = letter.to_ascii_uppercase();
+            check(
+                "4k3/P7/8/8/8/8/8/4K3 w - - 0 1",
+                &format!("a7a8{letter}"),
+                &format!("{piece}3k3/8/8/8/8/8/8/4K3 b - - 0 1"),
+            );
+        }
+        // capturing
         check(
             "1r2k3/P7/8/8/8/8/8/4K3 w - - 0 1",
-            mv(
-                Square::A7,
-                Square::B8,
-                MoveKind::Promotion(PieceKind::Knight),
-            ),
+            "a7b8n",
             "1N2k3/8/8/8/8/8/8/4K3 b - - 0 1",
         );
-    }
-
-    #[test]
-    fn black_capture_promotion() {
         check(
             "4k3/8/8/8/8/8/p7/1R2K3 b - - 0 1",
-            mv(
-                Square::A2,
-                Square::B1,
-                MoveKind::Promotion(PieceKind::Queen),
-            ),
+            "a2b1q",
             "4k3/8/8/8/8/8/8/1q2K3 w - - 0 2",
         );
-    }
-
-    #[test]
-    fn capture_promotion_on_rook_corner_removes_right() {
+        // capturing the h1 rook also takes away its castling right
         check(
             "4k3/8/8/8/8/8/6p1/4K2R b K - 0 1",
-            mv(
-                Square::G2,
-                Square::H1,
-                MoveKind::Promotion(PieceKind::Queen),
-            ),
+            "g2h1q",
             "4k3/8/8/8/8/8/8/4K2q w - - 0 2",
         );
     }
 
-    // ---------- sequência ----------
+    #[test]
+    fn clocks() {
+        #[rustfmt::skip]
+        let cases = [
+            // pawn moves and captures reset the halfmove clock, anything else counts up
+            ("4k3/8/8/8/8/8/4P3/4K3 w - - 7 30",        "e2e3", "4k3/8/8/8/8/4P3/8/4K3 b - - 0 30"),
+            ("4k3/8/8/3q4/8/4N3/8/4K3 w - - 7 30",      "e3d5", "4k3/8/8/3N4/8/8/8/4K3 b - - 0 30"),
+            ("4k3/8/8/8/8/8/8/4K2R w K - 7 30",         "h1h2", "4k3/8/8/8/8/8/7R/4K3 b - - 8 30"),
+            // the fullmove number goes up after black moves
+            ("4k3/8/8/8/8/8/8/4K3 b - - 7 30",          "e8d8", "3k4/8/8/8/8/8/8/4K3 w - - 8 31"),
+        ];
+        for (fen, uci, expected) in cases {
+            check(fen, uci, expected);
+        }
+    }
 
     #[test]
-    fn italian_game_into_castle() {
-        // 1.e4 e5 2.Nf3 Nc6 3.Bc4 Nf6 4.O-O
-        let moves = [
-            mv(Square::E2, Square::E4, MoveKind::DoublePush),
-            mv(Square::E7, Square::E5, MoveKind::DoublePush),
-            mv(Square::G1, Square::F3, MoveKind::Normal),
-            mv(Square::B8, Square::C6, MoveKind::Normal),
-            mv(Square::F1, Square::C4, MoveKind::Normal),
-            mv(Square::G8, Square::F6, MoveKind::Normal),
-            mv(Square::E1, Square::G1, MoveKind::Castle),
-        ];
-
-        let mut b = board(STARTPOS);
-        for m in moves {
-            b = b.make_move(m);
-            assert!(b.sanity_check().is_ok());
+    fn italian_game_into_castling() {
+        let mut b = board(Board::STARTPOS);
+        for uci in ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "e1g1"] {
+            b = b.make_move(find_move(&b, uci));
         }
-
-        assert_same_position(
-            &b,
-            &board("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQ1RK1 b kq - 5 4"),
+        assert_eq!(
+            b.to_fen(),
+            "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQ1RK1 b kq - 5 4"
         );
-        println!("{b}");
     }
 }

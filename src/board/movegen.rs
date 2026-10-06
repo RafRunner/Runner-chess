@@ -155,16 +155,11 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+    use crate::board::test_utils::{board, find_move, moves_of, PERFT_POSITIONS};
     use Square as S;
 
-    // the perft reference positions, plus kiwipete with black to move
-    const POSITIONS: [&str; 5] = [
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R b KQkq - 0 1",
-        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
-    ];
+    const KIWIPETE_BLACK: &str =
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R b KQkq - 0 1";
 
     const BISHOP_FROM_D4: [&str; 13] = [
         "a1", "b2", "c3", "e5", "f6", "g7", "h8", "a7", "b6", "c5", "e3", "f2", "g1",
@@ -174,10 +169,9 @@ mod tests {
     ];
 
     fn generate(fen: &str) -> (Board, Vec<Move>) {
-        let board = Board::from_fen(fen).unwrap_or_else(|err| panic!("{fen}: {err:?}"));
-        let mut moves = Vec::new();
-        board.generate_moves(&mut moves);
-        (board, moves)
+        let b = board(fen);
+        let moves = moves_of(&b);
+        (b, moves)
     }
 
     /// sorted, so failures print in a predictable order
@@ -232,12 +226,7 @@ mod tests {
 
     /// kind of the generated move written as `uci`
     fn kind_of(fen: &str, uci: &str) -> MoveKind {
-        let (_, moves) = generate(fen);
-        moves
-            .iter()
-            .find(|mv| mv.to_uci() == uci)
-            .unwrap_or_else(|| panic!("{fen}: {uci} was not generated"))
-            .kind()
+        find_move(&board(fen), uci).kind()
     }
 
     #[test]
@@ -429,7 +418,11 @@ mod tests {
     /// c7, so after the legality filter these become perft(1) = 20, 48 and 14
     #[test]
     fn pseudo_legal_move_counts() {
-        let cases = [(POSITIONS[0], 20), (POSITIONS[1], 48), (POSITIONS[3], 16)];
+        let cases = [
+            (PERFT_POSITIONS[0], 20),
+            (PERFT_POSITIONS[1], 48),
+            (PERFT_POSITIONS[2], 16),
+        ];
         for (fen, count) in cases {
             assert_eq!(generate(fen).1.len(), count, "{fen}");
         }
@@ -448,12 +441,12 @@ mod tests {
 
     #[test]
     fn moves_go_from_own_pieces_to_other_squares() {
-        for fen in POSITIONS {
-            let (board, moves) = generate(fen);
-            let us = board.side_to_move();
+        for fen in PERFT_POSITIONS.into_iter().chain([KIWIPETE_BLACK]) {
+            let (b, moves) = generate(fen);
+            let us = b.side_to_move();
             for mv in &moves {
-                let moved = board.piece_at(mv.from());
-                let captured = board.piece_at(mv.to());
+                let moved = b.piece_at(mv.from());
+                let captured = b.piece_at(mv.to());
                 assert_eq!(moved.map(Piece::color), Some(us), "{fen} {mv}");
                 assert_ne!(captured.map(Piece::color), Some(us), "{fen} {mv}");
                 assert_ne!(

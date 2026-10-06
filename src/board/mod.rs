@@ -1,5 +1,7 @@
 pub mod make_move;
 pub mod movegen;
+#[cfg(test)]
+mod test_utils;
 use std::fmt::{Display, Formatter};
 
 use crate::{
@@ -19,6 +21,9 @@ pub struct Board {
     side_to_move: Color,
     castling: CastlingRights,
     en_passant: Option<Square>,
+
+    halfmove_clock: u16,
+    fullmove_counter: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +38,8 @@ pub enum FenParseError {
     InvalidEnPassant,
     EnPassantSideMismatch(Square),
     IllegalPosition(BoardInconsistencyError),
+    InvalidHalfmove,
+    InvalidFullmove,
 }
 
 impl From<BoardInconsistencyError> for FenParseError {
@@ -54,6 +61,8 @@ pub enum BoardInconsistencyError {
 }
 
 impl Board {
+    pub const STARTPOS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
     pub fn empty() -> Self {
         Board {
             pieces: [BitBoard::EMPTY; 12],
@@ -62,7 +71,37 @@ impl Board {
             side_to_move: Color::White,
             castling: CastlingRights::NONE,
             en_passant: None,
+            halfmove_clock: 0,
+            fullmove_counter: 1,
         }
+    }
+
+    pub fn startpos() -> Self {
+        Self::from_fen(Self::STARTPOS).unwrap()
+    }
+
+    pub fn piece_at(&self, sq: Square) -> Option<Piece> {
+        self.mailbox[sq]
+    }
+
+    pub fn pieces(&self, piece: Piece) -> BitBoard {
+        self.pieces[piece]
+    }
+
+    pub fn by_color(&self, color: Color) -> BitBoard {
+        self.by_color[color]
+    }
+
+    pub fn side_to_move(&self) -> Color {
+        self.side_to_move
+    }
+
+    pub fn castling(&self) -> CastlingRights {
+        self.castling
+    }
+
+    pub fn en_passant(&self) -> Option<Square> {
+        self.en_passant
     }
 
     pub fn from_fen(fen: &str) -> Result<Self, FenParseError> {
@@ -139,33 +178,51 @@ impl Board {
             }
         };
 
+        let halfmove_clock = parts
+            .next()
+            .ok_or(FenParseError::MissingField("halfmove clock"))?;
+        board.halfmove_clock = halfmove_clock
+            .parse()
+            .map_err(|_| FenParseError::InvalidHalfmove)?;
+
+        let fullmove_number = parts
+            .next()
+            .ok_or(FenParseError::MissingField("fullmove counter"))?;
+        board.fullmove_counter = fullmove_number
+            .parse()
+            .ok()
+            .filter(|n| *n != 0)
+            .ok_or(FenParseError::InvalidFullmove)?;
+
         board.sanity_check()?;
 
         Ok(board)
     }
 
-    pub fn piece_at(&self, sq: Square) -> Option<Piece> {
-        self.mailbox[sq]
-    }
+    pub fn to_fen(&self) -> String {
+        let ranks = self.mailbox.chunks(8);
 
-    pub fn pieces(&self, piece: Piece) -> BitBoard {
-        self.pieces[piece]
-    }
+        let placement = ranks
+            .rev()
+            .map(|rank| {
+                rank.chunk_by(|a, b| a.is_none() && b.is_none())
+                    .map(|run| match run[0] {
+                        Some(piece) => piece.to_char().to_string(),
+                        None => run.len().to_string(),
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<String>>()
+            .join("/");
 
-    pub fn by_color(&self, color: Color) -> BitBoard {
-        self.by_color[color]
-    }
-
-    pub fn side_to_move(&self) -> Color {
-        self.side_to_move
-    }
-
-    pub fn castling(&self) -> CastlingRights {
-        self.castling
-    }
-
-    pub fn en_passant(&self) -> Option<Square> {
-        self.en_passant
+        let en_passant = self.en_passant.map_or("-".to_string(), |sq| sq.to_string());
+        format!(
+            "{placement} {} {} {en_passant} {} {}",
+            self.side_to_move.to_char(),
+            self.castling,
+            self.halfmove_clock,
+            self.fullmove_counter,
+        )
     }
 
     pub fn all_pieces_bb(&self) -> BitBoard {
@@ -276,12 +333,12 @@ impl Board {
             return Err(BoardInconsistencyError::KingCanBeCaptured(them));
         }
 
-        self.assert_invariants()?;
+        self.check_invariants()?;
 
         Ok(())
     }
 
-    fn assert_invariants(&self) -> Result<(), BoardInconsistencyError> {
+    fn check_invariants(&self) -> Result<(), BoardInconsistencyError> {
         for sq in BitBoard::FULL {
             for p in Piece::ALL {
                 let in_bb = (self.pieces[p] & sq.bb()) != BitBoard::EMPTY;
@@ -308,11 +365,6 @@ impl Board {
         if self.by_color[Color::Black] != expected[Color::Black] {
             return Err(BoardInconsistencyError::Desynced(
                 "Black BitBoards out of sync",
-            ));
-        }
-        if self.by_color[Color::White] & self.by_color[Color::Black] != BitBoard::EMPTY {
-            return Err(BoardInconsistencyError::Desynced(
-                "White and Black BitBoard overlap",
             ));
         }
 
@@ -344,52 +396,19 @@ impl Display for Board {
 
 #[cfg(test)]
 mod tests {
-    use crate::{attacks::attacks, piece::PieceKind};
-
-    use super::*;
-
-    const STARTPOS: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-    const VALID: [&str; 4] = [
-        STARTPOS,
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-        "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
-    ];
+    use super::{
+        test_utils::{board, PERFT_POSITIONS},
+        *,
+    };
+    use crate::attacks::attacks;
 
     fn p(color: Color, kind: PieceKind) -> Option<Piece> {
         Some(Piece::new(color, kind))
     }
 
-    /// mailbox and bitboards must describe exactly the same position
-    fn assert_consistent(b: &Board) {
-        for sq in 0..64 {
-            let square = Square::new(sq as u8);
-            let owners: Vec<usize> = (0..12)
-                .filter(|&i| b.pieces[i] & square.bb() != BitBoard::EMPTY)
-                .collect();
-            match b.mailbox[sq] {
-                Some(piece) => assert_eq!(owners, vec![piece.index()], "square {square}"),
-                None => assert!(
-                    owners.is_empty(),
-                    "square {square} empty in mailbox, but set in {owners:?}"
-                ),
-            }
-        }
-
-        // by_color must be the union of that color's piece bitboards
-        for color in Color::ALL {
-            let union = PieceKind::ALL
-                .into_iter()
-                .fold(BitBoard::EMPTY, |acc, kind| {
-                    acc | b.pieces[Piece::new(color, kind)]
-                });
-            assert_eq!(b.by_color[color], union, "{color:?}");
-        }
-    }
-
     #[test]
     fn startpos_pieces_on_expected_squares() {
-        let b = Board::from_fen(STARTPOS).unwrap();
+        let b = board(Board::STARTPOS);
         assert_eq!(b.piece_at(Square::A1), p(Color::White, PieceKind::Rook));
         assert_eq!(b.piece_at(Square::E1), p(Color::White, PieceKind::King));
         assert_eq!(b.piece_at(Square::E2), p(Color::White, PieceKind::Pawn));
@@ -401,7 +420,7 @@ mod tests {
 
     #[test]
     fn startpos_pawn_bitboards() {
-        let b = Board::from_fen(STARTPOS).unwrap();
+        let b = board(Board::STARTPOS);
         let wp = Piece::WhitePawn;
         let bp = Piece::BlackPawn;
         assert_eq!(b.pieces(wp), BitBoard::new(0x0000_0000_0000_FF00));
@@ -410,7 +429,7 @@ mod tests {
 
     #[test]
     fn asymmetric_position_catches_flips() {
-        let b = Board::from_fen("k7/8/8/8/8/8/8/7K w - - 0 1").unwrap();
+        let b = board("k7/8/8/8/8/8/8/7K w - - 0 1");
         assert_eq!(b.piece_at(Square::A8), p(Color::Black, PieceKind::King));
         assert_eq!(b.piece_at(Square::H1), p(Color::White, PieceKind::King));
         assert_eq!(b.mailbox.iter().filter(|s| s.is_some()).count(), 2);
@@ -418,8 +437,8 @@ mod tests {
 
     /// Display lines, without the trailing spaces of each rank
     fn display_lines(fen: &str) -> Vec<String> {
-        let b = Board::from_fen(fen).unwrap();
-        b.to_string()
+        board(fen)
+            .to_string()
             .lines()
             .map(|l| l.trim_end().to_string())
             .collect()
@@ -428,7 +447,7 @@ mod tests {
     #[test]
     fn display_startpos() {
         assert_eq!(
-            display_lines(STARTPOS),
+            display_lines(Board::STARTPOS),
             [
                 "8 r n b q k b n r",
                 "7 p p p p p p p p",
@@ -466,10 +485,56 @@ mod tests {
     }
 
     #[test]
-    fn valid_fens_are_consistent() {
-        for fen in VALID {
-            let b = Board::from_fen(fen).unwrap_or_else(|err| panic!("{fen}: {err:?}"));
-            assert_consistent(&b);
+    fn to_fen_roundtrips() {
+        let others = [
+            "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",    // en passant square
+            "r3k2r/8/8/8/8/8/8/R3K2R b Kq - 12 40", // some rights, black to move, clocks
+            "8/8/8/8/8/8/8/K6k w - - 99 150",       // gaps on both sides of a rank
+        ];
+        for fen in PERFT_POSITIONS.into_iter().chain(others) {
+            assert_eq!(board(fen).to_fen(), fen);
+        }
+    }
+
+    /// `make_move` relies on `check_invariants` in debug builds, so it must
+    /// notice every way the three representations can drift apart
+    #[test]
+    fn check_invariants_catches_desync() {
+        assert_eq!(board(Board::STARTPOS).check_invariants(), Ok(()));
+
+        // consts, not locals: a closure that captures can't become a `fn`
+        const E4: BitBoard = Square::E4.bb();
+        const E1: BitBoard = Square::E1.bb();
+        type Corruption = fn(&mut Board);
+        let corruptions: [(&str, Corruption); 6] = [
+            ("bitboard without mailbox", |b| {
+                b.pieces[Piece::WhiteKnight] |= E4;
+                b.by_color[Color::White] |= E4;
+            }),
+            ("mailbox without bitboard", |b| {
+                b.mailbox[Square::E4] = Some(Piece::WhiteKnight);
+            }),
+            ("mailbox names another piece", |b| {
+                b.mailbox[Square::E1] = Some(Piece::WhiteQueen);
+            }),
+            ("square in two bitboards", |b| {
+                b.pieces[Piece::WhiteQueen] |= E1;
+            }),
+            ("color missing a piece", |b| {
+                b.by_color[Color::White] &= !E1;
+            }),
+            ("color with an extra square", |b| {
+                b.by_color[Color::Black] |= E4;
+            }),
+        ];
+        for (what, corrupt) in corruptions {
+            let mut b = board(Board::STARTPOS);
+            corrupt(&mut b);
+            let result = b.check_invariants();
+            assert!(
+                matches!(result, Err(BoardInconsistencyError::Desynced(_))),
+                "{what}: {result:?}"
+            );
         }
     }
 
@@ -553,7 +618,7 @@ mod tests {
 
     #[test]
     fn en_passant_parse() {
-        assert_eq!(ep_of(STARTPOS).unwrap(), None);
+        assert_eq!(ep_of(Board::STARTPOS).unwrap(), None);
         // the last move was a double push and an enemy pawn beside it can capture
         let cases = [
             ("4k3/8/8/8/Pp6/8/8/4K3 b - a3 0 1", Square::A3), // a2-a4
@@ -642,12 +707,12 @@ mod tests {
 
         // every other en passant check passes: e2 and e3 are empty and there's
         // an enemy pawn on e4, but with white to move e3 is impossible
-        let mut b = Board::from_fen("4k3/8/8/8/4p3/8/8/4K3 w - - 0 1").unwrap();
+        let mut b = board("4k3/8/8/8/4p3/8/8/4K3 w - - 0 1");
         b.en_passant = Some(Square::E3);
         assert_eq!(b.sanity_check(), Err(EnPassantWrongRank(Square::E3)));
 
         // the same for black to move: d6 and d7 are empty and there's a white pawn on d5
-        let mut b = Board::from_fen("4k3/8/8/3P4/8/8/8/4K3 b - - 0 1").unwrap();
+        let mut b = board("4k3/8/8/3P4/8/8/8/4K3 b - - 0 1");
         b.en_passant = Some(Square::D6);
         assert_eq!(b.sanity_check(), Err(EnPassantWrongRank(Square::D6)));
     }
@@ -797,13 +862,13 @@ mod tests {
             ("k7/8/8/8/8/4N3/8/6BK w - - 0 1",    S::D4, White, &[]),
             // an occupied target is still attacked: that's a capture, or a check
             ("k7/8/8/8/3n4/8/8/3R3K w - - 0 1",   S::D4, White, &[S::D1]),
-            (STARTPOS, S::F3, White, &[S::E2, S::G2, S::G1]),
-            (STARTPOS, S::C6, Black, &[S::B7, S::D7, S::B8]),
-            (STARTPOS, S::F3, Black, &[]),
-            (STARTPOS, S::E4, White, &[]),
+            (Board::STARTPOS, S::F3, White, &[S::E2, S::G2, S::G1]),
+            (Board::STARTPOS, S::C6, Black, &[S::B7, S::D7, S::B8]),
+            (Board::STARTPOS, S::F3, Black, &[]),
+            (Board::STARTPOS, S::E4, White, &[]),
         ];
         for (fen, sq, by, expected) in cases {
-            let b = Board::from_fen(fen).unwrap_or_else(|err| panic!("{fen}: {err:?}"));
+            let b = board(fen);
             let expected = expected.iter().fold(BitBoard::EMPTY, |acc, s| acc | s.bb());
             assert_eq!(
                 squares_of(b.attackers_by(sq, by)),
@@ -831,8 +896,8 @@ mod tests {
 
     #[test]
     fn attackers_by_matches_definition() {
-        for fen in VALID {
-            let b = Board::from_fen(fen).unwrap();
+        for fen in PERFT_POSITIONS {
+            let b = board(fen);
             for sq in (0..64).map(Square::new) {
                 for by in Color::ALL {
                     assert_eq!(
@@ -845,6 +910,7 @@ mod tests {
         }
     }
 
+    /// policy decision: every field is required, clocks included
     #[test]
     fn missing_fields_rejected() {
         let placement = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR";
@@ -852,6 +918,8 @@ mod tests {
             ("", "side to move"),
             (" w", "castling"),
             (" w KQkq", "en passant"),
+            (" w KQkq -", "halfmove clock"),
+            (" w KQkq - 0", "fullmove counter"),
         ];
         for (rest, field) in cases {
             let fen = format!("{placement}{rest}");
@@ -863,9 +931,35 @@ mod tests {
         }
     }
 
+    fn clocks_of(clocks: &str) -> Result<(u16, u16), FenParseError> {
+        Board::from_fen(&format!("4k3/8/8/8/8/8/8/4K3 w - - {clocks}"))
+            .map(|b| (b.halfmove_clock, b.fullmove_counter))
+    }
+
     #[test]
-    fn clocks_are_optional() {
-        // policy decision: accept FEN without the clocks
-        assert!(Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -").is_ok());
+    fn clocks_parse() {
+        assert_eq!(clocks_of("0 1"), Ok((0, 1)));
+        assert_eq!(clocks_of("12 40"), Ok((12, 40)));
+        // past the 50-move rule is still a valid count
+        assert_eq!(clocks_of("150 300"), Ok((150, 300)));
+    }
+
+    #[test]
+    fn clocks_invalid() {
+        for halfmove in ["x", "-1", "1.5"] {
+            assert_eq!(
+                clocks_of(&format!("{halfmove} 1")),
+                Err(FenParseError::InvalidHalfmove),
+                "{halfmove:?}"
+            );
+        }
+        // policy decision: the fullmove counter starts at 1
+        for fullmove in ["x", "-1", "0"] {
+            assert_eq!(
+                clocks_of(&format!("0 {fullmove}")),
+                Err(FenParseError::InvalidFullmove),
+                "{fullmove:?}"
+            );
+        }
     }
 }

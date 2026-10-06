@@ -20,6 +20,13 @@ impl Color {
             Self::Black => Self::White,
         }
     }
+
+    pub const fn to_char(self) -> char {
+        match self {
+            Color::White => 'w',
+            Color::Black => 'b',
+        }
+    }
 }
 
 impl<T> ops::Index<Color> for [T; 2] {
