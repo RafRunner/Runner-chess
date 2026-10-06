@@ -135,3 +135,105 @@ impl Display for Move {
         write!(f, "{}", self.to_uci())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use Square as S;
+
+    /// every kind a move can have, each promotion piece included
+    fn all_kinds() -> Vec<MoveKind> {
+        let mut kinds = vec![
+            MoveKind::Normal,
+            MoveKind::Capture,
+            MoveKind::DoublePush,
+            MoveKind::EnPassant,
+            MoveKind::Castle,
+        ];
+        for piece in PromotionPiece::ALL {
+            kinds.push(MoveKind::Promotion(piece));
+            kinds.push(MoveKind::PromotionCapture(piece));
+        }
+        kinds
+    }
+
+    #[test]
+    fn move_is_two_bytes() {
+        assert_eq!(std::mem::size_of::<Move>(), 2);
+    }
+
+    /// decoding gives back exactly what was encoded for every combination,
+    /// so no field leaks into another and no two moves share an encoding
+    #[test]
+    fn fields_roundtrip() {
+        let kinds = all_kinds();
+        assert_eq!(kinds.len(), 13);
+        for from in (0..64).map(Square::new) {
+            for to in (0..64).map(Square::new) {
+                for &kind in &kinds {
+                    let mv = Move::new(from, to, kind);
+                    assert_eq!(
+                        (mv.from(), mv.to(), mv.kind()),
+                        (from, to, kind),
+                        "{from}{to} {kind:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn is_capture_matches_kind() {
+        for kind in all_kinds() {
+            let expected = matches!(
+                kind,
+                MoveKind::Capture | MoveKind::EnPassant | MoveKind::PromotionCapture(_)
+            );
+            assert_eq!(
+                Move::new(S::E2, S::E4, kind).is_capture(),
+                expected,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn promotion_pieces() {
+        let kinds = PromotionPiece::ALL.map(PromotionPiece::to_piece_kind);
+        assert_eq!(
+            kinds,
+            [
+                PieceKind::Knight,
+                PieceKind::Bishop,
+                PieceKind::Rook,
+                PieceKind::Queen
+            ]
+        );
+        // the discriminant is what goes into the flags, and decoding indexes ALL with it
+        for (i, piece) in PromotionPiece::ALL.into_iter().enumerate() {
+            assert_eq!(piece as usize, i, "{piece:?}");
+        }
+    }
+
+    #[test]
+    fn uci_notation() {
+        use PromotionPiece as P;
+        #[rustfmt::skip]
+        let cases = [
+            (Move::new(S::G1, S::F3, MoveKind::Normal),                  "g1f3"),
+            (Move::new(S::E4, S::D5, MoveKind::Capture),                 "e4d5"),
+            (Move::new(S::E2, S::E4, MoveKind::DoublePush),              "e2e4"),
+            (Move::new(S::E5, S::D6, MoveKind::EnPassant),               "e5d6"),
+            (Move::new(S::E1, S::G1, MoveKind::Castle),                  "e1g1"),
+            (Move::new(S::A7, S::A8, MoveKind::Promotion(P::Queen)),     "a7a8q"),
+            (Move::new(S::A7, S::B8, MoveKind::PromotionCapture(P::Knight)), "a7b8n"),
+            // black promotions are lowercase too
+            (Move::new(S::H2, S::H1, MoveKind::Promotion(P::Rook)),      "h2h1r"),
+            (Move::new(S::B2, S::A1, MoveKind::PromotionCapture(P::Bishop)), "b2a1b"),
+        ];
+        for (mv, uci) in cases {
+            assert_eq!(mv.to_uci(), uci);
+            assert_eq!(mv.to_string(), uci);
+        }
+    }
+}

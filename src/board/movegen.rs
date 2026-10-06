@@ -141,6 +141,16 @@ impl Board {
         }
     }
 
+    pub fn legal_successors(&self) -> impl Iterator<Item = (Move, Board)> + '_ {
+        let mut pseudo_legal = Vec::new();
+        self.generate_moves(&mut pseudo_legal);
+
+        pseudo_legal.into_iter().filter_map(|mv| {
+            let next = self.make_move(mv);
+            (!next.is_in_check(self.side_to_move)).then_some((mv, next))
+        })
+    }
+
     fn add_pawn_moves(&self, from: Square, to: Square, moves: &mut Vec<Move>) {
         let is_capture = self.piece_at(to).is_some();
         if to.rank() == 0 || to.rank() == 7 {
@@ -174,7 +184,9 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::board::test_utils::{board, find_move, moves_of, PERFT_POSITIONS};
+    use crate::board::test_utils::{
+        board, find_move, moves_of, KIWIPETE, PERFT_POSITIONS, POSITION_3,
+    };
     use Square as S;
 
     const KIWIPETE_BLACK: &str =
@@ -433,15 +445,11 @@ mod tests {
         assert_uci_from(&[("7k/8/8/3pP3/8/8/8/K7 w - d6 0 1", S::E5, &["e5d6", "e5e6"])]);
     }
 
-    /// pseudo-legal: in the third position b5b6 is pinned and Kb6 is attacked by
+    /// pseudo-legal: in position 3 b5b6 is pinned and Kb6 is attacked by
     /// c7, so after the legality filter these become perft(1) = 20, 48 and 14
     #[test]
     fn pseudo_legal_move_counts() {
-        let cases = [
-            (PERFT_POSITIONS[0], 20),
-            (PERFT_POSITIONS[1], 48),
-            (PERFT_POSITIONS[2], 16),
-        ];
+        let cases = [(Board::STARTPOS, 20), (KIWIPETE, 48), (POSITION_3, 16)];
         for (fen, count) in cases {
             assert_eq!(generate(fen).1.len(), count, "{fen}");
         }
@@ -476,6 +484,104 @@ mod tests {
             }
             let distinct: HashSet<Move> = moves.iter().copied().collect();
             assert_eq!(distinct.len(), moves.len(), "{fen}: duplicated moves");
+        }
+    }
+
+    /// legal moves in UCI, sorted
+    fn legal_uci(fen: &str) -> Vec<String> {
+        sorted(
+            board(fen)
+                .legal_successors()
+                .map(|(mv, _)| mv.to_uci())
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn legal_successors_drop_moves_that_leave_the_king_attacked() {
+        #[rustfmt::skip]
+        let cases: [(&str, &[&str]); 4] = [
+            // the knight on e2 is pinned by the rook on e7
+            ("4k3/4r3/8/8/8/8/4N3/4K3 w - - 0 1", &["e1d1", "e1d2", "e1f1", "e1f2"]),
+            // the king can't step onto the rook's rank
+            ("4k3/8/8/8/8/8/7r/4K3 w - - 0 1", &["e1d1", "e1f1"]),
+            // in check from a1: f1 is attacked through the square the king leaves,
+            // and no rook move blocks or captures
+            ("4k3/8/8/8/8/8/8/r3K2R w - - 0 1", &["e1d2", "e1e2", "e1f2"]),
+            // bxc6 en passant would take both pawns off the 5th rank and expose
+            // the king to the rook; b4 is attacked by the c5 pawn
+            ("8/8/8/KPp4r/8/8/8/4k3 w - c6 0 1", &["a5a4", "a5a6", "a5b6", "b5b6"]),
+        ];
+        for (fen, names) in cases {
+            assert_eq!(legal_uci(fen), expected(names), "{fen}");
+        }
+    }
+
+    /// the filter must be exact: it keeps every safe move and nothing else
+    #[test]
+    fn legal_successors_split_pseudo_legal_moves_exactly() {
+        for fen in PERFT_POSITIONS.into_iter().chain([KIWIPETE_BLACK]) {
+            let (b, pseudo_legal) = generate(fen);
+            let us = b.side_to_move();
+            let legal: HashSet<Move> = b.legal_successors().map(|(mv, _)| mv).collect();
+            for mv in pseudo_legal {
+                let safe = !b.make_move(mv).is_in_check(us);
+                assert_eq!(legal.contains(&mv), safe, "{fen} {mv}");
+            }
+            for (mv, next) in b.legal_successors() {
+                assert_eq!(next.side_to_move(), us.oposite(), "{fen} {mv}");
+            }
+        }
+    }
+
+    /// the flags of every generated move agree with the board it was generated on
+    #[test]
+    fn move_kinds_match_the_board() {
+        // the reference positions and every position one move later, which adds
+        // en passant and more promotions to the mix
+        let positions: Vec<Board> = PERFT_POSITIONS
+            .into_iter()
+            .chain([KIWIPETE_BLACK])
+            .map(board)
+            .flat_map(|b| {
+                let next: Vec<Board> = b.legal_successors().map(|(_, next)| next).collect();
+                std::iter::once(b).chain(next)
+            })
+            .collect();
+
+        for b in &positions {
+            for mv in moves_of(b) {
+                let (from, to, kind) = (mv.from(), mv.to(), mv.kind());
+                let piece = b.piece_at(from).unwrap().kind();
+                let is_pawn = piece == PieceKind::Pawn;
+                let context = format!("{} {mv} {kind:?}", b.to_fen());
+
+                assert_eq!(
+                    mv.is_capture(),
+                    b.piece_at(to).is_some() || kind == MoveKind::EnPassant,
+                    "{context}"
+                );
+                assert_eq!(
+                    matches!(kind, MoveKind::Promotion(_) | MoveKind::PromotionCapture(_)),
+                    is_pawn && (to.rank() == 0 || to.rank() == 7),
+                    "{context}"
+                );
+                assert_eq!(
+                    kind == MoveKind::DoublePush,
+                    is_pawn && from.rank().abs_diff(to.rank()) == 2,
+                    "{context}"
+                );
+                assert_eq!(
+                    kind == MoveKind::EnPassant,
+                    is_pawn && Some(to) == b.en_passant(),
+                    "{context}"
+                );
+                assert_eq!(
+                    kind == MoveKind::Castle,
+                    piece == PieceKind::King && from.file().abs_diff(to.file()) == 2,
+                    "{context}"
+                );
+            }
         }
     }
 }

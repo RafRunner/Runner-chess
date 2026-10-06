@@ -1,5 +1,6 @@
 pub mod make_move;
 pub mod movegen;
+pub mod perft;
 #[cfg(test)]
 mod test_utils;
 use std::fmt::{Display, Formatter};
