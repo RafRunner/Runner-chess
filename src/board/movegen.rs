@@ -5,10 +5,13 @@ use crate::{
     bitboard::BitBoard,
     board::Board,
     castling::CastlingRights,
-    chess_move::{Move, MoveKind, PromotionPiece},
+    chess_move::{AbstractMove, Move, MoveKind, PromotionPiece},
     piece::{Color, Piece, PieceKind},
     square::{Delta, Square},
 };
+
+#[derive(Debug)]
+pub struct IllegalMoveError;
 
 impl Board {
     pub fn generate_moves(&self, moves: &mut Vec<Move>) {
@@ -149,6 +152,16 @@ impl Board {
             let next = self.make_move(mv);
             (!next.is_in_check(self.side_to_move)).then_some((mv, next))
         })
+    }
+
+    pub fn resolve_move(&self, mv: AbstractMove) -> Result<(Move, Board), IllegalMoveError> {
+        for (legal, next) in self.legal_successors() {
+            if mv.is_move(legal) {
+                return Ok((legal, next));
+            }
+        }
+
+        Err(IllegalMoveError)
     }
 
     fn add_pawn_moves(&self, from: Square, to: Square, moves: &mut Vec<Move>) {

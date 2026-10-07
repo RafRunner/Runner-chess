@@ -380,7 +380,7 @@ impl Display for Board {
         }
         writeln!(f, "  a b c d e f g h")?;
         writeln!(f, "Castling: {}", self.castling)?;
-        writeln!(
+        write!(
             f,
             "En-Passant: {}",
             self.en_passant
