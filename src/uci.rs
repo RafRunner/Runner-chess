@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    bench::{self, BenchError, BENCH},
     board::{movegen::IllegalMoveError, Board, FenParseError},
     chess_move::{AbstractMove, MoveParseError},
 };
@@ -16,12 +17,19 @@ pub enum UciError {
     FenError(FenParseError),
     MoveParseError(String),
     IllegalMove(String),
+    Bench(BenchError),
     Io(io::Error),
 }
 
 impl From<io::Error> for UciError {
     fn from(e: io::Error) -> Self {
         UciError::Io(e)
+    }
+}
+
+impl From<BenchError> for UciError {
+    fn from(e: BenchError) -> Self {
+        UciError::Bench(e)
     }
 }
 
@@ -100,6 +108,7 @@ impl Uci {
                 }
             }
             "d" => writeln!(out, "{}\n{}\n", self.board, self.board.to_fen())?,
+            "bench" => bench::run(&BENCH, out)?,
             "quit" => return Ok(Control::Quit),
             _ => return Err(UciError::UnknownCommand(command.to_string())),
         }
@@ -128,11 +137,11 @@ impl Uci {
             writeln!(out, "{mv}: {count}")?;
         }
         if self.debug {
-            let nps = (total as f64 / elapsed.as_secs_f64().max(1e-9)) as u64;
             writeln!(
                 out,
-                "info time {} nodes {total} nps {nps}",
-                elapsed.as_millis()
+                "info time {} nodes {total} nps {}",
+                elapsed.as_millis(),
+                bench::nps(total, elapsed)
             )?;
         }
         writeln!(out, "Nodes searched: {total}")?;
@@ -440,5 +449,14 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    #[test]
+    #[ignore = "slow in debug builds; run with cargo test --release -- --ignored"]
+    fn bench_command() {
+        let mut uci = Uci::new();
+        let (control, out) = run(&mut uci, "bench").unwrap();
+        assert_eq!(control, Control::Continue);
+        assert!(out.contains("Nodes searched  : 37918074"), "{out}");
     }
 }
