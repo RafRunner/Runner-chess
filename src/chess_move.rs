@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 use crate::{piece::PieceKind, square::Square};
 
@@ -101,15 +101,15 @@ impl AbstractMove {
             } else {
                 return false;
             }
-        } else if let MoveKind::Promotion(_) | MoveKind::PromotionCapture(_) = mv.kind() {
+        } else if mv.is_promotion() {
             return false;
         }
 
-        return true;
+        true
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Move(u16);
 
 impl Move {
@@ -121,7 +121,7 @@ impl Move {
     const DOUBLE_PUSH: u16 = 0b0001;
     const CASTLE: u16 = 0b0010;
     const CAPTURE: u16 = 0b0100;
-    const EN_PASSANT: u16 = 0b0101;
+    const EN_PASSANT: u16 = Self::DOUBLE_PUSH | Self::CAPTURE;
     const PROMOTION: u16 = 0b1000;
     const PROMOTION_CAPTURE: u16 = Self::PROMOTION | Self::CAPTURE;
 
@@ -180,6 +180,10 @@ impl Move {
         self.flags() & Self::CAPTURE == Self::CAPTURE
     }
 
+    pub const fn is_promotion(self) -> bool {
+        self.flags() & Self::PROMOTION == Self::PROMOTION
+    }
+
     pub fn to_uci(&self) -> String {
         let piece =
             if let MoveKind::Promotion(piece) | MoveKind::PromotionCapture(piece) = self.kind() {
@@ -203,6 +207,12 @@ impl Move {
 impl Display for Move {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.to_uci())
+    }
+}
+
+impl Debug for Move {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {:?}", self.to_uci(), self.kind())
     }
 }
 

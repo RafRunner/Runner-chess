@@ -1,4 +1,7 @@
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    time::Instant,
+};
 
 use crate::{
     board::{movegen::IllegalMoveError, Board, FenParseError},
@@ -30,6 +33,7 @@ pub enum Control {
 
 pub struct Uci {
     board: Board,
+    debug: bool,
 }
 
 impl Default for Uci {
@@ -42,6 +46,7 @@ impl Uci {
     pub fn new() -> Self {
         Self {
             board: Board::startpos(),
+            debug: false,
         }
     }
 
@@ -60,6 +65,20 @@ impl Uci {
                 writeln!(out, "uciok")?;
             }
             "isready" => writeln!(out, "readyok")?,
+            "debug" => match tokens.next() {
+                Some("on") => self.debug = true,
+                Some("off") => self.debug = false,
+                Some(other) => {
+                    return Err(UciError::UnexpectedArgs(format!(
+                        "unexpected debug option: {other}"
+                    )))
+                }
+                None => {
+                    return Err(UciError::UnexpectedArgs(
+                        "usage: debug [on | off]".to_string(),
+                    ))
+                }
+            },
             "ucinewgame" => self.board = Board::startpos(),
             "position" => {
                 let args: Vec<&str> = tokens.collect();
@@ -68,20 +87,7 @@ impl Uci {
             "go" => {
                 let args: Vec<&str> = tokens.collect();
                 match args.as_slice() {
-                    ["perft", depth] => {
-                        let depth = depth.parse::<u32>().ok().filter(|&d| d > 0).ok_or(
-                            UciError::UnexpectedArgs(
-                                "go perft depth is not a positive number".to_string(),
-                            ),
-                        )?;
-
-                        let mut total = 0;
-                        for (mv, count) in self.board.divide(depth) {
-                            writeln!(out, "{mv}: {count}")?;
-                            total += count;
-                        }
-                        writeln!(out, "Nodes searched: {total}")?;
-                    }
+                    ["perft", depth] => self.go_perft(depth, out)?,
                     ["perft", ..] => {
                         return Err(UciError::UnexpectedArgs(
                             "usage: go perft <depth>".to_string(),
@@ -100,6 +106,37 @@ impl Uci {
 
         out.flush()?;
         Ok(Control::Continue)
+    }
+
+    /// `go perft <depth>`: the divide of the current position, in Stockfish's format
+    fn go_perft(&self, depth: &str, out: &mut impl Write) -> Result<(), UciError> {
+        let depth =
+            depth
+                .parse::<u32>()
+                .ok()
+                .filter(|&d| d > 0)
+                .ok_or(UciError::UnexpectedArgs(
+                    "go perft depth is not a positive number".to_string(),
+                ))?;
+
+        let start = Instant::now();
+        let divide = self.board.divide(depth);
+        let elapsed = start.elapsed();
+        let total: u64 = divide.iter().map(|&(_, count)| count).sum();
+
+        for (mv, count) in divide {
+            writeln!(out, "{mv}: {count}")?;
+        }
+        if self.debug {
+            let nps = (total as f64 / elapsed.as_secs_f64().max(1e-9)) as u64;
+            writeln!(
+                out,
+                "info time {} nodes {total} nps {nps}",
+                elapsed.as_millis()
+            )?;
+        }
+        writeln!(out, "Nodes searched: {total}")?;
+        Ok(())
     }
 }
 
@@ -371,5 +408,37 @@ mod tests {
             out.contains("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn debug_on_adds_timing_to_perft() {
+        let mut uci = Uci::new();
+        assert!(!perft_lines(&mut uci, 1)
+            .iter()
+            .any(|l| l.starts_with("info")));
+
+        run(&mut uci, "debug on").unwrap();
+        let lines = perft_lines(&mut uci, 1);
+        let info = &lines[lines.len() - 2];
+        assert!(info.starts_with("info time "), "{info}");
+        assert!(info.contains(" nodes 20 nps "), "{info}");
+        // still last, so scripts comparing against Stockfish keep working
+        assert_eq!(lines.last().unwrap(), "Nodes searched: 20");
+
+        run(&mut uci, "debug off").unwrap();
+        assert!(!perft_lines(&mut uci, 1)
+            .iter()
+            .any(|l| l.starts_with("info")));
+    }
+
+    #[test]
+    fn debug_invalid_args() {
+        let mut uci = Uci::new();
+        for line in ["debug", "debug maybe"] {
+            assert!(
+                matches!(run(&mut uci, line), Err(UciError::UnexpectedArgs(_))),
+                "{line}"
+            );
+        }
     }
 }
