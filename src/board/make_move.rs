@@ -1,5 +1,4 @@
 use crate::{
-    bitboard::BitBoard,
     board::Board,
     chess_move::{Move, MoveKind},
     piece::{Color, Piece, PieceKind},
@@ -28,6 +27,9 @@ impl Board {
 
         match mv.kind() {
             MoveKind::Normal | MoveKind::Capture => {
+                if let Some(captured) = target {
+                    next.remove_piece(captured, to);
+                }
                 next.move_piece(piece, from, to, None);
 
                 debug_assert_eq!(
@@ -35,9 +37,6 @@ impl Board {
                     mv.is_capture(),
                     "{mv}: capture flag doesn't match the board"
                 );
-                if let Some(captured) = target {
-                    next.pieces[captured] &= !to.bb();
-                }
             }
             MoveKind::DoublePush => {
                 next.move_piece(piece, from, to, None);
@@ -54,8 +53,7 @@ impl Board {
                     .offset(delta)
                     .expect("En Passant: unexpected 'to' Square");
 
-                next.pieces[Piece::new(them, PieceKind::Pawn)] &= !captured.bb();
-                next.mailbox[captured] = None;
+                next.remove_piece(Piece::new(them, PieceKind::Pawn), captured);
             }
             MoveKind::Castle => {
                 // move the king
@@ -77,8 +75,10 @@ impl Board {
                 next.move_piece(Piece::new(us, PieceKind::Rook), rook_from, rook_to, None);
             }
             MoveKind::Promotion(kind) | MoveKind::PromotionCapture(kind) => {
+                if let Some(captured) = target {
+                    next.remove_piece(captured, to);
+                }
                 let new_piece = Some(Piece::new(us, kind.to_piece_kind()));
-
                 next.move_piece(piece, from, to, new_piece);
 
                 debug_assert_eq!(
@@ -86,19 +86,10 @@ impl Board {
                     mv.is_capture(),
                     "{mv}: capture flag doesn't match the board"
                 );
-                if let Some(captured) = target {
-                    next.pieces[captured] &= !to.bb();
-                }
             }
         }
 
         // Housekeeping
-        next.by_color = [BitBoard::EMPTY; 2];
-
-        for piece in Piece::ALL {
-            next.by_color[piece.color()] |= next.pieces[piece];
-        }
-
         next.castling = self.castling.update_move(mv);
         next.side_to_move = them;
 
@@ -122,9 +113,17 @@ impl Board {
 
         self.pieces[piece] &= !from.bb();
         self.pieces[new_piece] |= to.bb();
+        self.by_color[piece.color()] ^= from.bb() | to.bb();
 
         self.mailbox[from] = None;
         self.mailbox[to] = Some(new_piece);
+    }
+
+    fn remove_piece(&mut self, piece: Piece, sq: Square) {
+        self.pieces[piece] &= !sq.bb();
+        self.by_color[piece.color()] &= !sq.bb();
+
+        self.mailbox[sq] = None;
     }
 }
 

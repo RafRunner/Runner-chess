@@ -109,6 +109,20 @@ impl ops::BitOrAssign for BitBoard {
     }
 }
 
+impl ops::BitXor for BitBoard {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        Self(self.0 ^ rhs.0)
+    }
+}
+
+impl ops::BitXorAssign for BitBoard {
+    fn bitxor_assign(&mut self, rhs: Self) {
+        *self = Self(self.0 ^ rhs.0)
+    }
+}
+
 impl ops::Shl<u8> for BitBoard {
     type Output = Self;
 
