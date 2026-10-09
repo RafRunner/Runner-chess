@@ -57,6 +57,14 @@ impl BitBoard {
         self.0.count_ones()
     }
 
+    pub const fn leading_zeros(self) -> u32 {
+        self.0.leading_zeros()
+    }
+
+    pub const fn trailing_zeros(self) -> u32 {
+        self.0.trailing_zeros()
+    }
+
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
