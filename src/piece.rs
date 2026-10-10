@@ -74,6 +74,14 @@ impl PieceKind {
     }
 }
 
+impl<T> ops::Index<PieceKind> for [T; 6] {
+    type Output = T;
+
+    fn index(&self, index: PieceKind) -> &Self::Output {
+        &self[index.index()]
+    }
+}
+
 #[derive(Debug)]
 pub struct PieceParseError;
 

@@ -163,6 +163,10 @@ impl Square {
         }
     }
 
+    pub const fn mirror(self) -> Self {
+        Square::new(self.0 ^ 56)
+    }
+
     pub fn from_algebraic(s: &str) -> Result<Self, SquareParseError> {
         if let [file, rank] = s.as_bytes() {
             if !(b'a'..=b'h').contains(file) {
@@ -298,6 +302,29 @@ mod tests {
         ];
         for (from, delta) in cases {
             assert_eq!(from.offset(delta), None, "{from} + {delta:?}");
+        }
+    }
+
+    #[test]
+    fn mirror_flips_the_rank_and_keeps_the_file() {
+        use Square as S;
+        let pairs = [
+            (S::A1, S::A8),
+            (S::H1, S::H8),
+            (S::E2, S::E7),
+            (S::D4, S::D5),
+            (S::C6, S::C3),
+        ];
+        for (sq, mirrored) in pairs {
+            assert_eq!(sq.mirror(), mirrored, "{sq}");
+        }
+
+        for sq in (0..64).map(Square::new) {
+            let mirrored = sq.mirror();
+            assert_eq!(mirrored.file(), sq.file(), "{sq}");
+            assert_eq!(mirrored.rank(), 7 - sq.rank(), "{sq}");
+            // mirroring twice gets back to the start
+            assert_eq!(mirrored.mirror(), sq, "{sq}");
         }
     }
 }

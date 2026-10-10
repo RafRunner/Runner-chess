@@ -1,8 +1,6 @@
 pub mod make_move;
 pub mod movegen;
 pub mod perft;
-#[cfg(test)]
-mod test_utils;
 use std::fmt::{Display, Formatter};
 
 use crate::{
@@ -391,11 +389,11 @@ impl Display for Board {
 
 #[cfg(test)]
 mod tests {
-    use super::{
+    use super::*;
+    use crate::{
+        attacks::attacks,
         test_utils::{board, PERFT_POSITIONS},
-        *,
     };
-    use crate::attacks::attacks;
 
     fn p(color: Color, kind: PieceKind) -> Option<Piece> {
         Some(Piece::new(color, kind))

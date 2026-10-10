@@ -21,9 +21,11 @@ impl Board {
 
 #[cfg(test)]
 mod tests {
-    use crate::board::{
-        test_utils::{board, KIWIPETE, PERFT_POSITIONS, POSITION_3, POSITION_4, POSITION_5},
-        Board,
+    use crate::{
+        board::Board,
+        test_utils::{
+            board, mirror_fen, KIWIPETE, PERFT_POSITIONS, POSITION_3, POSITION_4, POSITION_5,
+        },
     };
 
     /// published node counts for depths 1 to 4:
@@ -55,11 +57,25 @@ mod tests {
         }
     }
 
+    /// swapping the colors and flipping the board can't change the count, so any
+    /// rule that only works for one side (black's long castle, white's en passant...)
+    /// shows up here
+    #[test]
+    fn mirrored_positions_have_the_same_perft() {
+        for (fen, counts) in PERFT_RESULTS {
+            let mirrored = mirror_fen(fen);
+            for depth in 1..=2 {
+                assert_perft(&mirrored, depth, counts[depth as usize - 1]);
+            }
+        }
+    }
+
     #[test]
     #[ignore = "slow in debug builds; run with cargo test --release -- --ignored"]
     fn perft_deep() {
         for (fen, counts) in PERFT_RESULTS {
             assert_perft(fen, 4, counts[3]);
+            assert_perft(&mirror_fen(fen), 4, counts[3]);
         }
     }
 
@@ -93,6 +109,7 @@ mod tests {
         ];
         for (fen, depth, expected) in cases {
             assert_perft(fen, depth, expected);
+            assert_perft(&mirror_fen(fen), depth, expected);
         }
     }
 

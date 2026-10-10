@@ -197,9 +197,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::board::test_utils::{
-        board, find_move, moves_of, KIWIPETE, PERFT_POSITIONS, POSITION_3,
-    };
+    use crate::test_utils::{board, find_move, moves_of, KIWIPETE, PERFT_POSITIONS, POSITION_3};
     use Square as S;
 
     const KIWIPETE_BLACK: &str =

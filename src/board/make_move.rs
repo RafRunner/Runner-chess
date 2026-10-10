@@ -129,9 +129,9 @@ impl Board {
 
 #[cfg(test)]
 mod tests {
-    use crate::board::{
+    use crate::{
+        board::Board,
         test_utils::{board, find_move},
-        Board,
     };
 
     const CASTLING_WHITE: &str = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
