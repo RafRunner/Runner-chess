@@ -106,6 +106,8 @@ impl Uci {
                     _ => self.go_search(&args, out)?,
                 }
             }
+            "stop" => (),      // TODO actually stop the engine
+            "setoption" => (), // TODO support some options
             "d" => writeln!(out, "{}\n{}\n", self.board, self.board.to_fen())?,
             "bench" => bench::run(&BENCH, out)?,
             "quit" => return Ok(Control::Quit),
@@ -231,6 +233,8 @@ fn play_moves(mut board: Board, moves: &[&str]) -> Result<Board, UciError> {
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use super::*;
 
     fn run(uci: &mut Uci, line: &str) -> Result<(Control, String), UciError> {
@@ -393,6 +397,26 @@ mod tests {
             lines[0].ends_with(&format!(" pv {}", bestmove(&out))),
             "{out}"
         );
+    }
+
+    #[test]
+    fn stop_gets_ignored() {
+        let mut uci = Uci::new();
+        let (control, out) = run(&mut uci, "stop").unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+
+        assert_eq!(lines.len(), 0, "{out}");
+        assert_matches!(control, Control::Continue);
+    }
+
+    #[test]
+    fn setoption_gets_ignored() {
+        let mut uci = Uci::new();
+        let (control, out) = run(&mut uci, "setoption name Nullmove value true").unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+
+        assert_eq!(lines.len(), 0, "{out}");
+        assert_matches!(control, Control::Continue);
     }
 
     #[test]
