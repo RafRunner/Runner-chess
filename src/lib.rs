@@ -6,6 +6,7 @@ pub mod castling;
 pub mod chess_move;
 pub mod eval;
 pub mod piece;
+pub mod search;
 pub mod square;
 pub mod uci;
 

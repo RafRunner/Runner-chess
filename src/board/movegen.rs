@@ -148,10 +148,14 @@ impl Board {
         let mut pseudo_legal = Vec::new();
         self.generate_moves(&mut pseudo_legal);
 
-        pseudo_legal.into_iter().filter_map(|mv| {
-            let next = self.make_move(mv);
-            (!next.is_in_check(self.side_to_move)).then_some((mv, next))
-        })
+        pseudo_legal
+            .into_iter()
+            .filter_map(|mv| self.make_legal_move(mv).map(|next| (mv, next)))
+    }
+
+    pub fn make_legal_move(&self, mv: Move) -> Option<Board> {
+        let next = self.make_move(mv);
+        (!next.is_in_check(self.side_to_move())).then_some(next)
     }
 
     pub fn resolve_move(&self, mv: AbstractMove) -> Result<(Move, Board), IllegalMoveError> {

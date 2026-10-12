@@ -184,7 +184,7 @@ impl Move {
         self.flags() & Self::PROMOTION == Self::PROMOTION
     }
 
-    pub fn to_uci(&self) -> String {
+    pub fn to_uci(self) -> String {
         let piece =
             if let MoveKind::Promotion(piece) | MoveKind::PromotionCapture(piece) = self.kind() {
                 &piece.to_char().to_string()

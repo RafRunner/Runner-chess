@@ -1,2 +1,4 @@
 /target
+/engines
+logs*.csv
 profile.json.gz

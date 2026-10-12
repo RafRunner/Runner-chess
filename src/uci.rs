@@ -1,12 +1,14 @@
 use std::{
     io::{self, Write},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crate::{
     bench::{self, BenchError, BENCH},
     board::{movegen::IllegalMoveError, Board, FenParseError},
     chess_move::{AbstractMove, MoveParseError},
+    piece::Color,
+    search::{Limits, Searcher},
 };
 
 #[derive(Debug)]
@@ -101,10 +103,7 @@ impl Uci {
                             "usage: go perft <depth>".to_string(),
                         ))
                     }
-                    _ => match self.board.legal_successors().next() {
-                        Some((mv, _)) => writeln!(out, "bestmove {mv}")?,
-                        None => writeln!(out, "bestmove 0000")?,
-                    },
+                    _ => self.go_search(&args, out)?,
                 }
             }
             "d" => writeln!(out, "{}\n{}\n", self.board, self.board.to_fen())?,
@@ -147,6 +146,49 @@ impl Uci {
         writeln!(out, "Nodes searched: {total}")?;
         Ok(())
     }
+
+    /// `go [wtime <ms>] [btime <ms>] [winc <ms>] [binc <ms>] [movestogo <n>] [depth <n>] [movetime <ms>]`
+    fn go_search(&self, args: &[&str], out: &mut impl Write) -> Result<(), UciError> {
+        let limits = parse_go(args)?;
+        let mut searcher = Searcher::new();
+
+        match searcher.search_root(self.board(), limits, out)? {
+            Some(mv) => writeln!(out, "bestmove {mv}")?,
+            None => writeln!(out, "bestmove 0000")?,
+        }
+        Ok(())
+    }
+}
+
+/// Parses the arguments of a searching `go`. Anything not supported yet (`infinite`,
+/// `ponder`, `searchmoves`, `nodes`, `mate`) is ignored, so the GUI still gets a move.
+fn parse_go(args: &[&str]) -> Result<Limits, UciError> {
+    let mut limits = Limits::default();
+    let mut args = args.iter();
+
+    while let Some(&name) = args.next() {
+        let mut number = || {
+            args.next()
+                .and_then(|value| value.parse::<i64>().ok())
+                .ok_or_else(|| UciError::UnexpectedArgs(format!("go {name} expects a number")))
+        };
+        // some GUIs send negative times once the clock runs out
+        let millis = |ms: i64| Duration::from_millis(ms.max(0) as u64);
+        let count = |n: i64| n.clamp(1, u32::MAX.into()) as u32;
+
+        match name {
+            "depth" => limits.depth = Some(count(number()?)),
+            "movestogo" => limits.movestogo = Some(count(number()?)),
+            "movetime" => limits.movetime = Some(millis(number()?)),
+            "wtime" => limits.time[Color::White] = Some(millis(number()?)),
+            "btime" => limits.time[Color::Black] = Some(millis(number()?)),
+            "winc" => limits.inc[Color::White] = millis(number()?),
+            "binc" => limits.inc[Color::Black] = millis(number()?),
+            _ => (),
+        }
+    }
+
+    Ok(limits)
 }
 
 /// Parses the arguments of `position`:
@@ -322,15 +364,35 @@ mod tests {
         assert_eq!(uci.board().to_fen(), before);
     }
 
+    /// The move of the `bestmove` line, which must come last.
+    fn bestmove(out: &str) -> &str {
+        let last = out.lines().last().unwrap_or_default();
+        last.strip_prefix("bestmove ")
+            .unwrap_or_else(|| panic!("no bestmove at the end of {out}"))
+    }
+
     #[test]
     fn go_outputs_legal_bestmove() {
         let mut uci = Uci::new();
         run(&mut uci, "position startpos").unwrap();
         let (_, out) = run(&mut uci, "go").unwrap();
 
-        let mv = out.strip_prefix("bestmove ").unwrap().trim();
-        let parsed = AbstractMove::from_uci(mv).unwrap();
+        let parsed = AbstractMove::from_uci(bestmove(&out)).unwrap();
         assert!(uci.board().resolve_move(parsed).is_ok());
+    }
+
+    #[test]
+    fn go_reports_info_before_bestmove() {
+        let mut uci = Uci::new();
+        let (_, out) = run(&mut uci, "go depth 2").unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+
+        assert_eq!(lines.len(), 2, "{out}");
+        assert!(lines[0].starts_with("info depth 2 "), "{out}");
+        assert!(
+            lines[0].ends_with(&format!(" pv {}", bestmove(&out))),
+            "{out}"
+        );
     }
 
     #[test]
@@ -346,7 +408,66 @@ mod tests {
     fn go_with_search_args_still_answers() {
         let mut uci = Uci::new();
         let (_, out) = run(&mut uci, "go wtime 1000 btime 1000").unwrap();
-        assert!(out.starts_with("bestmove "), "{out}");
+        bestmove(&out);
+    }
+
+    #[test]
+    fn go_ignores_unsupported_options() {
+        let mut uci = Uci::new();
+        let (_, out) = run(
+            &mut uci,
+            "go ponder depth 1 nodes 500 searchmoves e2e4 d2d4",
+        )
+        .unwrap();
+        bestmove(&out);
+    }
+
+    #[test]
+    fn go_limits_parse() {
+        let ms = Duration::from_millis;
+        assert_eq!(
+            parse_go(&["wtime", "300000", "btime", "-20", "winc", "2000", "binc", "0"]).unwrap(),
+            Limits {
+                time: [Some(ms(300_000)), Some(ms(0))],
+                inc: [ms(2_000), ms(0)],
+                ..Limits::default()
+            }
+        );
+        assert_eq!(
+            parse_go(&[
+                "infinite",
+                "depth",
+                "7",
+                "movetime",
+                "500",
+                "movestogo",
+                "12"
+            ])
+            .unwrap(),
+            Limits {
+                depth: Some(7),
+                movetime: Some(ms(500)),
+                movestogo: Some(12),
+                ..Limits::default()
+            }
+        );
+        assert_eq!(parse_go(&[]).unwrap(), Limits::default());
+    }
+
+    #[test]
+    fn go_invalid_args() {
+        let mut uci = Uci::new();
+        for line in [
+            "go depth",
+            "go depth x",
+            "go wtime 100 btime",
+            "go movetime 1.5",
+        ] {
+            assert!(
+                matches!(run(&mut uci, line), Err(UciError::UnexpectedArgs(_))),
+                "{line}"
+            );
+        }
     }
 
     fn perft_lines(uci: &mut Uci, depth: u32) -> Vec<String> {
