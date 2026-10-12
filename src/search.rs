@@ -8,7 +8,7 @@ use crate::{
     bench,
     board::Board,
     chess_move::{Move, MoveKind},
-    eval::{eval, INF_SCORE, MATE, MAX_EVAL},
+    eval::{eval, INF_SCORE, MATE, MAX_EVAL, MAX_PLY},
 };
 
 /// What a `go` command allows the search to spend.
@@ -25,6 +25,7 @@ pub struct Limits {
 
 pub struct Searcher {
     nodes: u64,
+    seldepth: u32,
     start: Instant,
     deadline: Option<Instant>, // from wtime/winc or movetime
     stopped: bool,             // later: Arc<AtomicBool> for UCI `stop`
@@ -37,6 +38,7 @@ impl Searcher {
     pub fn new() -> Self {
         Self {
             nodes: 0,
+            seldepth: 0,
             start: Instant::now(),
             deadline: None,
             stopped: false,
@@ -70,9 +72,10 @@ impl Searcher {
             let elapsed = self.start.elapsed();
             writeln!(
                 out,
-                "info depth {depth} score {} nodes {} nps {} time {} pv {mv}",
+                "info depth {depth} score {} nodes {} seldepth {} nps {} time {} pv {mv}",
                 uci_score(best_score),
                 self.nodes,
+                self.seldepth,
                 bench::nps(self.nodes, elapsed),
                 elapsed.as_millis(),
             )?;
@@ -82,10 +85,13 @@ impl Searcher {
     }
 
     fn negamax(&mut self, board: &Board, depth: u32, ply: u32, mut alpha: i16, beta: i16) -> i16 {
-        self.nodes += 1;
         if depth == 0 {
             return self.quiescence(board, ply, alpha, beta);
         }
+        if ply >= MAX_PLY as u32 {
+            return eval(board);
+        }
+        self.nodes += 1;
 
         let mut best = -INF_SCORE;
         let mut has_legal_move = false;
@@ -120,18 +126,51 @@ impl Searcher {
         best
     }
 
-    fn quiescence(&mut self, board: &Board, ply: u32, mut _alpha: i16, _beta: i16) -> i16 {
-        let static_eval = eval(board);
-
-        if board.legal_successors().next().is_none() {
-            if board.is_in_check(board.side_to_move()) {
-                -MATE + ply as i16
-            } else {
-                0
-            }
-        } else {
-            static_eval
+    fn quiescence(&mut self, board: &Board, ply: u32, mut alpha: i16, beta: i16) -> i16 {
+        if ply > self.seldepth {
+            self.seldepth = ply;
         }
+        if ply >= MAX_PLY as u32 {
+            self.nodes += 1;
+            return eval(board);
+        }
+        if board.is_in_check(board.side_to_move()) {
+            // If we're in check, we need to check all possible responses, not just captures
+            return self.negamax(board, 1, ply, alpha, beta);
+        }
+        self.nodes += 1;
+
+        let static_eval = eval(board);
+        if static_eval >= beta {
+            // Not capturing is already too good for the opponent. No point in continuing
+            return static_eval;
+        }
+        if static_eval > alpha {
+            // Found something better
+            alpha = static_eval;
+        }
+
+        let mut best = static_eval;
+
+        for (_, next) in self.captures_ordered(board) {
+            let score = -self.quiescence(&next, ply + 1, -beta, -alpha);
+
+            if score > best {
+                best = score;
+
+                if best > alpha {
+                    // We found something better, so we raise the floor. The window closes and we cut more
+                    alpha = best;
+
+                    if alpha >= beta {
+                        // Opponent has something better guaranteed, therefore we can cut the analysis here
+                        break;
+                    }
+                }
+            }
+        }
+
+        best
     }
 
     fn move_sort_key(&self, board: &Board, mv: Move) -> i32 {
@@ -157,15 +196,28 @@ impl Searcher {
         key
     }
 
-    // Possibly strong moves come first
-    fn legal_ordered<'a>(&self, board: &'a Board) -> impl Iterator<Item = (Move, Board)> + 'a {
-        let mut pseudo_legal = Vec::new();
-        board.generate_moves(&mut pseudo_legal);
-        pseudo_legal.sort_by_key(|&mv| Reverse(self.move_sort_key(board, mv)));
+    /// Possibly strong moves come first
+    fn ordered_moves<'a>(
+        &self,
+        board: &'a Board,
+        filter: impl Fn(&Move) -> bool,
+    ) -> impl Iterator<Item = (Move, Board)> + 'a {
+        let mut moves = Vec::new();
+        board.generate_moves(&mut moves);
+        moves.retain(|mv| filter(mv));
+        moves.sort_by_key(|&mv| Reverse(self.move_sort_key(board, mv)));
 
-        pseudo_legal
+        moves
             .into_iter()
             .filter_map(move |mv| board.make_legal_move(mv).map(|next| (mv, next)))
+    }
+
+    fn legal_ordered<'a>(&self, board: &'a Board) -> impl Iterator<Item = (Move, Board)> + 'a {
+        self.ordered_moves(board, |_| true)
+    }
+
+    fn captures_ordered<'a>(&self, board: &'a Board) -> impl Iterator<Item = (Move, Board)> + 'a {
+        self.ordered_moves(board, |mv| mv.is_capture())
     }
 }
 
@@ -198,7 +250,6 @@ mod tests {
     fn ordered(fen: &str) -> Vec<Move> {
         Searcher::new()
             .legal_ordered(&board(fen))
-            .into_iter()
             .map(|(mv, _)| mv)
             .collect()
     }
@@ -360,21 +411,26 @@ mod tests {
 
     #[test]
     fn avoids_a_poisoned_capture() {
-        // Qxd5 wins a pawn and loses the queen to exd5
-        assert_avoids("4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1", 2, "d1d5");
+        // Qxd5 wins a pawn and loses the queen to exd5, which only quiescence sees at depth 1
+        for depth in 1..=3 {
+            assert_avoids("4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1", depth, "d1d5");
+        }
     }
 
     #[test]
     fn finds_mate_in_one() {
-        for depth in 2..=3 {
+        // at depth 1 the mated side is already in quiescence, in check without evasions
+        for depth in 1..=3 {
             assert_best("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", depth, "a1a8");
         }
     }
 
     #[test]
     fn avoids_walking_into_mate() {
-        // Rxa6 wins a knight, and then Re1 is mate
-        assert_avoids("4r1k1/5ppp/n7/8/8/8/5PPP/R5K1 w - - 0 1", 3, "a1a6");
+        // Rxa6 wins a knight, and then Re1 is mate, at depth 2 found by quiescence
+        for depth in 2..=3 {
+            assert_avoids("4r1k1/5ppp/n7/8/8/8/5PPP/R5K1 w - - 0 1", depth, "a1a6");
+        }
     }
 
     #[test]
@@ -418,13 +474,56 @@ mod tests {
     fn mirrored_positions_have_the_same_score() {
         for fen in PERFT_POSITIONS {
             let mirrored = mirror_fen(fen);
-            for depth in 1..=3 {
+            // deeper is slow in debug builds: quiescence follows every capture in these
+            for depth in 0..=2 {
                 assert_eq!(
                     score(fen, depth),
                     score(&mirrored, depth),
                     "{fen} vs {mirrored} at depth {depth}"
                 );
             }
+        }
+    }
+
+    // quiescence, which is all a depth 0 search does
+
+    /// `fen` and its mirror, so every rule is checked for both colors.
+    fn both_colors(fen: &str) -> [String; 2] {
+        [fen.to_string(), mirror_fen(fen)]
+    }
+
+    #[test]
+    fn quiescence_sees_the_recapture() {
+        // Black is a queen down, but exd5 takes it back
+        for fen in both_colors("4k3/8/4p3/3Q4/8/8/8/4K3 b - - 0 1") {
+            assert!(eval(&board(&fen)) < -500, "{fen}");
+            assert!(score(&fen, 0) > 0, "{fen}");
+        }
+    }
+
+    #[test]
+    fn quiescence_stands_pat_when_captures_lose() {
+        // the only capture, Qxd5, loses the queen, so not capturing keeps the static eval
+        for fen in both_colors("4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1") {
+            assert_eq!(score(&fen, 0), eval(&board(&fen)), "{fen}");
+        }
+    }
+
+    #[test]
+    fn no_stand_pat_in_check() {
+        // Black is up the exchange, but Nc7+ forks king and rook: the king must move and
+        // Nxa8 follows, which standing pat on the static eval would miss
+        for fen in both_colors("r3k3/2N5/8/8/8/8/8/7K b - - 0 1") {
+            assert!(eval(&board(&fen)) > 100, "{fen}");
+            assert!(score(&fen, 0) < -100, "{fen}");
+        }
+    }
+
+    #[test]
+    fn quiescence_sees_mate() {
+        // checkmated right at the horizon
+        for fen in both_colors("5Q1k/8/6K1/8/8/8/8/8 b - - 0 1") {
+            assert_eq!(score(&fen, 0), -MATE, "{fen}");
         }
     }
 
@@ -437,10 +536,33 @@ mod tests {
 
         assert_eq!(out.lines().count(), 1, "{out}");
         assert!(out.starts_with("info depth 2 score cp "), "{out}");
-        for field in [" nodes ", " nps ", " time "] {
+        for field in [" nodes ", " seldepth ", " nps ", " time "] {
             assert!(out.contains(field), "{out}");
         }
         assert!(out.ends_with(&format!(" pv {best}\n")), "{out}");
+    }
+
+    /// The number after `name` in an `info` line.
+    fn info_field(out: &str, name: &str) -> u32 {
+        let fields: Vec<&str> = out.split_whitespace().collect();
+        let i = fields
+            .iter()
+            .position(|&field| field == name)
+            .unwrap_or_else(|| panic!("no {name} in {out}"));
+        fields[i + 1].parse().unwrap()
+    }
+
+    #[test]
+    fn seldepth_counts_quiescence() {
+        // nothing can be captured after a single move from the start, so quiescence
+        // stops right at the depth
+        let out = output(Board::STARTPOS, 1);
+        assert_eq!(info_field(&out, "seldepth"), 1, "{out}");
+
+        // Nxd5 exd5 Rxd5 Nxd5: an exchange with no checks, so only the captures of
+        // quiescence can take the search past the depth
+        let out = output("7k/7p/4pn2/3p4/8/2N5/8/K2R4 w - - 0 1", 1);
+        assert!(info_field(&out, "seldepth") >= 3, "{out}");
     }
 
     #[test]
