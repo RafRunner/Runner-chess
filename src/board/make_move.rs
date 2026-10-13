@@ -9,6 +9,9 @@ impl Board {
     pub fn make_move(&self, mv: Move) -> Self {
         let mut next = self.clone();
         next.en_passant = None;
+        if let Some(ep) = self.en_passant {
+            next.hash = next.hash.toggle_en_passant_key(ep);
+        }
 
         let us = self.side_to_move;
         let them = us.oposite();
@@ -47,6 +50,7 @@ impl Board {
 
                 if self.can_take_ep(ep_square, them) {
                     next.en_passant = Some(ep_square);
+                    next.hash = next.hash.toggle_en_passant_key(ep_square);
                 }
             }
             MoveKind::EnPassant => {
@@ -95,6 +99,11 @@ impl Board {
         // Housekeeping
         next.castling = self.castling.update_move(mv);
         next.side_to_move = them;
+        next.hash = next
+            .hash
+            .toggle_castling_key(self.castling())
+            .toggle_castling_key(next.castling())
+            .toggle_turn_key();
 
         // Clocks
         if piece.kind() == PieceKind::Pawn || mv.is_capture() {
@@ -120,6 +129,11 @@ impl Board {
 
         self.mailbox[from] = None;
         self.mailbox[to] = Some(new_piece);
+
+        self.hash = self
+            .hash
+            .toggle_piece_key(piece, from)
+            .toggle_piece_key(new_piece, to);
     }
 
     fn remove_piece(&mut self, piece: Piece, sq: Square) {
@@ -127,6 +141,8 @@ impl Board {
         self.by_color[piece.color()] &= !sq.bb();
 
         self.mailbox[sq] = None;
+
+        self.hash = self.hash.toggle_piece_key(piece, sq);
     }
 }
 

@@ -9,6 +9,7 @@ use crate::{
     castling::CastlingRights,
     piece::{Color, Piece, PieceKind},
     square::{Delta, Square},
+    zobrist::ZobristHash,
 };
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,7 @@ pub struct Board {
 
     halfmove_clock: u16,
     fullmove_counter: u16,
+    hash: ZobristHash,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +36,6 @@ pub enum FenParseError {
     InvalidSideToMove,
     InvalidCastling,
     InvalidEnPassant,
-    EnPassantSideMismatch(Square),
     IllegalPosition(BoardInconsistencyError),
     InvalidHalfmove,
     InvalidFullmove,
@@ -71,6 +72,7 @@ impl Board {
             en_passant: None,
             halfmove_clock: 0,
             fullmove_counter: 1,
+            hash: ZobristHash::empty(),
         }
     }
 
@@ -100,6 +102,10 @@ impl Board {
 
     pub fn en_passant(&self) -> Option<Square> {
         self.en_passant
+    }
+
+    pub fn hash(&self) -> ZobristHash {
+        self.hash
     }
 
     pub fn from_fen(fen: &str) -> Result<Self, FenParseError> {
@@ -166,13 +172,8 @@ impl Board {
             square => {
                 let square =
                     Square::from_algebraic(square).map_err(|_| FenParseError::InvalidEnPassant)?;
-                if board.side_to_move == Color::White && square.rank() != 5
-                    || board.side_to_move == Color::Black && square.rank() != 2
-                {
-                    return Err(FenParseError::EnPassantSideMismatch(square));
-                } else {
-                    Some(square)
-                }
+
+                Some(square)
             }
         };
 
@@ -334,6 +335,9 @@ impl Board {
             }
         }
 
+        // only now that the en passant square is final
+        self.hash = ZobristHash::hash(self);
+
         if self.is_in_check(them) {
             return Err(BoardInconsistencyError::KingCanBeCaptured(them));
         }
@@ -370,6 +374,12 @@ impl Board {
         if self.by_color[Color::Black] != expected[Color::Black] {
             return Err(BoardInconsistencyError::Desynced(
                 "Black BitBoards out of sync",
+            ));
+        }
+
+        if self.hash != ZobristHash::hash(self) {
+            return Err(BoardInconsistencyError::Desynced(
+                "Zobrist hash out of sync",
             ));
         }
 
@@ -668,7 +678,7 @@ mod tests {
         for (fen, sq) in mismatch {
             assert_eq!(
                 ep_of(fen).unwrap_err(),
-                FenParseError::EnPassantSideMismatch(sq),
+                FenParseError::IllegalPosition(BoardInconsistencyError::EnPassantWrongRank(sq)),
                 "{fen}"
             );
         }
