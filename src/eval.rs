@@ -1,14 +1,8 @@
-use std::ops::Div;
-
 use crate::{
     board::Board,
     piece::{Color, Piece},
+    score::Score,
 };
-
-pub const MATE: i16 = 32_000;
-pub const MAX_PLY: u8 = 248;
-pub const INF_SCORE: i16 = i16::MAX - 1;
-pub const MAX_EVAL: i16 = MATE - MAX_PLY as i16 - 1;
 
 const MAX_PHASE: i32 = 24;
 const PIECE_VALUES: [i32; 6] = [100, 320, 330, 500, 900, 0];
@@ -115,7 +109,7 @@ pub static EG_TABLES: [[i32; 64]; 6] = [
     PST_KING_EG,
 ];
 
-pub fn eval(board: &Board) -> i16 {
+pub fn eval(board: &Board) -> Score {
     let us = board.side_to_move();
 
     let mut our_score: i32 = 0;
@@ -151,9 +145,7 @@ pub fn eval(board: &Board) -> i16 {
         }
     }
 
-    (our_score - their_score)
-        .div(MAX_PHASE)
-        .min(MAX_EVAL as i32) as i16
+    Score::new((our_score - their_score) / MAX_PHASE)
 }
 
 #[cfg(test)]
@@ -173,18 +165,18 @@ mod tests {
     /// must their mirrors, so every rule is checked for both colors.
     fn assert_better(better: &str, worse: &str) {
         let (b, w) = (eval(&board(better)), eval(&board(worse)));
-        assert!(b > w, "expected {better} ({b}) > {worse} ({w})");
+        assert!(b > w, "expected {better} ({b:?}) > {worse} ({w:?})");
 
         let (better, worse) = (mirror_fen(better), mirror_fen(worse));
         let (b, w) = (eval(&board(&better)), eval(&board(&worse)));
-        assert!(b > w, "expected {better} ({b}) > {worse} ({w})");
+        assert!(b > w, "expected {better} ({b:?}) > {worse} ({w:?})");
     }
 
     // properties
 
     #[test]
     fn startpos_is_balanced() {
-        assert_eq!(eval(&board(Board::STARTPOS)), 0);
+        assert_eq!(eval(&board(Board::STARTPOS)), Score::DRAW);
     }
 
     #[test]

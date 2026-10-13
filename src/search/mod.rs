@@ -8,12 +8,7 @@ use std::{
     time::Instant,
 };
 
-use crate::{
-    bench,
-    board::Board,
-    chess_move::Move,
-    eval::{eval, INF_SCORE, MATE, MAX_EVAL, MAX_PLY},
-};
+use crate::{bench, board::Board, chess_move::Move, eval::eval, score::Score};
 
 pub struct Searcher {
     nodes: u64,
@@ -50,14 +45,14 @@ impl Searcher {
         out: &mut impl Write,
     ) -> io::Result<Option<Move>> {
         let depth = limits.depth.unwrap_or(MAX_DEPTH);
-        let mut best_score = -INF_SCORE;
+        let mut best_score = -Score::INF;
 
         let legal_ordered: Vec<(Move, Board)> = self.legal_ordered(board).collect();
 
         let mut best_move = legal_ordered.first().map(|(mv, _)| *mv);
 
         for (mv, next) in legal_ordered {
-            let score = -self.negamax(&next, depth - 1, 1, -INF_SCORE, -best_score);
+            let score = -self.negamax(&next, depth - 1, 1, -Score::INF, -best_score);
 
             if score > best_score {
                 best_score = score;
@@ -70,7 +65,7 @@ impl Searcher {
             writeln!(
                 out,
                 "info depth {depth} score {} nodes {} seldepth {} nps {} time {} pv {mv}",
-                uci_score(best_score),
+                best_score.to_uci(),
                 self.nodes,
                 self.seldepth,
                 bench::nps(self.nodes, elapsed),
@@ -81,16 +76,23 @@ impl Searcher {
         Ok(best_move)
     }
 
-    fn negamax(&mut self, board: &Board, depth: u32, ply: u32, mut alpha: i16, beta: i16) -> i16 {
+    fn negamax(
+        &mut self,
+        board: &Board,
+        depth: u32,
+        ply: u32,
+        mut alpha: Score,
+        beta: Score,
+    ) -> Score {
         if depth == 0 {
             return self.quiescence(board, ply, alpha, beta);
         }
-        if ply >= MAX_PLY as u32 {
+        if ply >= Score::MAX_PLY {
             return eval(board);
         }
         self.nodes += 1;
 
-        let mut best = -INF_SCORE;
+        let mut best = -Score::INF;
         let mut has_legal_move = false;
 
         for (_, next) in self.legal_ordered(board) {
@@ -114,20 +116,20 @@ impl Searcher {
 
         if !has_legal_move {
             return if board.is_in_check(board.side_to_move()) {
-                -MATE + ply as i16
+                Score::mated_in(ply)
             } else {
-                0
+                Score::DRAW
             };
         }
 
         best
     }
 
-    fn quiescence(&mut self, board: &Board, ply: u32, mut alpha: i16, beta: i16) -> i16 {
+    fn quiescence(&mut self, board: &Board, ply: u32, mut alpha: Score, beta: Score) -> Score {
         if ply > self.seldepth {
             self.seldepth = ply;
         }
-        if ply >= MAX_PLY as u32 {
+        if ply >= Score::MAX_PLY {
             self.nodes += 1;
             return eval(board);
         }
@@ -177,18 +179,6 @@ impl Default for Searcher {
     }
 }
 
-/// A score as UCI wants it: `cp <centipawns>`, or `mate <moves>`, negative when
-/// the side to move is the one getting mated.
-fn uci_score(score: i16) -> String {
-    if score.abs() <= MAX_EVAL {
-        return format!("cp {score}");
-    }
-
-    let plies = MATE - score.abs();
-    let moves = (plies + 1) / 2;
-    format!("mate {}", if score > 0 { moves } else { -moves })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,8 +211,8 @@ mod tests {
     }
 
     /// The score of `fen` for the side to move, searched `depth` plies deep.
-    fn score(fen: &str, depth: u32) -> i16 {
-        Searcher::new().negamax(&board(fen), depth, 0, -INF_SCORE, INF_SCORE)
+    fn score(fen: &str, depth: u32) -> Score {
+        Searcher::new().negamax(&board(fen), depth, 0, -Score::INF, Score::INF)
     }
 
     /// The same move seen from the other side of the board: e2e4 becomes e7e5.
@@ -312,14 +302,14 @@ mod tests {
         let mate_in_one = "6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1";
 
         for fen in [mated.to_string(), mirror_fen(mated)] {
-            assert_eq!(score(&fen, 1), -MATE, "{fen}");
+            assert_eq!(score(&fen, 1), Score::mated_in(0), "{fen}");
         }
         for fen in [stalemated.to_string(), mirror_fen(stalemated)] {
-            assert_eq!(score(&fen, 1), 0, "{fen}");
+            assert_eq!(score(&fen, 1), Score::DRAW, "{fen}");
         }
         // one ply until the mate
         for fen in [mate_in_one.to_string(), mirror_fen(mate_in_one)] {
-            assert_eq!(score(&fen, 2), MATE - 1, "{fen}");
+            assert_eq!(score(&fen, 2), Score::mate_in(1), "{fen}");
         }
     }
 
@@ -354,8 +344,8 @@ mod tests {
     fn quiescence_sees_the_recapture() {
         // Black is a queen down, but exd5 takes it back
         for fen in both_colors("4k3/8/4p3/3Q4/8/8/8/4K3 b - - 0 1") {
-            assert!(eval(&board(&fen)) < -500, "{fen}");
-            assert!(score(&fen, 0) > 0, "{fen}");
+            assert!(eval(&board(&fen)) < Score::new(-500), "{fen}");
+            assert!(score(&fen, 0) > Score::DRAW, "{fen}");
         }
     }
 
@@ -372,8 +362,8 @@ mod tests {
         // Black is up the exchange, but Nc7+ forks king and rook: the king must move and
         // Nxa8 follows, which standing pat on the static eval would miss
         for fen in both_colors("r3k3/2N5/8/8/8/8/8/7K b - - 0 1") {
-            assert!(eval(&board(&fen)) > 100, "{fen}");
-            assert!(score(&fen, 0) < -100, "{fen}");
+            assert!(eval(&board(&fen)) > Score::new(100), "{fen}");
+            assert!(score(&fen, 0) < Score::new(-100), "{fen}");
         }
     }
 
@@ -381,7 +371,7 @@ mod tests {
     fn quiescence_sees_mate() {
         // checkmated right at the horizon
         for fen in both_colors("5Q1k/8/6K1/8/8/8/8/8 b - - 0 1") {
-            assert_eq!(score(&fen, 0), -MATE, "{fen}");
+            assert_eq!(score(&fen, 0), Score::mated_in(0), "{fen}");
         }
     }
 
@@ -436,15 +426,5 @@ mod tests {
     #[test]
     fn no_info_without_legal_moves() {
         assert_eq!(output("5Q1k/8/6K1/8/8/8/8/8 b - - 0 1", 3), "");
-    }
-
-    #[test]
-    fn uci_score_format() {
-        assert_eq!(uci_score(35), "cp 35");
-        assert_eq!(uci_score(-120), "cp -120");
-        assert_eq!(uci_score(MATE - 1), "mate 1");
-        assert_eq!(uci_score(MATE - 3), "mate 2");
-        assert_eq!(uci_score(-MATE + 2), "mate -1");
-        assert_eq!(uci_score(-MATE + 4), "mate -2");
     }
 }
