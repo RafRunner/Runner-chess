@@ -41,10 +41,13 @@ impl Board {
             MoveKind::DoublePush => {
                 next.move_piece(piece, from, to, None);
 
-                next.en_passant = Some(
-                    to.offset(delta)
-                        .expect("Double Push: unexpected 'to' Square"),
-                )
+                let ep_square = to
+                    .offset(delta)
+                    .expect("Double Push: unexpected 'to' Square");
+
+                if self.can_take_ep(ep_square, them) {
+                    next.en_passant = Some(ep_square);
+                }
             }
             MoveKind::EnPassant => {
                 next.move_piece(piece, from, to, None);
@@ -180,25 +183,54 @@ mod tests {
     }
 
     #[test]
-    fn double_push_sets_en_passant() {
-        check(
-            Board::STARTPOS,
-            "e2e4",
-            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
-        );
-        check(
-            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
-            "d7d5",
-            "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2",
-        );
+    fn double_push_sets_en_passant_when_a_pawn_can_take() {
+        #[rustfmt::skip]
+        let cases = [
+            // a black pawn on either side of the pushed one
+            ("4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1", "e2e4", "4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1"),
+            ("4k3/8/8/8/5p2/8/4P3/4K3 w - - 0 1", "e2e4", "4k3/8/8/8/4Pp2/8/8/4K3 b - e3 0 1"),
+            ("4k3/3p4/8/4P3/8/8/8/4K3 b - - 0 1", "d7d5", "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 2"),
+            // on the edges of the board
+            ("4k3/8/8/8/1p6/8/P7/4K3 w - - 0 1",  "a2a4", "4k3/8/8/8/Pp6/8/8/4K3 b - a3 0 1"),
+            ("4k3/7p/8/6P1/8/8/8/4K3 b - - 0 1",  "h7h5", "4k3/8/8/6Pp/8/8/8/4K3 w - h6 0 2"),
+            // legality isn't checked, like in Polyglot: taking would leave the black
+            // king in check from the rook
+            ("8/8/8/8/R3p2k/8/3P4/4K3 w - - 0 1", "d2d4", "8/8/8/8/R2Pp2k/8/8/4K3 b - d3 0 1"),
+        ];
+        for (fen, uci, expected) in cases {
+            check(fen, uci, expected);
+        }
+    }
+
+    #[test]
+    fn double_push_without_a_pawn_beside_leaves_no_en_passant() {
+        #[rustfmt::skip]
+        let cases = [
+            (Board::STARTPOS, "e2e4", "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"),
+            // the pawn on e4 is diagonal to d5, it can only take it normally
+            (
+                "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+                "d7d5",
+                "rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+            ),
+            // the pawn beside it has the same color
+            ("4k3/8/8/8/3P4/8/4P3/4K3 w - - 0 1", "e2e4", "4k3/8/8/8/3PP3/8/8/4K3 b - - 0 1"),
+            // a black pawn diagonal to e3, but behind it instead of beside e4
+            ("4k3/8/8/8/8/8/3pP3/K7 w - - 0 1",   "e2e4", "4k3/8/8/8/4P3/8/3p4/K7 b - - 0 1"),
+            // a pawn on the other edge of the board
+            ("4k3/8/8/8/8/7p/P7/4K3 w - - 0 1",   "a2a4", "4k3/8/8/8/P7/7p/8/4K3 b - - 0 1"),
+        ];
+        for (fen, uci, expected) in cases {
+            check(fen, uci, expected);
+        }
     }
 
     #[test]
     fn any_other_move_clears_en_passant() {
         check(
-            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
-            "g8f6",
-            "rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2",
+            "4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1",
+            "e8d8",
+            "3k4/8/8/8/3pP3/8/8/4K3 w - - 1 2",
         );
     }
 

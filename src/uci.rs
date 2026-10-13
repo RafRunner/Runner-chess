@@ -347,7 +347,7 @@ mod tests {
         run(&mut uci, "isready").unwrap();
         assert_eq!(
             uci.board().to_fen(),
-            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
         );
     }
 
@@ -587,7 +587,7 @@ mod tests {
         assert_eq!(control, Control::Continue);
         assert!(out.contains(&uci.board().to_string()), "{out}");
         assert!(
-            out.contains("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"),
+            out.contains("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"),
             "{out}"
         );
     }

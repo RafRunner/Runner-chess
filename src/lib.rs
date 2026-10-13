@@ -10,6 +10,7 @@ pub mod score;
 pub mod search;
 pub mod square;
 pub mod uci;
+pub mod zobrist;
 
 #[cfg(test)]
 mod test_utils;

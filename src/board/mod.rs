@@ -253,10 +253,17 @@ impl Board {
         self.is_square_attacked(king.next().unwrap(), color.oposite())
     }
 
-    /// Rejects positions that would break the engine: desynced mailbox and
+    fn can_take_ep(&self, ep_square: Square, by: Color) -> bool {
+        let can_take_ep =
+            PAWN_ATTACKS[by.oposite()][ep_square] & self.pieces(Piece::new(by, PieceKind::Pawn));
+
+        !can_take_ep.is_empty()
+    }
+
+    /// Rejects/fixes positions that would break the engine: desynced mailbox and
     /// bitboards, or out-of-bounds indexing. Positions that are unreachable but
     /// harmless (9 pawns, same-colored bishops, ...) are accepted on purpose.
-    fn sanity_check(&self) -> Result<(), BoardInconsistencyError> {
+    fn sanity_check(&mut self) -> Result<(), BoardInconsistencyError> {
         let us = self.side_to_move();
         let them = us.oposite();
         let white_to_move = us == Color::White;
@@ -319,6 +326,11 @@ impl Board {
 
             if self.mailbox[pawn_square] != Some(Piece::new(them, PieceKind::Pawn)) {
                 return Err(BoardInconsistencyError::EnPassantWithoutPawn(sq));
+            }
+
+            // The ep square might have been set even if no pawn can capture
+            if !self.can_take_ep(sq, us) {
+                self.en_passant = None;
             }
         }
 
@@ -622,6 +634,18 @@ mod tests {
         for (fen, sq) in cases {
             assert_eq!(ep_of(fen).unwrap(), Some(sq), "{fen}");
         }
+
+        // the original FEN standard writes the square after any double push: such a
+        // FEN is accepted, but the square is dropped, since no pawn could use it
+        let nobody_can_take = [
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1", // 1.e4
+            "4k3/8/8/8/3PP3/8/8/4K3 b - e3 0 1", // the pawn beside it has the same color
+            "4k3/8/8/3p4/8/8/8/4K3 w - d6 0 1",  // no white pawn at all
+            "4k3/8/8/3p4/4P3/8/8/4K3 w - d6 0 1", // e4 is diagonal to d5, not beside it
+        ];
+        for fen in nobody_can_take {
+            assert_eq!(ep_of(fen).unwrap(), None, "{fen}");
+        }
     }
 
     #[test]
@@ -689,6 +713,36 @@ mod tests {
         ];
         for fen in valid {
             assert!(Board::from_fen(fen).is_ok(), "should accept: {fen:?}");
+        }
+    }
+
+    /// Dropping a square no pawn can use only applies to a possible position: an
+    /// impossible one is rejected whether or not there's a pawn beside it.
+    #[test]
+    fn en_passant_must_match_the_board_even_if_no_pawn_can_take() {
+        use BoardInconsistencyError::{EnPassantBlocked, EnPassantWithoutPawn};
+
+        let without_pawn = [
+            "4k3/8/8/8/8/8/8/4K3 b - e3 0 1",   // no pawn on e4
+            "4k3/8/8/8/4p3/8/8/4K3 b - e3 0 1", // pawn on e4 has the wrong color
+            "4k3/8/8/8/8/8/8/4K3 w - d6 0 1",   // no pawn on d5
+        ];
+        for fen in without_pawn {
+            assert!(
+                matches!(inconsistency_of(fen), EnPassantWithoutPawn(_)),
+                "{fen:?}"
+            );
+        }
+
+        let blocked = [
+            "4k3/8/8/8/4P3/4N3/8/4K3 b - e3 0 1", // target square e3 occupied
+            "4k3/3n4/8/3p4/8/8/8/4K3 w - d6 0 1", // origin square d7 occupied
+        ];
+        for fen in blocked {
+            assert!(
+                matches!(inconsistency_of(fen), EnPassantBlocked(_)),
+                "{fen:?}"
+            );
         }
     }
 
