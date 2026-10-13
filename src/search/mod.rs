@@ -37,6 +37,11 @@ impl Searcher {
         }
     }
 
+    /// How many positions the searches so far have visited.
+    pub fn nodes(&self) -> u64 {
+        self.nodes
+    }
+
     /// Searches to the depth in `limits` and writes an `info` line about it to `out`.
     pub fn search_root(
         &mut self,

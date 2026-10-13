@@ -10,9 +10,11 @@ fn main() -> ExitCode {
     let mut uci = Uci::new();
     let mut stdout = io::stdout().lock();
 
-    // `runner-chess bench` runs the benchmark and exits, for scripts and hyperfine
-    if env::args().nth(1).as_deref() == Some("bench") {
-        return match uci.handle("bench", &mut stdout) {
+    // `runner-chess bench [search [depth]]` runs a benchmark and exits, for scripts
+    // and hyperfine
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("bench") {
+        return match uci.handle(&args.join(" "), &mut stdout) {
             Ok(_) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("{e:?}");

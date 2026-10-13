@@ -1,7 +1,6 @@
 use std::ops::Div;
 
 use crate::{
-    bitboard::BitBoard,
     board::Board,
     piece::{Color, Piece},
 };
@@ -130,26 +129,25 @@ pub fn eval(board: &Board) -> i16 {
 
     phase = phase.min(MAX_PHASE);
 
-    for sq in BitBoard::FULL {
-        if let Some(piece) = board.piece_at(sq) {
-            let piece_score = PIECE_VALUES[piece.kind()];
+    for sq in board.all_pieces_bb() {
+        let piece = board.piece_at(sq).expect("There should be a piece here");
+        let piece_score = PIECE_VALUES[piece.kind()];
 
-            let pst_index = if piece.color() == Color::White {
-                sq
-            } else {
-                sq.mirror()
-            };
+        let pst_index = if piece.color() == Color::White {
+            sq
+        } else {
+            sq.mirror()
+        };
 
-            let mg_score = MG_TABLES[piece.kind()][pst_index] + piece_score;
-            let lg_score = EG_TABLES[piece.kind()][pst_index] + piece_score;
+        let mg_score = MG_TABLES[piece.kind()][pst_index] + piece_score;
+        let lg_score = EG_TABLES[piece.kind()][pst_index] + piece_score;
 
-            let score = mg_score * phase + lg_score * (MAX_PHASE - phase);
+        let score = mg_score * phase + lg_score * (MAX_PHASE - phase);
 
-            if piece.color() == us {
-                our_score += score;
-            } else {
-                their_score += score;
-            }
+        if piece.color() == us {
+            our_score += score;
+        } else {
+            their_score += score;
         }
     }
 

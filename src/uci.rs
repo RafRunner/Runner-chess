@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    bench::{self, BenchError, BENCH},
+    bench::{self, BenchError, BENCH, SEARCH_BENCH, SEARCH_BENCH_DEPTH},
     board::{movegen::IllegalMoveError, Board, FenParseError},
     chess_move::{AbstractMove, MoveParseError},
     piece::Color,
@@ -109,7 +109,10 @@ impl Uci {
             "stop" => (),      // TODO actually stop the engine
             "setoption" => (), // TODO support some options
             "d" => writeln!(out, "{}\n{}\n", self.board, self.board.to_fen())?,
-            "bench" => bench::run(&BENCH, out)?,
+            "bench" => {
+                let args: Vec<&str> = tokens.collect();
+                run_bench(&args, out)?;
+            }
             "quit" => return Ok(Control::Quit),
             _ => return Err(UciError::UnknownCommand(command.to_string())),
         }
@@ -160,6 +163,31 @@ impl Uci {
         }
         Ok(())
     }
+}
+
+/// `bench` runs perft on fixed positions, `bench search [depth]` searches them.
+fn run_bench(args: &[&str], out: &mut impl Write) -> Result<(), UciError> {
+    match args {
+        [] => bench::run(&BENCH, out)?,
+        ["search"] => bench::run_search(&SEARCH_BENCH, SEARCH_BENCH_DEPTH, out)?,
+        ["search", depth] => {
+            let depth =
+                depth
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|&d| d > 0)
+                    .ok_or(UciError::UnexpectedArgs(
+                        "bench search depth is not a positive number".to_string(),
+                    ))?;
+            bench::run_search(&SEARCH_BENCH, depth, out)?
+        }
+        _ => {
+            return Err(UciError::UnexpectedArgs(
+                "usage: bench [search [depth]]".to_string(),
+            ))
+        }
+    }
+    Ok(())
 }
 
 /// Parses the arguments of a searching `go`. Anything not supported yet (`infinite`,
@@ -589,6 +617,35 @@ mod tests {
     fn debug_invalid_args() {
         let mut uci = Uci::new();
         for line in ["debug", "debug maybe"] {
+            assert!(
+                matches!(run(&mut uci, line), Err(UciError::UnexpectedArgs(_))),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn bench_search_command() {
+        let mut uci = Uci::new();
+        let (control, out) = run(&mut uci, "bench search 1").unwrap();
+        assert_eq!(control, Control::Continue);
+        assert_eq!(
+            out.lines().filter(|l| l.contains(" depth 1 ")).count(),
+            6,
+            "{out}"
+        );
+        assert!(out.contains("Nodes searched  : "), "{out}");
+    }
+
+    #[test]
+    fn bench_invalid_args() {
+        let mut uci = Uci::new();
+        for line in [
+            "bench perft",
+            "bench search 0",
+            "bench search x",
+            "bench search 2 3",
+        ] {
             assert!(
                 matches!(run(&mut uci, line), Err(UciError::UnexpectedArgs(_))),
                 "{line}"
