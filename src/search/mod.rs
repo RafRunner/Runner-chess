@@ -8,11 +8,17 @@ use std::{
     time::Instant,
 };
 
-use crate::{bench, board::Board, chess_move::Move, eval::eval, score::Score};
+use crate::{
+    bench, board::Board, chess_move::Move, eval::eval, score::Score, zobrist::ZobristHash,
+};
 
 pub struct Searcher {
     nodes: u64,
     seldepth: u32,
+    /// The positions of the game before the root, then the line being searched
+    hashes: Vec<ZobristHash>,
+    /// The index of the hash of the root position on the hashes vec
+    root_index: usize,
     start: Instant,
     deadline: Option<Instant>, // from wtime/winc or movetime
     stopped: bool,             // later: Arc<AtomicBool> for UCI `stop`
@@ -26,6 +32,8 @@ impl Searcher {
         Self {
             nodes: 0,
             seldepth: 0,
+            hashes: Vec::with_capacity(100 + Score::MAX_PLY as usize),
+            root_index: 0,
             start: Instant::now(),
             deadline: None,
             stopped: false,
@@ -37,22 +45,38 @@ impl Searcher {
         self.nodes
     }
 
+    fn push_hash(&mut self, hash: ZobristHash) {
+        self.hashes.push(hash);
+    }
+
+    fn pop_hash(&mut self) -> Option<ZobristHash> {
+        self.hashes.pop()
+    }
+
     /// Searches to the depth in `limits` and writes an `info` line about it to `out`.
     pub fn search_root(
         &mut self,
         board: &Board,
+        history: &[ZobristHash],
         limits: Limits,
         out: &mut impl Write,
     ) -> io::Result<Option<Move>> {
         let depth = limits.depth.unwrap_or(MAX_DEPTH);
         let mut best_score = -Score::INF;
 
+        self.hashes.clear();
+        self.hashes.extend_from_slice(history);
+        self.root_index = history.len();
+        self.push_hash(board.hash());
+
         let legal_ordered: Vec<(Move, Board)> = self.legal_ordered(board).collect();
 
         let mut best_move = legal_ordered.first().map(|(mv, _)| *mv);
 
         for (mv, next) in legal_ordered {
+            self.push_hash(next.hash());
             let score = -self.negamax(&next, depth - 1, 1, -Score::INF, -best_score);
+            self.pop_hash();
 
             if score > best_score {
                 best_score = score;
@@ -84,6 +108,23 @@ impl Searcher {
         mut alpha: Score,
         beta: Score,
     ) -> Score {
+        // Draws by the rules, checked before quiescence so that a repetition right at
+        // the horizon still counts. The root has to return a move anyway.
+        if ply > 0 {
+            if self.is_repetition(board) {
+                return Score::DRAW;
+            }
+            if board.halfmove_clock() >= 100 {
+                // unless the move that completed the fifty moves gave mate
+                let mated = board.is_in_check(board.side_to_move())
+                    && board.legal_successors().next().is_none();
+                return if mated {
+                    Score::mated_in(ply)
+                } else {
+                    Score::DRAW
+                };
+            }
+        }
         if depth == 0 {
             return self.quiescence(board, ply, alpha, beta);
         }
@@ -97,7 +138,10 @@ impl Searcher {
 
         for (_, next) in self.legal_ordered(board) {
             has_legal_move = true;
+
+            self.push_hash(next.hash());
             let score = -self.negamax(&next, depth - 1, ply + 1, -beta, -alpha);
+            self.pop_hash();
 
             if score > best {
                 best = score;
@@ -152,7 +196,10 @@ impl Searcher {
         let mut best = static_eval;
 
         for (_, next) in self.captures_ordered(board) {
+            // We need to push and pop to the history because of check extensions
+            self.push_hash(next.hash());
             let score = -self.quiescence(&next, ply + 1, -beta, -alpha);
+            self.pop_hash();
 
             if score > best {
                 best = score;
@@ -171,6 +218,31 @@ impl Searcher {
 
         best
     }
+
+    /// a position repeats once earlier but strictly after the root, or repeats twice before or at the root
+    fn is_repetition(&self, board: &Board) -> bool {
+        debug_assert_eq!(self.hashes.last(), Some(&board.hash()));
+
+        let current = self.hashes.len() - 1;
+        // nothing from before the last capture or pawn move can come back
+        let reach = (board.halfmove_clock() as usize).min(current);
+
+        let mut repetition_counter = 0;
+
+        for back in (4..=reach).step_by(2) {
+            if self.hashes[current - back] == self.hashes[current] {
+                if current - back > self.root_index {
+                    return true;
+                }
+                repetition_counter += 1;
+                if repetition_counter > 1 {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
 }
 
 impl Default for Searcher {
@@ -182,7 +254,7 @@ impl Default for Searcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{board, mirror_fen, PERFT_POSITIONS};
+    use crate::test_utils::{board, find_move, mirror_fen, PERFT_POSITIONS};
 
     // search
 
@@ -192,7 +264,7 @@ mod tests {
             ..Limits::default()
         };
         Searcher::new()
-            .search_root(&board(fen), limits, &mut io::sink())
+            .search_root(&board(fen), &[], limits, &mut io::sink())
             .unwrap()
             .map(Move::to_uci)
     }
@@ -205,14 +277,17 @@ mod tests {
         };
         let mut out = Vec::new();
         Searcher::new()
-            .search_root(&board(fen), limits, &mut out)
+            .search_root(&board(fen), &[], limits, &mut out)
             .unwrap();
         String::from_utf8(out).unwrap()
     }
 
     /// The score of `fen` for the side to move, searched `depth` plies deep.
     fn score(fen: &str, depth: u32) -> Score {
-        Searcher::new().negamax(&board(fen), depth, 0, -Score::INF, Score::INF)
+        let board = board(fen);
+        let mut searcher = Searcher::new();
+        searcher.push_hash(board.hash());
+        searcher.negamax(&board, depth, 0, -Score::INF, Score::INF)
     }
 
     /// The same move seen from the other side of the board: e2e4 becomes e7e5.
@@ -311,6 +386,99 @@ mod tests {
         for fen in [mate_in_one.to_string(), mirror_fen(mate_in_one)] {
             assert_eq!(score(&fen, 2), Score::mate_in(1), "{fen}");
         }
+    }
+
+    // draws by the rules
+
+    #[test]
+    fn perpetual_check_saves_the_lost_side() {
+        // White is lost, but Qe8+ Kh7 Qh5+ Kg8 Qe8+ repeats, which depth 5 reaches
+        for fen in both_colors("6k1/rr4p1/8/8/8/8/ppp1Q1PP/7K w - - 0 1") {
+            assert!(eval(&board(&fen)) < Score::new(-100), "{fen}");
+            assert_eq!(score(&fen, 5), Score::DRAW, "{fen}");
+        }
+    }
+
+    #[test]
+    fn fifty_move_rule() {
+        // 99 plies without a capture or pawn move: only the pawn move doesn't draw
+        for depth in 1..=3 {
+            assert_best("6k1/8/8/8/8/7P/8/R5K1 w - - 99 80", depth, "h3h4");
+        }
+    }
+
+    #[test]
+    fn mate_beats_the_fifty_move_rule() {
+        // Ra8# is the hundredth ply, and still mate
+        for fen in both_colors("6k1/5ppp/8/8/8/8/8/R5K1 w - - 99 80") {
+            assert_eq!(score(&fen, 2), Score::mate_in(1), "{fen}");
+        }
+    }
+
+    /// Plays `moves` from `fen` as the game so far, then searches the position they
+    /// reach: the best move and what the search wrote.
+    fn search_after(fen: &str, moves: &[&str], depth: u32) -> (Option<String>, String) {
+        let mut b = board(fen);
+        let mut history = Vec::new();
+        for &uci in moves {
+            history.push(b.hash());
+            b = b.make_move(find_move(&b, uci));
+        }
+
+        let limits = Limits {
+            depth: Some(depth),
+            ..Limits::default()
+        };
+        let mut out = Vec::new();
+        let best = Searcher::new()
+            .search_root(&b, &history, limits, &mut out)
+            .unwrap();
+        (best.map(Move::to_uci), String::from_utf8(out).unwrap())
+    }
+
+    /// Black is lost, with the king shuffling around h8 against a queen.
+    const LOST_KING: &str = "6k1/8/8/8/8/8/8/KQ6 b - - 0 1";
+
+    #[test]
+    fn repetitions_come_from_the_game_too() {
+        // Kh8 brings back a position the game already had twice
+        let moves = [
+            "g8h8", "b1c1", "h8g7", "c1b1", "g7h8", "b1c1", "h8g8", "c1b1",
+        ];
+
+        // at depth 1 the repetition is right at the horizon, so it has to be checked
+        // before quiescence
+        for depth in 1..=3 {
+            let (best, out) = search_after(LOST_KING, &moves, depth);
+            assert_eq!(best.as_deref(), Some("g8h8"), "{out}");
+            assert!(out.contains(" score cp 0 "), "{out}");
+
+            // the same position without the game behind it is just lost
+            let (_, out) = search_after(LOST_KING, &[], depth);
+            assert!(!out.contains(" score cp 0 "), "{out}");
+        }
+    }
+
+    #[test]
+    fn a_single_repetition_of_the_game_is_not_a_draw_yet() {
+        // the game had the position after Kh8 only once: playing it again makes it the
+        // second time, and White doesn't have to repeat it a third
+        let moves = ["g8h8", "b1c1", "h8g8", "c1b1"];
+        for depth in 1..=3 {
+            let (_, out) = search_after(LOST_KING, &moves, depth);
+            assert!(!out.contains(" score cp 0 "), "{out}");
+        }
+    }
+
+    #[test]
+    fn repetitions_inside_the_search_count_once_after_a_long_game() {
+        // the perpetual of perpetual_check_saves_the_lost_side, after two quiet moves:
+        // the halfmove clock reaches back into the game, but the repetition itself is
+        // all inside the search, where once is enough
+        let fen = "6k1/r5p1/1r6/8/8/8/ppp1Q1PP/6K1 w - - 0 1";
+        let (best, out) = search_after(fen, &["g1h1", "b6b7"], 5);
+        assert_eq!(best.as_deref(), Some("e2e8"), "{out}");
+        assert!(out.contains(" score cp 0 "), "{out}");
     }
 
     #[test]

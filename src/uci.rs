@@ -9,6 +9,7 @@ use crate::{
     chess_move::{AbstractMove, MoveParseError},
     piece::Color,
     search::{Limits, Searcher},
+    zobrist::ZobristHash,
 };
 
 #[derive(Debug)]
@@ -43,6 +44,8 @@ pub enum Control {
 
 pub struct Uci {
     board: Board,
+    /// The positions of the game before `board`, oldest first, for repetitions.
+    history: Vec<ZobristHash>,
     debug: bool,
 }
 
@@ -56,6 +59,7 @@ impl Uci {
     pub fn new() -> Self {
         Self {
             board: Board::startpos(),
+            history: Vec::new(),
             debug: false,
         }
     }
@@ -89,12 +93,17 @@ impl Uci {
                     ))
                 }
             },
-            "ucinewgame" => self.board = Board::startpos(),
+            "ucinewgame" => {
+                self.board = Board::startpos();
+                self.history.clear();
+            }
             "position" => {
                 let args: Vec<&str> = tokens.collect();
-                self.board = parse_position(&args)?;
+                self.set_position(&args)?;
             }
             "go" => {
+                let searcher = Searcher::new();
+
                 let args: Vec<&str> = tokens.collect();
                 match args.as_slice() {
                     ["perft", depth] => self.go_perft(depth, out)?,
@@ -103,7 +112,7 @@ impl Uci {
                             "usage: go perft <depth>".to_string(),
                         ))
                     }
-                    _ => self.go_search(&args, out)?,
+                    _ => self.go_search(searcher, &args, out)?,
                 }
             }
             "stop" => (),      // TODO actually stop the engine
@@ -119,6 +128,47 @@ impl Uci {
 
         out.flush()?;
         Ok(Control::Continue)
+    }
+
+    /// `position startpos [moves ...]` or `position fen <6 fields> [moves ...]`. The
+    /// game comes in full every time, so the history starts over. On an error, the
+    /// position stays as it was.
+    fn set_position(&mut self, args: &[&str]) -> Result<(), UciError> {
+        let moves_idx = args.iter().position(|&t| t == "moves");
+        let (setup, moves) = match moves_idx {
+            Some(i) => (&args[..i], &args[i + 1..]),
+            None => (args, &[][..]),
+        };
+
+        let mut board = match setup {
+            ["startpos"] => Board::startpos(),
+            ["fen", fen @ ..] if !fen.is_empty() => {
+                Board::from_fen(&fen.join(" ")).map_err(UciError::FenError)?
+            }
+            _ => {
+                return Err(UciError::UnexpectedArgs(format!(
+                    "invalid position args: {}",
+                    args.join(" ")
+                )))
+            }
+        };
+
+        // nothing to clear after a capture or a pawn move: the search doesn't look
+        // further back than the halfmove clock
+        let mut history = Vec::with_capacity(moves.len());
+        for &uci in moves {
+            let mv = AbstractMove::from_uci(uci)
+                .map_err(|MoveParseError| UciError::MoveParseError(uci.to_string()))?;
+            let (_, next) = board
+                .resolve_move(mv)
+                .map_err(|IllegalMoveError| UciError::IllegalMove(uci.to_string()))?;
+            history.push(board.hash());
+            board = next;
+        }
+
+        self.board = board;
+        self.history = history;
+        Ok(())
     }
 
     /// `go perft <depth>`: the divide of the current position, in Stockfish's format
@@ -153,11 +203,15 @@ impl Uci {
     }
 
     /// `go [wtime <ms>] [btime <ms>] [winc <ms>] [binc <ms>] [movestogo <n>] [depth <n>] [movetime <ms>]`
-    fn go_search(&self, args: &[&str], out: &mut impl Write) -> Result<(), UciError> {
+    fn go_search(
+        &self,
+        mut searcher: Searcher,
+        args: &[&str],
+        out: &mut impl Write,
+    ) -> Result<(), UciError> {
         let limits = parse_go(args)?;
-        let mut searcher = Searcher::new();
 
-        match searcher.search_root(self.board(), limits, out)? {
+        match searcher.search_root(&self.board, &self.history, limits, out)? {
             Some(mv) => writeln!(out, "bestmove {mv}")?,
             None => writeln!(out, "bestmove 0000")?,
         }
@@ -221,47 +275,11 @@ fn parse_go(args: &[&str]) -> Result<Limits, UciError> {
     Ok(limits)
 }
 
-/// Parses the arguments of `position`:
-/// `startpos [moves ...]` or `fen <6 fields> [moves ...]`.
-fn parse_position(args: &[&str]) -> Result<Board, UciError> {
-    let moves_idx = args.iter().position(|&t| t == "moves");
-    let (setup, moves) = match moves_idx {
-        Some(i) => (&args[..i], &args[i + 1..]),
-        None => (args, &[][..]),
-    };
-
-    let board = match setup {
-        ["startpos"] => Board::startpos(),
-        ["fen", fen @ ..] if !fen.is_empty() => {
-            Board::from_fen(&fen.join(" ")).map_err(UciError::FenError)?
-        }
-        _ => {
-            return Err(UciError::UnexpectedArgs(format!(
-                "invalid position args: {}",
-                args.join(" ")
-            )))
-        }
-    };
-
-    play_moves(board, moves)
-}
-
-fn play_moves(mut board: Board, moves: &[&str]) -> Result<Board, UciError> {
-    for &uci in moves {
-        let mv = AbstractMove::from_uci(uci)
-            .map_err(|MoveParseError| UciError::MoveParseError(uci.to_string()))?;
-        let (_, next) = board
-            .resolve_move(mv)
-            .map_err(|IllegalMoveError| UciError::IllegalMove(uci.to_string()))?;
-        board = next;
-    }
-
-    Ok(board)
-}
-
 #[cfg(test)]
 mod tests {
     use std::assert_matches;
+
+    use crate::search::Limits;
 
     use super::*;
 
@@ -357,6 +375,7 @@ mod tests {
         run(&mut uci, "position startpos moves e2e4").unwrap();
         run(&mut uci, "ucinewgame").unwrap();
         assert_eq!(uci.board().to_fen(), Board::startpos().to_fen());
+        assert!(uci.history.is_empty());
     }
 
     #[test]
@@ -384,6 +403,7 @@ mod tests {
         let mut uci = Uci::new();
         run(&mut uci, "position startpos moves e2e4").unwrap();
         let before = uci.board().to_fen();
+        let history = uci.history.clone();
 
         assert!(matches!(
             run(&mut uci, "position startpos moves e2e4 e7e5 xx"),
@@ -394,6 +414,24 @@ mod tests {
             Err(UciError::IllegalMove(_))
         ));
         assert_eq!(uci.board().to_fen(), before);
+        assert_eq!(uci.history, history);
+    }
+
+    #[test]
+    fn position_keeps_the_game_for_repetitions() {
+        let mut uci = Uci::new();
+        // back to the start: the current position is also the first of the history
+        run(&mut uci, "position startpos moves g1f3 g8f6 f3g1 f6g8").unwrap();
+        assert_eq!(uci.history.len(), 4);
+        assert_eq!(uci.history[0], uci.board().hash());
+
+        // the position right after a pawn move can still come back
+        run(&mut uci, "position startpos moves e2e4 g8f6 g1f3 f6g8 f3g1").unwrap();
+        assert!(uci.history.contains(&uci.board().hash()));
+
+        // the GUI sends the whole game every time, so the history starts over
+        run(&mut uci, "position startpos moves e2e4").unwrap();
+        assert_eq!(uci.history, [Board::startpos().hash()]);
     }
 
     /// The move of the `bestmove` line, which must come last.
@@ -425,6 +463,22 @@ mod tests {
             lines[0].ends_with(&format!(" pv {}", bestmove(&out))),
             "{out}"
         );
+    }
+
+    #[test]
+    fn go_sees_repetitions_of_the_game() {
+        // Black is lost, but Kh8 brings back a position the game already had twice
+        let mut uci = Uci::new();
+        run(
+            &mut uci,
+            "position fen 6k1/8/8/8/8/8/8/KQ6 b - - 0 1 \
+             moves g8h8 b1c1 h8g7 c1b1 g7h8 b1c1 h8g8 c1b1",
+        )
+        .unwrap();
+        let (_, out) = run(&mut uci, "go depth 3").unwrap();
+
+        assert_eq!(bestmove(&out), "g8h8", "{out}");
+        assert!(out.contains(" score cp 0 "), "{out}");
     }
 
     #[test]

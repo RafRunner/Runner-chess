@@ -155,7 +155,7 @@ pub fn run_search(positions: &[(&str, &str)], depth: u32, out: &mut impl Write) 
         let mut searcher = Searcher::new();
 
         let start = Instant::now();
-        let best = searcher.search_root(&board, limits, &mut io::sink())?;
+        let best = searcher.search_root(&board, &[], limits, &mut io::sink())?;
         let elapsed = start.elapsed();
         let nodes = searcher.nodes();
 

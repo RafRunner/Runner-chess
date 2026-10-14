@@ -108,6 +108,14 @@ impl Board {
         self.hash
     }
 
+    pub fn halfmove_clock(&self) -> u16 {
+        self.halfmove_clock
+    }
+
+    pub fn fullmove_counter(&self) -> u16 {
+        self.fullmove_counter
+    }
+
     pub fn from_fen(fen: &str) -> Result<Self, FenParseError> {
         let mut board = Self::empty();
         let mut parts = fen.split_whitespace();
