@@ -88,6 +88,10 @@ impl Board {
         self.pieces[piece]
     }
 
+    pub fn both(&self, kind: PieceKind) -> BitBoard {
+        self.pieces(Piece::new(Color::White, kind)) | self.pieces(Piece::new(Color::Black, kind))
+    }
+
     pub fn by_color(&self, color: Color) -> BitBoard {
         self.by_color[color]
     }

@@ -1,6 +1,7 @@
 use crate::{
+    bitboard::BitBoard,
     board::Board,
-    piece::{Color, Piece},
+    piece::{Color, Piece, PieceKind},
     score::Score,
 };
 
@@ -110,6 +111,10 @@ pub static EG_TABLES: [[i32; 64]; 6] = [
 ];
 
 pub fn eval(board: &Board) -> Score {
+    if is_dead_position(board) {
+        return Score::DRAW;
+    }
+
     let us = board.side_to_move();
 
     let mut our_score: i32 = 0;
@@ -146,6 +151,22 @@ pub fn eval(board: &Board) -> Score {
     }
 
     Score::new((our_score - their_score) / MAX_PHASE)
+}
+
+/// No sequence of legal moves can end in mate: besides the kings, at most one minor
+/// piece, or only bishops, all on squares of the same color.
+fn is_dead_position(board: &Board) -> bool {
+    let both = |kind: PieceKind| board.both(kind);
+
+    if both(PieceKind::Pawn) | both(PieceKind::Rook) | both(PieceKind::Queen) != BitBoard::EMPTY {
+        return false;
+    }
+
+    let (knights, bishops) = (both(PieceKind::Knight), both(PieceKind::Bishop));
+    let one_color = (bishops & BitBoard::LIGHT_SQUARES).is_empty()
+        || (bishops & !BitBoard::LIGHT_SQUARES).is_empty();
+
+    (knights | bishops).count_ones() <= 1 || (knights.is_empty() && one_color)
 }
 
 #[cfg(test)]
@@ -206,10 +227,11 @@ mod tests {
 
     #[test]
     fn any_extra_piece_is_an_advantage() {
+        // with a pawn on the board, since a lone minor piece is a dead draw
         for piece in ["P", "N", "B", "R", "Q"] {
             assert_better(
-                &format!("4k3/8/8/8/8/3{piece}4/8/4K3 w - - 0 1"),
-                "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
+                &format!("4k3/7p/8/8/8/3{piece}4/8/4K3 w - - 0 1"),
+                "4k3/7p/8/8/8/8/8/4K3 w - - 0 1",
             );
         }
     }
@@ -218,9 +240,10 @@ mod tests {
 
     #[test]
     fn knight_prefers_the_center_to_the_corner() {
+        // the pawn keeps it from being a dead draw
         assert_better(
-            "4k3/8/8/8/3N4/8/8/4K3 w - - 0 1",
-            "4k3/8/8/8/8/8/8/N3K3 w - - 0 1",
+            "4k3/7p/8/8/3N4/8/8/4K3 w - - 0 1",
+            "4k3/7p/8/8/8/8/8/N3K3 w - - 0 1",
         );
     }
 
@@ -252,9 +275,10 @@ mod tests {
 
     #[test]
     fn king_in_the_corner_is_bad_in_the_endgame() {
+        // the pawns keep it from being a dead draw
         assert_better(
-            "4k3/8/8/8/3K4/8/8/8 w - - 0 1",
-            "4k3/8/8/8/8/8/8/K7 w - - 0 1",
+            "4k3/7p/8/8/3K4/8/7P/8 w - - 0 1",
+            "4k3/7p/8/8/8/8/7P/K7 w - - 0 1",
         );
     }
 
@@ -270,5 +294,52 @@ mod tests {
             "4k3/pppppppp/8/8/3K4/8/PPPPPPPP/8 w - - 0 1",
             "4k3/pppppppp/8/8/8/8/PPPPPPPP/6K1 w - - 0 1",
         );
+    }
+
+    // draws by insufficient material
+
+    /// `fen` for both colors and both sides to move.
+    fn every_side(fen: &str) -> [String; 4] {
+        let mirrored = mirror_fen(fen);
+        [
+            fen.to_string(),
+            flip_side(fen),
+            flip_side(&mirrored),
+            mirrored,
+        ]
+    }
+
+    #[test]
+    fn dead_positions_are_draws() {
+        // no sequence of moves ends in mate. The kings are where the piece-square
+        // tables alone wouldn't give 0
+        #[rustfmt::skip]
+        let dead = [
+            "k7/8/8/8/3K4/8/8/8 w - - 0 1",    // K vs K
+            "k7/8/8/8/3K4/8/5N2/8 w - - 0 1",  // K+N vs K
+            "k7/8/8/8/3K4/8/5B2/8 w - - 0 1",  // K+B vs K
+            "kb6/8/8/8/3K4/8/5B2/8 w - - 0 1", // K+B vs K+B, both on dark squares
+        ];
+        for fen in dead.iter().flat_map(|fen| every_side(fen)) {
+            assert_eq!(eval(&board(&fen)), Score::DRAW, "{fen}");
+        }
+    }
+
+    #[test]
+    fn mate_is_still_possible() {
+        // even if only with the help of the other side
+        #[rustfmt::skip]
+        let alive = [
+            "k7/8/8/8/3K4/8/5P2/8 w - - 0 1",  // K+P vs K
+            "k7/8/8/8/3K4/8/5R2/8 w - - 0 1",  // K+R vs K
+            "k7/8/8/8/3K4/8/5Q2/8 w - - 0 1",  // K+Q vs K
+            "k7/8/8/8/3K4/8/5BN1/8 w - - 0 1", // K+B+N vs K
+            "k7/8/8/8/3K4/8/4BB2/8 w - - 0 1", // K+B+B vs K, one bishop on each color
+            "kb6/8/8/8/3K4/8/4B3/8 w - - 0 1", // K+B vs K+B on opposite colors
+            "k7/p7/8/8/3K4/8/5N2/8 w - - 0 1", // K+N vs K+P: the pawn can box its king in
+        ];
+        for fen in alive.iter().flat_map(|fen| every_side(fen)) {
+            assert_ne!(eval(&board(&fen)), Score::DRAW, "{fen}");
+        }
     }
 }

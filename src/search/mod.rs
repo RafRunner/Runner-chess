@@ -415,6 +415,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn trades_into_a_dead_draw_when_lost() {
+        // a knight down, Black trades rooks with check: K+N vs K can't be won
+        let fen = "3r3k/8/8/8/8/4N3/8/3R3K b - - 0 1";
+        for depth in 2..=3 {
+            assert_best(fen, depth, "d8d1");
+        }
+        for fen in both_colors(fen) {
+            assert_eq!(score(&fen, 2), Score::DRAW, "{fen}");
+        }
+    }
+
     /// Plays `moves` from `fen` as the game so far, then searches the position they
     /// reach: the best move and what the search wrote.
     fn search_after(fen: &str, moves: &[&str], depth: u32) -> (Option<String>, String) {
@@ -528,8 +540,9 @@ mod tests {
     #[test]
     fn no_stand_pat_in_check() {
         // Black is up the exchange, but Nc7+ forks king and rook: the king must move and
-        // Nxa8 follows, which standing pat on the static eval would miss
-        for fen in both_colors("r3k3/2N5/8/8/8/8/8/7K b - - 0 1") {
+        // Nxa8 follows, which standing pat on the static eval would miss. The pawns keep
+        // the knight from being a dead draw afterwards
+        for fen in both_colors("r3k3/2N4p/8/8/8/8/7P/7K b - - 0 1") {
             assert!(eval(&board(&fen)) > Score::new(100), "{fen}");
             assert!(score(&fen, 0) < Score::new(-100), "{fen}");
         }

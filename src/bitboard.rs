@@ -8,6 +8,7 @@ pub struct BitBoard(u64);
 impl BitBoard {
     pub const EMPTY: Self = Self(0);
     pub const FULL: Self = Self(u64::MAX);
+    pub const LIGHT_SQUARES: Self = Self(0x55AA_55AA_55AA_55AA);
 
     pub const RANK_1: Self = Self(0xFF);
     pub const RANK_2: Self = Self(Self::RANK_1.0 << 8);

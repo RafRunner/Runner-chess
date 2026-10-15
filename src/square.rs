@@ -188,6 +188,10 @@ impl Square {
 
         format!("{}{}", (file + b'a') as char, (rank + b'1') as char)
     }
+
+    pub fn is_light(self) -> bool {
+        (self.rank() + self.file()) % 2 == 1
+    }
 }
 
 impl<T> ops::Index<Square> for [T; 64] {
