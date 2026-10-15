@@ -64,11 +64,14 @@ impl Searcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{board, PERFT_POSITIONS};
+    use crate::{
+        search::Budget,
+        test_utils::{board, PERFT_POSITIONS},
+    };
 
     /// The legal moves of `fen` in the order the search tries them.
     fn ordered(fen: &str) -> Vec<Move> {
-        Searcher::new()
+        Searcher::new(Budget::depth(None))
             .legal_ordered(&board(fen))
             .map(|(mv, _)| mv)
             .collect()

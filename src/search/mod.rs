@@ -1,41 +1,38 @@
 mod limits;
 mod ordering;
 
+pub use limits::Budget;
 pub use limits::Limits;
 
-use std::{
-    io::{self, Write},
-    time::Instant,
-};
+use std::io::{self, Write};
+use std::time::Instant;
 
 use crate::{
     bench, board::Board, chess_move::Move, eval::eval, score::Score, zobrist::ZobristHash,
 };
 
 pub struct Searcher {
+    budget: Budget,
     nodes: u64,
     seldepth: u32,
+    completed_depth: u32,
     /// The positions of the game before the root, then the line being searched
     hashes: Vec<ZobristHash>,
     /// The index of the hash of the root position on the hashes vec
     root_index: usize,
-    start: Instant,
-    deadline: Option<Instant>, // from wtime/winc or movetime
-    stopped: bool,             // later: Arc<AtomicBool> for UCI `stop`
-                               // later: killers, history, a handle to the TT
+    stopped: bool, // later: Arc<AtomicBool> for UCI `stop`
+                   // later: killers, history, a handle to the TT
 }
 
-const MAX_DEPTH: u32 = 7;
-
 impl Searcher {
-    pub fn new() -> Self {
+    pub fn new(budget: Budget) -> Self {
         Self {
+            budget,
             nodes: 0,
             seldepth: 0,
+            completed_depth: 0,
             hashes: Vec::with_capacity(100 + Score::MAX_PLY as usize),
             root_index: 0,
-            start: Instant::now(),
-            deadline: None,
             stopped: false,
         }
     }
@@ -53,48 +50,68 @@ impl Searcher {
         self.hashes.pop()
     }
 
-    /// Searches to the depth in `limits` and writes an `info` line about it to `out`.
+    /// Searches within the budget and writes an `info` line about it to `out`.
+    /// `history` has the positions of the game before `board`, oldest first, so the
+    /// search can see repetitions.
     pub fn search_root(
         &mut self,
         board: &Board,
         history: &[ZobristHash],
-        limits: Limits,
         out: &mut impl Write,
     ) -> io::Result<Option<Move>> {
-        let depth = limits.depth.unwrap_or(MAX_DEPTH);
         let mut best_score = -Score::INF;
 
-        self.hashes.clear();
         self.hashes.extend_from_slice(history);
         self.root_index = history.len();
         self.push_hash(board.hash());
 
-        let legal_ordered: Vec<(Move, Board)> = self.legal_ordered(board).collect();
+        let mut legal_ordered: Vec<(Move, Board)> = self.legal_ordered(board).collect();
 
         let mut best_move = legal_ordered.first().map(|(mv, _)| *mv);
 
-        for (mv, next) in legal_ordered {
-            self.push_hash(next.hash());
-            let score = -self.negamax(&next, depth - 1, 1, -Score::INF, -best_score);
-            self.pop_hash();
-
-            if score > best_score {
-                best_score = score;
-                best_move = Some(mv);
+        for depth in 1..=self.budget.depth {
+            if let Some(idx) =
+                best_move.and_then(|best| legal_ordered.iter().position(|(mv, _)| mv == &best))
+            {
+                legal_ordered[..=idx].rotate_right(1);
             }
-        }
+            for (mv, next) in legal_ordered.iter() {
+                self.push_hash(next.hash());
+                let score = -self.negamax(next, depth - 1, 1, -Score::INF, -best_score);
+                self.pop_hash();
 
-        if let Some(mv) = best_move {
-            let elapsed = self.start.elapsed();
-            writeln!(
-                out,
-                "info depth {depth} score {} nodes {} seldepth {} nps {} time {} pv {mv}",
-                best_score.to_uci(),
-                self.nodes,
-                self.seldepth,
-                bench::nps(self.nodes, elapsed),
-                elapsed.as_millis(),
-            )?;
+                if self.stopped {
+                    break;
+                }
+
+                if score > best_score {
+                    best_score = score;
+                    best_move = Some(*mv);
+                }
+            }
+
+            if self.stopped {
+                break;
+            }
+
+            if let Some(mv) = best_move {
+                let elapsed = self.budget.start.elapsed();
+                writeln!(
+                    out,
+                    "info depth {depth} score {} nodes {} seldepth {} nps {} time {} pv {mv}",
+                    best_score.to_uci(),
+                    self.nodes,
+                    self.seldepth,
+                    bench::nps(self.nodes, elapsed),
+                    elapsed.as_millis(),
+                )?;
+            }
+
+            self.completed_depth = depth;
+            if self.budget.soft.is_some_and(|soft| Instant::now() >= soft) {
+                break;
+            }
+            best_score = -Score::INF;
         }
 
         Ok(best_move)
@@ -108,30 +125,19 @@ impl Searcher {
         mut alpha: Score,
         beta: Score,
     ) -> Score {
-        // Draws by the rules, checked before quiescence so that a repetition right at
-        // the horizon still counts. The root has to return a move anyway.
-        if ply > 0 {
-            if self.is_repetition(board) {
-                return Score::DRAW;
-            }
-            if board.halfmove_clock() >= 100 {
-                // unless the move that completed the fifty moves gave mate
-                let mated = board.is_in_check(board.side_to_move())
-                    && board.legal_successors().next().is_none();
-                return if mated {
-                    Score::mated_in(ply)
-                } else {
-                    Score::DRAW
-                };
-            }
+        if self.check_hard_budget() {
+            return Score::DRAW;
+        }
+        if let Some(score) = self.check_draw(ply, board) {
+            return score;
         }
         if depth == 0 {
             return self.quiescence(board, ply, alpha, beta);
         }
+        self.nodes += 1;
         if ply >= Score::MAX_PLY {
             return eval(board);
         }
-        self.nodes += 1;
 
         let mut best = -Score::INF;
         let mut has_legal_move = false;
@@ -142,6 +148,10 @@ impl Searcher {
             self.push_hash(next.hash());
             let score = -self.negamax(&next, depth - 1, ply + 1, -beta, -alpha);
             self.pop_hash();
+
+            if self.stopped {
+                break;
+            }
 
             if score > best {
                 best = score;
@@ -170,6 +180,9 @@ impl Searcher {
     }
 
     fn quiescence(&mut self, board: &Board, ply: u32, mut alpha: Score, beta: Score) -> Score {
+        if self.check_hard_budget() {
+            return Score::DRAW;
+        }
         if ply > self.seldepth {
             self.seldepth = ply;
         }
@@ -201,6 +214,10 @@ impl Searcher {
             let score = -self.quiescence(&next, ply + 1, -beta, -alpha);
             self.pop_hash();
 
+            if self.stopped {
+                break;
+            }
+
             if score > best {
                 best = score;
 
@@ -217,6 +234,50 @@ impl Searcher {
         }
 
         best
+    }
+
+    fn check_hard_budget(&mut self) -> bool {
+        if self.stopped {
+            return true;
+        }
+        if self.completed_depth == 0 {
+            return false;
+        }
+        if self.budget.nodes.is_some_and(|nodes| self.nodes() >= nodes) {
+            self.stopped = true
+        }
+        if self.nodes.is_multiple_of(2048)
+            && self.budget.hard.is_some_and(|hard| Instant::now() >= hard)
+        {
+            self.stopped = true;
+        }
+
+        self.stopped
+    }
+
+    /// Draws by the rules, checked before quiescence so that a repetition right at
+    /// the horizon still counts. The root has to return a move anyway.
+    fn check_draw(&self, ply: u32, board: &Board) -> Option<Score> {
+        if ply == 0 {
+            return None;
+        }
+
+        if self.is_repetition(board) {
+            return Some(Score::DRAW);
+        }
+        if board.halfmove_clock() >= 100 {
+            // unless the move that completed the fifty moves gave mate
+            let mated = board.is_in_check(board.side_to_move())
+                && board.legal_successors().next().is_none();
+
+            return Some(if mated {
+                Score::mated_in(ply)
+            } else {
+                Score::DRAW
+            });
+        }
+
+        None
     }
 
     /// a position repeats once earlier but strictly after the root, or repeats twice before or at the root
@@ -245,12 +306,6 @@ impl Searcher {
     }
 }
 
-impl Default for Searcher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,25 +314,17 @@ mod tests {
     // search
 
     fn best_move(fen: &str, depth: u32) -> Option<String> {
-        let limits = Limits {
-            depth: Some(depth),
-            ..Limits::default()
-        };
-        Searcher::new()
-            .search_root(&board(fen), &[], limits, &mut io::sink())
+        Searcher::new(Budget::depth(Some(depth)))
+            .search_root(&board(fen), &[], &mut io::sink())
             .unwrap()
             .map(Move::to_uci)
     }
 
     /// What a search of `fen` to `depth` writes.
     fn output(fen: &str, depth: u32) -> String {
-        let limits = Limits {
-            depth: Some(depth),
-            ..Limits::default()
-        };
         let mut out = Vec::new();
-        Searcher::new()
-            .search_root(&board(fen), &[], limits, &mut out)
+        Searcher::new(Budget::depth(Some(depth)))
+            .search_root(&board(fen), &[], &mut out)
             .unwrap();
         String::from_utf8(out).unwrap()
     }
@@ -285,7 +332,7 @@ mod tests {
     /// The score of `fen` for the side to move, searched `depth` plies deep.
     fn score(fen: &str, depth: u32) -> Score {
         let board = board(fen);
-        let mut searcher = Searcher::new();
+        let mut searcher = Searcher::new(Budget::depth(Some(depth)));
         searcher.push_hash(board.hash());
         searcher.negamax(&board, depth, 0, -Score::INF, Score::INF)
     }
@@ -437,13 +484,9 @@ mod tests {
             b = b.make_move(find_move(&b, uci));
         }
 
-        let limits = Limits {
-            depth: Some(depth),
-            ..Limits::default()
-        };
         let mut out = Vec::new();
-        let best = Searcher::new()
-            .search_root(&b, &history, limits, &mut out)
+        let best = Searcher::new(Budget::depth(Some(depth)))
+            .search_root(&b, &history, &mut out)
             .unwrap();
         (best.map(Move::to_uci), String::from_utf8(out).unwrap())
     }
@@ -491,6 +534,55 @@ mod tests {
         let (best, out) = search_after(fen, &["g1h1", "b6b7"], 5);
         assert_eq!(best.as_deref(), Some("e2e8"), "{out}");
         assert!(out.contains(" score cp 0 "), "{out}");
+    }
+
+    // budget
+
+    /// The best move and the output of a search of `fen` stopped after `nodes` nodes.
+    fn search_with_node_limit(fen: &str, nodes: u64) -> (Option<String>, String) {
+        let mut budget = Budget::depth(Some(10));
+        budget.nodes = Some(nodes);
+        let mut out = Vec::new();
+        let best = Searcher::new(budget)
+            .search_root(&board(fen), &[], &mut out)
+            .unwrap();
+        (best.map(Move::to_uci), String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn an_interrupted_iteration_is_discarded() {
+        // from the start, depth 1 takes 20 nodes and depth 2 ends at 88: 50 stops in the
+        // middle of it, and the search must not claim it
+        let (best, out) = search_with_node_limit(Board::STARTPOS, 50);
+        assert_eq!(out.lines().count(), 1, "{out}");
+        assert!(out.starts_with("info depth 1 "), "{out}");
+        assert!(best.is_some());
+    }
+
+    #[test]
+    fn the_first_iteration_always_finishes() {
+        // a limit below what depth 1 needs still gets a searched move
+        let (best, out) = search_with_node_limit(Board::STARTPOS, 1);
+        assert!(out.starts_with("info depth 1 "), "{out}");
+        assert_eq!(best, best_move(Board::STARTPOS, 1));
+    }
+
+    #[test]
+    fn stops_at_the_node_limit() {
+        let mut budget = Budget::depth(Some(7));
+        budget.nodes = Some(1000);
+        let mut searcher = Searcher::new(budget);
+        let best = searcher
+            .search_root(&board(Board::STARTPOS), &[], &mut io::sink())
+            .unwrap();
+
+        // the limit is checked at every node, so the search stops right at it
+        assert!(
+            (1000..1010).contains(&searcher.nodes()),
+            "{}",
+            searcher.nodes()
+        );
+        assert!(best.is_some());
     }
 
     #[test]
@@ -559,14 +651,20 @@ mod tests {
     // info
 
     #[test]
-    fn writes_one_info_line() {
-        let out = output(Board::STARTPOS, 2);
-        let best = best_move(Board::STARTPOS, 2).unwrap();
+    fn writes_an_info_line_per_depth() {
+        let out = output(Board::STARTPOS, 3);
+        let best = best_move(Board::STARTPOS, 3).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
 
-        assert_eq!(out.lines().count(), 1, "{out}");
-        assert!(out.starts_with("info depth 2 score cp "), "{out}");
-        for field in [" nodes ", " seldepth ", " nps ", " time "] {
-            assert!(out.contains(field), "{out}");
+        assert_eq!(lines.len(), 3, "{out}");
+        for (depth, line) in (1..).zip(&lines) {
+            assert!(
+                line.starts_with(&format!("info depth {depth} score ")),
+                "{out}"
+            );
+            for field in [" nodes ", " seldepth ", " nps ", " time ", " pv "] {
+                assert!(line.contains(field), "{out}");
+            }
         }
         assert!(out.ends_with(&format!(" pv {best}\n")), "{out}");
     }

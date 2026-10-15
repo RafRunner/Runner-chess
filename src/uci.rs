@@ -8,7 +8,7 @@ use crate::{
     board::{movegen::IllegalMoveError, Board, FenParseError},
     chess_move::{AbstractMove, MoveParseError},
     piece::Color,
-    search::{Limits, Searcher},
+    search::{Budget, Limits, Searcher},
     zobrist::ZobristHash,
 };
 
@@ -102,8 +102,6 @@ impl Uci {
                 self.set_position(&args)?;
             }
             "go" => {
-                let searcher = Searcher::new();
-
                 let args: Vec<&str> = tokens.collect();
                 match args.as_slice() {
                     ["perft", depth] => self.go_perft(depth, out)?,
@@ -112,7 +110,7 @@ impl Uci {
                             "usage: go perft <depth>".to_string(),
                         ))
                     }
-                    _ => self.go_search(searcher, &args, out)?,
+                    _ => self.go_search(&args, out)?,
                 }
             }
             "stop" => (),      // TODO actually stop the engine
@@ -202,16 +200,15 @@ impl Uci {
         Ok(())
     }
 
-    /// `go [wtime <ms>] [btime <ms>] [winc <ms>] [binc <ms>] [movestogo <n>] [depth <n>] [movetime <ms>]`
-    fn go_search(
-        &self,
-        mut searcher: Searcher,
-        args: &[&str],
-        out: &mut impl Write,
-    ) -> Result<(), UciError> {
+    /// `go [wtime <ms>] [btime <ms>] [winc <ms>] [binc <ms>] [movestogo <n>] [depth <n>]
+    /// [movetime <ms>] [nodes <n>]`
+    fn go_search(&self, args: &[&str], out: &mut impl Write) -> Result<(), UciError> {
+        // the GUI's clock started when it sent `go`
+        let start = Instant::now();
         let limits = parse_go(args)?;
+        let budget = Budget::new(&limits, self.board.side_to_move(), start);
 
-        match searcher.search_root(&self.board, &self.history, limits, out)? {
+        match Searcher::new(budget).search_root(&self.board, &self.history, out)? {
             Some(mv) => writeln!(out, "bestmove {mv}")?,
             None => writeln!(out, "bestmove 0000")?,
         }
@@ -245,7 +242,7 @@ fn run_bench(args: &[&str], out: &mut impl Write) -> Result<(), UciError> {
 }
 
 /// Parses the arguments of a searching `go`. Anything not supported yet (`infinite`,
-/// `ponder`, `searchmoves`, `nodes`, `mate`) is ignored, so the GUI still gets a move.
+/// `ponder`, `searchmoves`, `mate`) is ignored, so the GUI still gets a move.
 fn parse_go(args: &[&str]) -> Result<Limits, UciError> {
     let mut limits = Limits::default();
     let mut args = args.iter();
@@ -268,6 +265,7 @@ fn parse_go(args: &[&str]) -> Result<Limits, UciError> {
             "btime" => limits.time[Color::Black] = Some(millis(number()?)),
             "winc" => limits.inc[Color::White] = millis(number()?),
             "binc" => limits.inc[Color::Black] = millis(number()?),
+            "nodes" => limits.nodes = Some(number()?.max(1) as u64),
             _ => (),
         }
     }
@@ -457,10 +455,12 @@ mod tests {
         let (_, out) = run(&mut uci, "go depth 2").unwrap();
         let lines: Vec<&str> = out.lines().collect();
 
-        assert_eq!(lines.len(), 2, "{out}");
-        assert!(lines[0].starts_with("info depth 2 "), "{out}");
+        // one per depth, the last with the move that gets played
+        assert_eq!(lines.len(), 3, "{out}");
+        assert!(lines[0].starts_with("info depth 1 "), "{out}");
+        assert!(lines[1].starts_with("info depth 2 "), "{out}");
         assert!(
-            lines[0].ends_with(&format!(" pv {}", bestmove(&out))),
+            lines[1].ends_with(&format!(" pv {}", bestmove(&out))),
             "{out}"
         );
     }
@@ -547,13 +547,16 @@ mod tests {
                 "movetime",
                 "500",
                 "movestogo",
-                "12"
+                "12",
+                "nodes",
+                "5000000000"
             ])
             .unwrap(),
             Limits {
                 depth: Some(7),
                 movetime: Some(ms(500)),
                 movestogo: Some(12),
+                nodes: Some(5_000_000_000),
                 ..Limits::default()
             }
         );

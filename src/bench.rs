@@ -9,7 +9,7 @@ use std::{
 
 use crate::{
     board::Board,
-    search::{Limits, Searcher},
+    search::{Budget, Searcher},
 };
 
 // the perft reference positions from https://www.chessprogramming.org/Perft_Results
@@ -148,14 +148,10 @@ pub fn run_search(positions: &[(&str, &str)], depth: u32, out: &mut impl Write) 
 
     for &(name, fen) in positions {
         let board = Board::from_fen(fen).expect("bench positions are valid");
-        let limits = Limits {
-            depth: Some(depth),
-            ..Limits::default()
-        };
-        let mut searcher = Searcher::new();
+        let mut searcher = Searcher::new(Budget::depth(Some(depth)));
 
         let start = Instant::now();
-        let best = searcher.search_root(&board, &[], limits, &mut io::sink())?;
+        let best = searcher.search_root(&board, &[], &mut io::sink())?;
         let elapsed = start.elapsed();
         let nodes = searcher.nodes();
 
