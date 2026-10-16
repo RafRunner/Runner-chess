@@ -90,23 +90,25 @@ impl Searcher {
                 }
             }
 
+            if let Some(mv) = best_move {
+                if best_score > -Score::INF {
+                    let elapsed = self.budget.start.elapsed();
+                    writeln!(
+                        out,
+                        "info depth {depth} score {}{} nodes {} seldepth {} nps {} time {} pv {mv}",
+                        best_score.to_uci(),
+                        if self.stopped { " lowerbound" } else { "" },
+                        self.nodes,
+                        self.seldepth,
+                        bench::nps(self.nodes, elapsed),
+                        elapsed.as_millis(),
+                    )?;
+                }
+            }
+
             if self.stopped {
                 break;
             }
-
-            if let Some(mv) = best_move {
-                let elapsed = self.budget.start.elapsed();
-                writeln!(
-                    out,
-                    "info depth {depth} score {} nodes {} seldepth {} nps {} time {} pv {mv}",
-                    best_score.to_uci(),
-                    self.nodes,
-                    self.seldepth,
-                    bench::nps(self.nodes, elapsed),
-                    elapsed.as_millis(),
-                )?;
-            }
-
             self.completed_depth = depth;
             if self.budget.soft.is_some_and(|soft| Instant::now() >= soft) {
                 break;
@@ -309,7 +311,7 @@ impl Searcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{board, find_move, mirror_fen, PERFT_POSITIONS};
+    use crate::test_utils::{board, find_move, mirror_fen, KIWIPETE, PERFT_POSITIONS};
 
     // search
 
@@ -549,14 +551,43 @@ mod tests {
         (best.map(Move::to_uci), String::from_utf8(out).unwrap())
     }
 
+    /// The first move of the `pv` in the last line of `out`.
+    fn last_pv(out: &str) -> Option<&str> {
+        let pv = out.lines().last()?.split(" pv ").nth(1)?;
+        pv.split_whitespace().next()
+    }
+
     #[test]
-    fn an_interrupted_iteration_is_discarded() {
+    fn an_interrupted_iteration_is_reported_as_a_lower_bound() {
         // from the start, depth 1 takes 20 nodes and depth 2 ends at 88: 50 stops in the
-        // middle of it, and the search must not claim it
-        let (best, out) = search_with_node_limit(Board::STARTPOS, 50);
-        assert_eq!(out.lines().count(), 1, "{out}");
-        assert!(out.starts_with("info depth 1 "), "{out}");
-        assert!(best.is_some());
+        // middle of it, so its line can only say that the score is at least that much
+        let (_, out) = search_with_node_limit(Board::STARTPOS, 50);
+        let lines: Vec<&str> = out.lines().collect();
+
+        assert!(lines[0].starts_with("info depth 1 "), "{out}");
+        assert!(!lines[0].contains(" lowerbound "), "{out}");
+        for line in &lines[1..] {
+            assert!(line.starts_with("info depth 2 "), "{out}");
+            assert!(line.contains(" lowerbound "), "{out}");
+        }
+    }
+
+    #[test]
+    fn the_last_info_line_is_the_best_move() {
+        // depth 1 likes Rxa6, but depth 2 sees Re1# and switches to another move before
+        // 100 nodes stop it: GUIs show the last line as the engine's choice
+        let fen = "4r1k1/5ppp/n7/8/8/8/5PPP/R5K1 w - - 0 1";
+        let (best, out) = search_with_node_limit(fen, 100);
+        assert_ne!(best.as_deref(), Some("a1a6"), "{out}");
+        assert_eq!(last_pv(&out), best.as_deref(), "{out}");
+
+        // and wherever else the limit falls
+        for fen in [Board::STARTPOS, KIWIPETE, fen] {
+            for nodes in [30, 100, 300, 1_000, 3_000, 10_000] {
+                let (best, out) = search_with_node_limit(fen, nodes);
+                assert_eq!(last_pv(&out), best.as_deref(), "{fen} {nodes}\n{out}");
+            }
+        }
     }
 
     #[test]
