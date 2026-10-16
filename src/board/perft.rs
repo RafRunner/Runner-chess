@@ -24,7 +24,7 @@ mod tests {
     use crate::{
         board::Board,
         test_utils::{
-            board, mirror_fen, KIWIPETE, PERFT_POSITIONS, POSITION_3, POSITION_4, POSITION_5,
+            KIWIPETE, PERFT_POSITIONS, POSITION_3, POSITION_4, POSITION_5, board, mirror_fen,
         },
     };
 

@@ -4,8 +4,8 @@ use std::{
 };
 
 use crate::{
-    bench::{self, BenchError, BENCH, SEARCH_BENCH, SEARCH_BENCH_DEPTH},
-    board::{movegen::IllegalMoveError, Board, FenParseError},
+    bench::{self, BENCH, BenchError, SEARCH_BENCH, SEARCH_BENCH_DEPTH},
+    board::{Board, FenParseError, movegen::IllegalMoveError},
     chess_move::{AbstractMove, MoveParseError},
     piece::Color,
     search::{Budget, Limits, Searcher},
@@ -85,12 +85,12 @@ impl Uci {
                 Some(other) => {
                     return Err(UciError::UnexpectedArgs(format!(
                         "unexpected debug option: {other}"
-                    )))
+                    )));
                 }
                 None => {
                     return Err(UciError::UnexpectedArgs(
                         "usage: debug [on | off]".to_string(),
-                    ))
+                    ));
                 }
             },
             "ucinewgame" => {
@@ -108,7 +108,7 @@ impl Uci {
                     ["perft", ..] => {
                         return Err(UciError::UnexpectedArgs(
                             "usage: go perft <depth>".to_string(),
-                        ))
+                        ));
                     }
                     _ => self.go_search(&args, out)?,
                 }
@@ -147,7 +147,7 @@ impl Uci {
                 return Err(UciError::UnexpectedArgs(format!(
                     "invalid position args: {}",
                     args.join(" ")
-                )))
+                )));
             }
         };
 
@@ -235,7 +235,7 @@ fn run_bench(args: &[&str], out: &mut impl Write) -> Result<(), UciError> {
         _ => {
             return Err(UciError::UnexpectedArgs(
                 "usage: bench [search [depth]]".to_string(),
-            ))
+            ));
         }
     }
     Ok(())
@@ -532,7 +532,10 @@ mod tests {
     fn go_limits_parse() {
         let ms = Duration::from_millis;
         assert_eq!(
-            parse_go(&["wtime", "300000", "btime", "-20", "winc", "2000", "binc", "0"]).unwrap(),
+            parse_go(&[
+                "wtime", "300000", "btime", "-20", "winc", "2000", "binc", "0"
+            ])
+            .unwrap(),
             Limits {
                 time: [Some(ms(300_000)), Some(ms(0))],
                 inc: [ms(2_000), ms(0)],
@@ -652,9 +655,11 @@ mod tests {
     #[test]
     fn debug_on_adds_timing_to_perft() {
         let mut uci = Uci::new();
-        assert!(!perft_lines(&mut uci, 1)
-            .iter()
-            .any(|l| l.starts_with("info")));
+        assert!(
+            !perft_lines(&mut uci, 1)
+                .iter()
+                .any(|l| l.starts_with("info"))
+        );
 
         run(&mut uci, "debug on").unwrap();
         let lines = perft_lines(&mut uci, 1);
@@ -665,9 +670,11 @@ mod tests {
         assert_eq!(lines.last().unwrap(), "Nodes searched: 20");
 
         run(&mut uci, "debug off").unwrap();
-        assert!(!perft_lines(&mut uci, 1)
-            .iter()
-            .any(|l| l.starts_with("info")));
+        assert!(
+            !perft_lines(&mut uci, 1)
+                .iter()
+                .any(|l| l.starts_with("info"))
+        );
     }
 
     #[test]

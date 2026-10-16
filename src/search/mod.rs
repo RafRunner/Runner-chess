@@ -90,20 +90,20 @@ impl Searcher {
                 }
             }
 
-            if let Some(mv) = best_move {
-                if best_score > -Score::INF {
-                    let elapsed = self.budget.start.elapsed();
-                    writeln!(
-                        out,
-                        "info depth {depth} score {}{} nodes {} seldepth {} nps {} time {} pv {mv}",
-                        best_score.to_uci(),
-                        if self.stopped { " lowerbound" } else { "" },
-                        self.nodes,
-                        self.seldepth,
-                        bench::nps(self.nodes, elapsed),
-                        elapsed.as_millis(),
-                    )?;
-                }
+            if let Some(mv) = best_move
+                && best_score > -Score::INF
+            {
+                let elapsed = self.budget.start.elapsed();
+                writeln!(
+                    out,
+                    "info depth {depth} score {}{} nodes {} seldepth {} nps {} time {} pv {mv}",
+                    best_score.to_uci(),
+                    if self.stopped { " lowerbound" } else { "" },
+                    self.nodes,
+                    self.seldepth,
+                    bench::nps(self.nodes, elapsed),
+                    elapsed.as_millis(),
+                )?;
             }
 
             if self.stopped {
@@ -311,7 +311,7 @@ impl Searcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{board, find_move, mirror_fen, KIWIPETE, PERFT_POSITIONS};
+    use crate::test_utils::{KIWIPETE, PERFT_POSITIONS, board, find_move, mirror_fen};
 
     // search
 

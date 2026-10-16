@@ -4,7 +4,7 @@ pub mod perft;
 use std::fmt::{Display, Formatter};
 
 use crate::{
-    attacks::{bishop_attacks, rook_attacks, KING_ATTACKS, KNIGHT_ATTACKS, PAWN_ATTACKS},
+    attacks::{KING_ATTACKS, KNIGHT_ATTACKS, PAWN_ATTACKS, bishop_attacks, rook_attacks},
     bitboard::BitBoard,
     castling::CastlingRights,
     piece::{Color, Piece, PieceKind},
@@ -426,7 +426,7 @@ mod tests {
     use super::*;
     use crate::{
         attacks::attacks,
-        test_utils::{board, PERFT_POSITIONS},
+        test_utils::{PERFT_POSITIONS, board},
     };
 
     fn p(color: Color, kind: PieceKind) -> Option<Piece> {

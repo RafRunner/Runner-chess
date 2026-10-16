@@ -172,7 +172,7 @@ fn is_dead_position(board: &Board) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{board, mirror_fen, PERFT_POSITIONS};
+    use crate::test_utils::{PERFT_POSITIONS, board, mirror_fen};
 
     /// The same position with the other side to move.
     fn flip_side(fen: &str) -> String {

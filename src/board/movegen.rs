@@ -1,7 +1,7 @@
 use std::iter;
 
 use crate::{
-    attacks::{attacks, PAWN_ATTACKS},
+    attacks::{PAWN_ATTACKS, attacks},
     bitboard::BitBoard,
     board::Board,
     castling::CastlingRights,
@@ -202,7 +202,7 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::test_utils::{board, find_move, moves_of, KIWIPETE, PERFT_POSITIONS, POSITION_3};
+    use crate::test_utils::{KIWIPETE, PERFT_POSITIONS, POSITION_3, board, find_move, moves_of};
     use Square as S;
 
     const KIWIPETE_BLACK: &str =

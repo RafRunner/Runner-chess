@@ -87,7 +87,7 @@ mod tests {
     use super::*;
     use crate::{
         square::Square,
-        test_utils::{board, find_move, PERFT_POSITIONS},
+        test_utils::{PERFT_POSITIONS, board, find_move},
     };
 
     // The offsets below are written as the book format page gives them, instead of

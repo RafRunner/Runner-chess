@@ -65,7 +65,7 @@ mod tests {
     use super::*;
     use crate::{
         search::Budget,
-        test_utils::{board, PERFT_POSITIONS},
+        test_utils::{PERFT_POSITIONS, board},
     };
 
     /// The legal moves of `fen` in the order the search tries them.
