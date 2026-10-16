@@ -29,7 +29,7 @@ pub struct Budget {
 }
 
 impl Budget {
-    const SOFT_FACTOR: u32 = 4;
+    const SOFT_FACTOR: u32 = 6;
 
     /// The budget of a `go` that arrived at `start`, with `us` to move.
     pub fn new(limits: &Limits, us: Color, start: Instant) -> Self {

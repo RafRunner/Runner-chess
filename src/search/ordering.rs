@@ -36,10 +36,9 @@ impl Searcher {
         board: &'a Board,
         filter: impl Fn(&Move) -> bool,
     ) -> impl Iterator<Item = (Move, Board)> + 'a {
-        let mut moves = Vec::new();
-        board.generate_moves(&mut moves);
+        let mut moves = board.generate_moves();
         moves.retain(|mv| filter(mv));
-        moves.sort_by_key(|&mv| Reverse(self.move_sort_key(board, mv)));
+        moves.sort_by_cached_key(|&mv| Reverse(self.move_sort_key(board, mv)));
 
         moves
             .into_iter()

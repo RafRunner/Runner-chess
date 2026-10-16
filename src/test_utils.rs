@@ -18,9 +18,7 @@ pub fn board(fen: &str) -> Board {
 }
 
 pub fn moves_of(board: &Board) -> Vec<Move> {
-    let mut moves = Vec::new();
-    board.generate_moves(&mut moves);
-    moves
+    board.generate_moves()
 }
 
 /// The generated move written as `uci`, with the kind the generator gave it.

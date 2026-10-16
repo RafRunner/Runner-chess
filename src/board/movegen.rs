@@ -14,7 +14,9 @@ use crate::{
 pub struct IllegalMoveError;
 
 impl Board {
-    pub fn generate_moves(&self, moves: &mut Vec<Move>) {
+    pub fn generate_moves(&self) -> Vec<Move> {
+        let mut moves = Vec::with_capacity(64);
+
         let us = self.side_to_move();
         let them = us.oposite();
         let white_to_move = us == Color::White;
@@ -128,12 +130,12 @@ impl Board {
         } & !occupied;
         for to in single_move {
             let from = to.offset(-delta).unwrap();
-            self.add_pawn_moves(from, to, moves);
+            self.add_pawn_moves(from, to, &mut moves);
         }
 
         for from in pawns {
             for to in PAWN_ATTACKS[us][from] & their_pieces {
-                self.add_pawn_moves(from, to, moves);
+                self.add_pawn_moves(from, to, &mut moves);
             }
         }
 
@@ -142,13 +144,12 @@ impl Board {
                 moves.push(Move::new(from, to, MoveKind::EnPassant))
             }
         }
+
+        moves
     }
 
     pub fn legal_successors(&self) -> impl Iterator<Item = (Move, Board)> + '_ {
-        let mut pseudo_legal = Vec::new();
-        self.generate_moves(&mut pseudo_legal);
-
-        pseudo_legal
+        self.generate_moves()
             .into_iter()
             .filter_map(|mv| self.make_legal_move(mv).map(|next| (mv, next)))
     }
