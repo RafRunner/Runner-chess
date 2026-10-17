@@ -8,7 +8,7 @@ use crate::{
     board::{Board, FenParseError, movegen::IllegalMoveError},
     chess_move::{AbstractMove, MoveParseError},
     piece::Color,
-    search::{Budget, Limits, Searcher},
+    search::{Budget, Limits, Searcher, TranspositionTable},
     zobrist::ZobristHash,
 };
 
@@ -46,6 +46,7 @@ pub struct Uci {
     board: Board,
     /// The positions of the game before `board`, oldest first, for repetitions.
     history: Vec<ZobristHash>,
+    tt: TranspositionTable,
     debug: bool,
 }
 
@@ -61,6 +62,7 @@ impl Uci {
             board: Board::startpos(),
             history: Vec::new(),
             debug: false,
+            tt: TranspositionTable::new(64),
         }
     }
 
@@ -96,6 +98,7 @@ impl Uci {
             "ucinewgame" => {
                 self.board = Board::startpos();
                 self.history.clear();
+                self.tt.clear();
             }
             "position" => {
                 let args: Vec<&str> = tokens.collect();
@@ -202,13 +205,13 @@ impl Uci {
 
     /// `go [wtime <ms>] [btime <ms>] [winc <ms>] [binc <ms>] [movestogo <n>] [depth <n>]
     /// [movetime <ms>] [nodes <n>]`
-    fn go_search(&self, args: &[&str], out: &mut impl Write) -> Result<(), UciError> {
+    fn go_search(&mut self, args: &[&str], out: &mut impl Write) -> Result<(), UciError> {
         // the GUI's clock started when it sent `go`
         let start = Instant::now();
         let limits = parse_go(args)?;
         let budget = Budget::new(&limits, self.board.side_to_move(), start);
 
-        match Searcher::new(budget).search_root(&self.board, &self.history, out)? {
+        match Searcher::new(budget, &mut self.tt).search_root(&self.board, &self.history, out)? {
             Some(mv) => writeln!(out, "bestmove {mv}")?,
             None => writeln!(out, "bestmove 0000")?,
         }

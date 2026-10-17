@@ -40,6 +40,33 @@ impl Score {
         self.is_mate().then(|| (Self::MATE.0 - self.0.abs()) as u32)
     }
 
+    /// When storing on the tt, we remove the ply from the score to indicate
+    /// the mate score from the position at ply, not the root
+    pub fn to_tt(self, ply: u32) -> Self {
+        if self.is_mate() {
+            if self > Self::DRAW {
+                Self(self.0 + ply as i16)
+            } else {
+                Self(self.0 - ply as i16)
+            }
+        } else {
+            self
+        }
+    }
+
+    /// Opposite of to_tt
+    pub fn from_tt(self, ply: u32) -> Self {
+        if self.is_mate() {
+            if self > Self::DRAW {
+                Self(self.0 - ply as i16)
+            } else {
+                Self(self.0 + ply as i16)
+            }
+        } else {
+            self
+        }
+    }
+
     /// As UCI wants it: `cp <centipawns>`, or `mate <moves>`, negative when the side
     /// to move is the one getting mated.
     pub fn to_uci(self) -> String {
@@ -117,6 +144,34 @@ mod tests {
         assert_eq!(Score::new(100).mate_plies(), None);
         assert_eq!(Score::MAX_EVAL.mate_plies(), None);
         assert!(Score::mate_in(Score::MAX_PLY).is_mate());
+    }
+
+    #[test]
+    fn the_tt_counts_mates_from_the_node() {
+        // a mate 5 plies from the root, seen 2 plies in, is 3 plies away from that node
+        assert_eq!(Score::mate_in(5).to_tt(2), Score::mate_in(3));
+        assert_eq!(Score::mated_in(5).to_tt(2), Score::mated_in(3));
+        // and reached again 4 plies in, 7 plies from the root
+        assert_eq!(Score::mate_in(5).to_tt(2).from_tt(4), Score::mate_in(7));
+        assert_eq!(Score::mated_in(5).to_tt(2).from_tt(4), Score::mated_in(7));
+        // the rest doesn't depend on where it was found
+        assert_eq!(Score::new(150).to_tt(2), Score::new(150));
+        assert_eq!(Score::MAX_EVAL.to_tt(2), Score::MAX_EVAL);
+    }
+
+    #[test]
+    fn from_tt_undoes_to_tt() {
+        for score in [
+            Score::mate_in(7),
+            Score::mated_in(7),
+            Score::new(-300),
+            Score::DRAW,
+            -Score::MAX_EVAL,
+        ] {
+            for ply in 0..=7 {
+                assert_eq!(score.to_tt(ply).from_tt(ply), score, "{score:?} {ply}");
+            }
+        }
     }
 
     #[test]

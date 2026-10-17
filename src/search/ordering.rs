@@ -6,7 +6,7 @@ use crate::{
     chess_move::{Move, MoveKind},
 };
 
-impl Searcher {
+impl Searcher<'_> {
     fn move_sort_key(&self, board: &Board, mv: Move) -> i32 {
         let mut key: i32 = 0;
 
@@ -48,8 +48,12 @@ impl Searcher {
     pub(super) fn legal_ordered<'a>(
         &self,
         board: &'a Board,
+        first: Option<Move>,
     ) -> impl Iterator<Item = (Move, Board)> + 'a {
-        self.ordered_moves(board, |_| true)
+        first
+            .into_iter()
+            .filter_map(move |mv| board.make_legal_move(mv).map(|next| (mv, next)))
+            .chain(self.ordered_moves(board, move |&mv| Some(mv) != first))
     }
 
     pub(super) fn captures_ordered<'a>(
@@ -64,14 +68,19 @@ impl Searcher {
 mod tests {
     use super::*;
     use crate::{
-        search::Budget,
+        search::{Budget, TranspositionTable},
         test_utils::{PERFT_POSITIONS, board},
     };
 
     /// The legal moves of `fen` in the order the search tries them.
     fn ordered(fen: &str) -> Vec<Move> {
-        Searcher::new(Budget::depth(None))
-            .legal_ordered(&board(fen))
+        ordered_after(fen, None)
+    }
+
+    /// The same, with `first` (the move from the TT) put before the others.
+    fn ordered_after(fen: &str, first: Option<Move>) -> Vec<Move> {
+        Searcher::new(Budget::depth(None), &mut TranspositionTable::new(1))
+            .legal_ordered(&board(fen), first)
             .map(|(mv, _)| mv)
             .collect()
     }
@@ -99,6 +108,19 @@ mod tests {
             ordered.sort();
             legal.sort();
             assert_eq!(ordered, legal, "{fen}");
+        }
+    }
+
+    #[test]
+    fn the_tt_move_comes_first_and_only_once() {
+        // the last move gets promoted, and the others keep their order
+        for fen in PERFT_POSITIONS {
+            let moves = ordered(fen);
+            let last = *moves.last().unwrap();
+            let after = ordered_after(fen, Some(last));
+
+            assert_eq!(after[0], last, "{fen}");
+            assert_eq!(after[1..], moves[..moves.len() - 1], "{fen}");
         }
     }
 

@@ -1,8 +1,11 @@
 mod limits;
 mod ordering;
+mod tt;
 
 pub use limits::Budget;
 pub use limits::Limits;
+pub use tt::Bound;
+pub use tt::TranspositionTable;
 
 use std::io::{self, Write};
 use std::time::Instant;
@@ -11,27 +14,29 @@ use crate::{
     bench, board::Board, chess_move::Move, eval::eval, score::Score, zobrist::ZobristHash,
 };
 
-pub struct Searcher {
+pub struct Searcher<'a> {
     budget: Budget,
     nodes: u64,
     seldepth: u32,
     completed_depth: u32,
     /// The positions of the game before the root, then the line being searched
     hashes: Vec<ZobristHash>,
+    tt: &'a mut TranspositionTable,
     /// The index of the hash of the root position on the hashes vec
     root_index: usize,
     stopped: bool, // later: Arc<AtomicBool> for UCI `stop`
                    // later: killers, history, a handle to the TT
 }
 
-impl Searcher {
-    pub fn new(budget: Budget) -> Self {
+impl<'a> Searcher<'a> {
+    pub fn new(budget: Budget, tt: &'a mut TranspositionTable) -> Self {
         Self {
             budget,
             nodes: 0,
             seldepth: 0,
             completed_depth: 0,
             hashes: Vec::with_capacity(100 + Score::MAX_PLY as usize),
+            tt,
             root_index: 0,
             stopped: false,
         }
@@ -65,7 +70,7 @@ impl Searcher {
         self.root_index = history.len();
         self.push_hash(board.hash());
 
-        let mut legal_ordered: Vec<(Move, Board)> = self.legal_ordered(board).collect();
+        let mut legal_ordered: Vec<(Move, Board)> = self.legal_ordered(board, None).collect();
 
         let mut best_move = legal_ordered.first().map(|(mv, _)| *mv);
 
@@ -119,18 +124,11 @@ impl Searcher {
         Ok(best_move)
     }
 
-    fn negamax(
-        &mut self,
-        board: &Board,
-        depth: u32,
-        ply: u32,
-        mut alpha: Score,
-        beta: Score,
-    ) -> Score {
+    fn negamax(&mut self, board: &Board, depth: u32, ply: u32, alpha: Score, beta: Score) -> Score {
         if self.check_hard_budget() {
             return Score::DRAW;
         }
-        if let Some(score) = self.check_draw(ply, board) {
+        if let Some(score) = self.check_draw(board, ply) {
             return score;
         }
         if depth == 0 {
@@ -141,14 +139,22 @@ impl Searcher {
             return eval(board);
         }
 
+        let (tt_move, tt_score) = self.check_tt(board, depth, ply, alpha, beta);
+
+        if let Some(score) = tt_score {
+            return score;
+        }
+
         let mut best = -Score::INF;
         let mut has_legal_move = false;
+        let mut mut_alpha = alpha;
+        let mut best_move = None;
 
-        for (_, next) in self.legal_ordered(board) {
+        for (mv, next) in self.legal_ordered(board, tt_move) {
             has_legal_move = true;
 
             self.push_hash(next.hash());
-            let score = -self.negamax(&next, depth - 1, ply + 1, -beta, -alpha);
+            let score = -self.negamax(&next, depth - 1, ply + 1, -beta, -mut_alpha);
             self.pop_hash();
 
             if self.stopped {
@@ -158,11 +164,12 @@ impl Searcher {
             if score > best {
                 best = score;
 
-                if best > alpha {
+                if best > mut_alpha {
                     // We found something better, so we raise the floor. The window closes and we cut more
-                    alpha = best;
+                    mut_alpha = best;
+                    best_move = Some(mv);
 
-                    if alpha >= beta {
+                    if mut_alpha >= beta {
                         // Opponent has something better guaranteed, therefore we can cut the analysis here
                         break;
                     }
@@ -171,11 +178,16 @@ impl Searcher {
         }
 
         if !has_legal_move {
-            return if board.is_in_check(board.side_to_move()) {
-                Score::mated_in(ply)
+            if board.is_in_check(board.side_to_move()) {
+                best = Score::mated_in(ply);
             } else {
-                Score::DRAW
+                best = Score::DRAW
             };
+        }
+        if !self.stopped {
+            let bound = Bound::new(best, alpha, beta);
+            self.tt
+                .store(board.hash(), depth, best.to_tt(ply), bound, best_move);
         }
 
         best
@@ -259,7 +271,7 @@ impl Searcher {
 
     /// Draws by the rules, checked before quiescence so that a repetition right at
     /// the horizon still counts. The root has to return a move anyway.
-    fn check_draw(&self, ply: u32, board: &Board) -> Option<Score> {
+    fn check_draw(&self, board: &Board, ply: u32) -> Option<Score> {
         if ply == 0 {
             return None;
         }
@@ -306,6 +318,40 @@ impl Searcher {
 
         false
     }
+
+    fn check_tt(
+        &mut self,
+        board: &Board,
+        depth: u32,
+        ply: u32,
+        alpha: Score,
+        beta: Score,
+    ) -> (Option<Move>, Option<Score>) {
+        if let Some(entry) = self.tt.probe(board.hash()) {
+            let tt_move = entry.best_move;
+
+            if ply > 0 && entry.depth >= depth as u8 {
+                let score = entry.score.from_tt(ply);
+
+                match entry.bound {
+                    tt::Bound::Exact => return (tt_move, Some(score)),
+                    tt::Bound::Lower => {
+                        if score >= beta {
+                            return (tt_move, Some(score));
+                        }
+                    }
+                    tt::Bound::Upper => {
+                        if score <= alpha {
+                            return (tt_move, Some(score));
+                        }
+                    }
+                }
+            }
+            return (tt_move, None);
+        }
+
+        (None, None)
+    }
 }
 
 #[cfg(test)]
@@ -316,7 +362,7 @@ mod tests {
     // search
 
     fn best_move(fen: &str, depth: u32) -> Option<String> {
-        Searcher::new(Budget::depth(Some(depth)))
+        Searcher::new(Budget::depth(Some(depth)), &mut TranspositionTable::new(1))
             .search_root(&board(fen), &[], &mut io::sink())
             .unwrap()
             .map(Move::to_uci)
@@ -325,7 +371,7 @@ mod tests {
     /// What a search of `fen` to `depth` writes.
     fn output(fen: &str, depth: u32) -> String {
         let mut out = Vec::new();
-        Searcher::new(Budget::depth(Some(depth)))
+        Searcher::new(Budget::depth(Some(depth)), &mut TranspositionTable::new(1))
             .search_root(&board(fen), &[], &mut out)
             .unwrap();
         String::from_utf8(out).unwrap()
@@ -333,8 +379,13 @@ mod tests {
 
     /// The score of `fen` for the side to move, searched `depth` plies deep.
     fn score(fen: &str, depth: u32) -> Score {
+        score_with(&mut TranspositionTable::new(1), fen, depth)
+    }
+
+    /// The same, with a table that may remember earlier searches.
+    fn score_with(tt: &mut TranspositionTable, fen: &str, depth: u32) -> Score {
         let board = board(fen);
-        let mut searcher = Searcher::new(Budget::depth(Some(depth)));
+        let mut searcher = Searcher::new(Budget::depth(Some(depth)), tt);
         searcher.push_hash(board.hash());
         searcher.negamax(&board, depth, 0, -Score::INF, Score::INF)
     }
@@ -437,6 +488,110 @@ mod tests {
         }
     }
 
+    // transposition table
+
+    #[test]
+    fn mates_from_the_tt_keep_their_distance() {
+        // the second search finds the mates of the first one in the table, stored
+        // plies away from the root
+        for (fen, depth, mate) in [
+            ("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", 2, Score::mate_in(1)),
+            ("7k/8/5K2/8/8/8/8/6R1 w - - 0 1", 4, Score::mate_in(3)), // Kf7 Kh7 Rh1#
+        ] {
+            for fen in both_colors(fen) {
+                let mut tt = TranspositionTable::new(1);
+                assert_eq!(score_with(&mut tt, &fen, depth), mate, "{fen}");
+                assert_eq!(score_with(&mut tt, &fen, depth), mate, "{fen}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_slower_mate_than_alpha_is_an_upper_bound() {
+        // at ply 3 the mate in 1 is 4 plies from the root, short of an alpha of mate in 3
+        // plies: a fail low, even though the stored score, counted from the node, is a
+        // mate in 1 ply
+        let board = board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1");
+        let mut tt = TranspositionTable::new(1);
+        let mut searcher = Searcher::new(Budget::depth(None), &mut tt);
+        searcher.push_hash(board.hash());
+
+        let score = searcher.negamax(&board, 2, 3, Score::mate_in(3), Score::INF);
+        assert_eq!(score, Score::mate_in(4));
+        assert_eq!(tt.probe(board.hash()).unwrap().bound, Bound::Upper);
+    }
+
+    /// What `check_tt` makes of an entry with `bound` at depth 5, for a node at ply 1
+    /// and depth 5 inside the window (alpha, beta).
+    fn tt_cutoff(bound: Bound, score: i32, alpha: i32, beta: i32) -> Option<Score> {
+        let board = board(Board::STARTPOS);
+        let mut tt = TranspositionTable::new(1);
+        tt.store(board.hash(), 5, Score::new(score), bound, None);
+        Searcher::new(Budget::depth(None), &mut tt)
+            .check_tt(&board, 5, 1, Score::new(alpha), Score::new(beta))
+            .1
+    }
+
+    #[test]
+    fn the_bound_decides_the_cutoff() {
+        // the value is exactly 100
+        assert_eq!(
+            tt_cutoff(Bound::Exact, 100, 150, 200),
+            Some(Score::new(100))
+        );
+        assert_eq!(tt_cutoff(Bound::Exact, 100, 0, 50), Some(Score::new(100)));
+        // at least 100: it's enough when beta is below
+        assert_eq!(tt_cutoff(Bound::Lower, 100, 0, 50), Some(Score::new(100)));
+        assert_eq!(tt_cutoff(Bound::Lower, 100, 0, 200), None);
+        // at most 100: it's enough when alpha is above
+        assert_eq!(
+            tt_cutoff(Bound::Upper, 100, 150, 200),
+            Some(Score::new(100))
+        );
+        assert_eq!(tt_cutoff(Bound::Upper, 100, 0, 200), None);
+    }
+
+    #[test]
+    fn a_shallow_entry_still_gives_its_move() {
+        let board = board(Board::STARTPOS);
+        let e4 = find_move(&board, "e2e4");
+        let mut tt = TranspositionTable::new(1);
+        tt.store(board.hash(), 2, Score::new(30), Bound::Exact, Some(e4));
+        let mut searcher = Searcher::new(Budget::depth(None), &mut tt);
+        let (alpha, beta) = (-Score::INF, Score::INF);
+
+        assert_eq!(
+            searcher.check_tt(&board, 2, 1, alpha, beta),
+            (Some(e4), Some(Score::new(30)))
+        );
+        // too shallow to cut, but the move still goes first
+        assert_eq!(
+            searcher.check_tt(&board, 3, 1, alpha, beta),
+            (Some(e4), None)
+        );
+        // and the root never cuts, it has to return a move
+        assert_eq!(
+            searcher.check_tt(&board, 2, 0, alpha, beta),
+            (Some(e4), None)
+        );
+    }
+
+    #[test]
+    fn an_interrupted_node_is_not_stored() {
+        // the node limit stops the search in the middle of the moves of the root
+        let board = board(KIWIPETE);
+        let mut budget = Budget::depth(Some(4));
+        budget.nodes = Some(1000);
+        let mut tt = TranspositionTable::new(1);
+        let mut searcher = Searcher::new(budget, &mut tt);
+        searcher.completed_depth = 1; // the first iteration is never stopped
+        searcher.push_hash(board.hash());
+        searcher.negamax(&board, 4, 0, -Score::INF, Score::INF);
+
+        assert!(searcher.stopped);
+        assert!(tt.probe(board.hash()).is_none());
+    }
+
     // draws by the rules
 
     #[test]
@@ -487,7 +642,8 @@ mod tests {
         }
 
         let mut out = Vec::new();
-        let best = Searcher::new(Budget::depth(Some(depth)))
+        let mut tt = TranspositionTable::new(1);
+        let best = Searcher::new(Budget::depth(Some(depth)), &mut tt)
             .search_root(&b, &history, &mut out)
             .unwrap();
         (best.map(Move::to_uci), String::from_utf8(out).unwrap())
@@ -545,7 +701,8 @@ mod tests {
         let mut budget = Budget::depth(Some(10));
         budget.nodes = Some(nodes);
         let mut out = Vec::new();
-        let best = Searcher::new(budget)
+        let mut tt = TranspositionTable::new(1);
+        let best = Searcher::new(budget, &mut tt)
             .search_root(&board(fen), &[], &mut out)
             .unwrap();
         (best.map(Move::to_uci), String::from_utf8(out).unwrap())
@@ -602,7 +759,8 @@ mod tests {
     fn stops_at_the_node_limit() {
         let mut budget = Budget::depth(Some(7));
         budget.nodes = Some(1000);
-        let mut searcher = Searcher::new(budget);
+        let mut tt = TranspositionTable::new(1);
+        let mut searcher = Searcher::new(budget, &mut tt);
         let best = searcher
             .search_root(&board(Board::STARTPOS), &[], &mut io::sink())
             .unwrap();

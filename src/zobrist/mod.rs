@@ -20,6 +20,10 @@ impl ZobristHash {
         Self(0)
     }
 
+    pub fn raw(self) -> u64 {
+        self.0
+    }
+
     pub fn hash(board: &Board) -> Self {
         let mut hash = Self(0);
 
