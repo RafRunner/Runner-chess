@@ -538,7 +538,10 @@ mod tests {
         let board = board(Board::STARTPOS);
         let mut tt = TranspositionTable::new(1);
         tt.store(board.hash(), 5, Score::new(score), bound, None);
-        Searcher::new(Budget::depth(None), &mut tt)
+        let mut searcher = Searcher::new(Budget::depth(None), &mut tt);
+        // as in the search, the node is on the stack of hashes when it's probed
+        searcher.push_hash(board.hash());
+        searcher
             .check_tt(&board, 5, 1, Score::new(alpha), Score::new(beta))
             .1
     }
@@ -569,6 +572,7 @@ mod tests {
         let mut tt = TranspositionTable::new(1);
         tt.store(board.hash(), 2, Score::new(30), Bound::Exact, Some(e4));
         let mut searcher = Searcher::new(Budget::depth(None), &mut tt);
+        searcher.push_hash(board.hash());
         let (alpha, beta) = (-Score::INF, Score::INF);
 
         assert_eq!(
@@ -585,6 +589,29 @@ mod tests {
             searcher.check_tt(&board, 2, 0, alpha, beta),
             (Some(e4), None)
         );
+    }
+
+    #[test]
+    fn a_position_seen_before_does_not_trust_the_table() {
+        // the entry may come from a time when a repetition through it wasn't possible
+        let board = board("4k3/8/8/8/8/8/8/R3K3 w - - 10 30");
+        let mut tt = TranspositionTable::new(1);
+        tt.store(board.hash(), 5, Score::new(500), Bound::Exact, None);
+        let mut searcher = Searcher::new(Budget::depth(None), &mut tt);
+        let (alpha, beta) = (-Score::INF, Score::INF);
+
+        searcher.push_hash(board.hash());
+        assert_eq!(
+            searcher.check_tt(&board, 5, 1, alpha, beta),
+            (None, Some(Score::new(500)))
+        );
+
+        // two moves of each side later, the same position
+        for _ in 0..3 {
+            searcher.push_hash(ZobristHash::empty());
+        }
+        searcher.push_hash(board.hash());
+        assert_eq!(searcher.check_tt(&board, 5, 1, alpha, beta), (None, None));
     }
 
     #[test]

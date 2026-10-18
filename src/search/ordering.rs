@@ -7,7 +7,10 @@ use crate::{
 };
 
 impl Searcher<'_> {
-    fn move_sort_key(&self, board: &Board, mv: Move) -> i32 {
+    fn move_sort_key(&self, board: &Board, mv: Move, first: Option<Move>) -> i32 {
+        if first == Some(mv) {
+            return i32::MAX;
+        }
         let mut key: i32 = 0;
 
         if mv.is_capture() {
@@ -35,10 +38,11 @@ impl Searcher<'_> {
         &self,
         board: &'a Board,
         filter: impl Fn(&Move) -> bool,
+        first: Option<Move>,
     ) -> impl Iterator<Item = (Move, Board)> + 'a {
         let mut moves = board.generate_moves();
         moves.retain(|mv| filter(mv));
-        moves.sort_by_cached_key(|&mv| Reverse(self.move_sort_key(board, mv)));
+        moves.sort_by_cached_key(|&mv| Reverse(self.move_sort_key(board, mv, first)));
 
         moves
             .into_iter()
@@ -50,17 +54,14 @@ impl Searcher<'_> {
         board: &'a Board,
         first: Option<Move>,
     ) -> impl Iterator<Item = (Move, Board)> + 'a {
-        first
-            .into_iter()
-            .filter_map(move |mv| board.make_legal_move(mv).map(|next| (mv, next)))
-            .chain(self.ordered_moves(board, move |&mv| Some(mv) != first))
+        self.ordered_moves(board, |_| true, first)
     }
 
     pub(super) fn captures_ordered<'a>(
         &self,
         board: &'a Board,
     ) -> impl Iterator<Item = (Move, Board)> + 'a {
-        self.ordered_moves(board, |mv| mv.is_capture())
+        self.ordered_moves(board, |mv| mv.is_capture(), None)
     }
 }
 

@@ -55,7 +55,7 @@ impl TranspositionTable {
         let bytes = megabytes * 1024 * 1024;
         let capacity = (bytes / size_of::<Option<Entry>>()).max(1);
 
-        let capacity = 1usize << (usize::BITS - 1 - capacity.leading_zeros());
+        let capacity = 1 << capacity.ilog2();
 
         Self {
             entries: vec![None; capacity],
