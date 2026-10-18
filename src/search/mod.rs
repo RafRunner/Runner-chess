@@ -319,6 +319,17 @@ impl<'a> Searcher<'a> {
         false
     }
 
+    /// The position already appeared in the game or in the line being searched, so its
+    /// score may depend on the way to it, and an entry from another way can't be trusted
+    fn has_appenned(&self, board: &Board) -> bool {
+        let current = self.hashes.len() - 1;
+        let reach = (board.halfmove_clock() as usize).min(current);
+
+        (4..=reach)
+            .step_by(2)
+            .any(|back| self.hashes[current - back] == self.hashes[current])
+    }
+
     fn check_tt(
         &mut self,
         board: &Board,
@@ -330,7 +341,7 @@ impl<'a> Searcher<'a> {
         if let Some(entry) = self.tt.probe(board.hash()) {
             let tt_move = entry.best_move;
 
-            if ply > 0 && entry.depth >= depth as u8 {
+            if ply > 0 && entry.depth >= depth as u8 && !self.has_appenned(board) {
                 let score = entry.score.from_tt(ply);
 
                 match entry.bound {
