@@ -4,17 +4,17 @@ use std::{
     process::ExitCode,
 };
 
-use runner_chess::uci::{Control, Uci};
+use runner_chess::uci::{Control, Stdout, Uci};
 
 fn main() -> ExitCode {
-    let mut uci = Uci::new();
-    let mut stdout = io::stdout().lock();
+    // no lock on stdout here: the search thread writes to it too
+    let mut uci = Uci::new(Stdout);
 
     // `runner-chess bench [search [depth]]` runs a benchmark and exits, for scripts
     // and hyperfine
     let args: Vec<String> = env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("bench") {
-        return match uci.handle(&args.join(" "), &mut stdout) {
+        return match uci.handle(&args.join(" ")) {
             Ok(_) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("{e:?}");
@@ -26,12 +26,17 @@ fn main() -> ExitCode {
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
 
-        match uci.handle(&line, &mut stdout) {
-            Ok(Control::Quit) => break,
+        match uci.handle(&line) {
+            Ok(Control::Quit) => return ExitCode::SUCCESS,
             Ok(Control::Continue) => (),
             Err(e) => eprintln!("{e:?}"),
         }
     }
 
+    // the input closed without a `quit`, so no `stop` can come anymore either: a search
+    // still running ends now, with its `bestmove`, as Stockfish does
+    if let Err(e) = uci.handle("quit") {
+        eprintln!("{e:?}");
+    }
     ExitCode::SUCCESS
 }

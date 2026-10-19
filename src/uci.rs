@@ -1,5 +1,11 @@
 use std::{
+    fmt,
     io::{self, Write},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
@@ -22,6 +28,7 @@ pub enum UciError {
     IllegalMove(String),
     Bench(BenchError),
     Io(io::Error),
+    SearchPanicked,
 }
 
 impl From<io::Error> for UciError {
@@ -42,27 +49,64 @@ pub enum Control {
     Quit,
 }
 
-pub struct Uci {
-    board: Board,
-    /// The positions of the game before `board`, oldest first, for repetitions.
-    history: Vec<ZobristHash>,
-    tt: TranspositionTable,
-    debug: bool,
-}
+const HASH_MB: usize = 64;
 
-impl Default for Uci {
-    fn default() -> Self {
-        Self::new()
+/// The standard output, a line at a time: `write_fmt` locks it once for the whole line,
+/// so the lines of the search thread and of the main one never get mixed
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Stdout;
+
+impl Write for Stdout {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        io::stdout().write(buf)
+    }
+
+    fn write_fmt(&mut self, args: fmt::Arguments) -> io::Result<()> {
+        io::stdout().write_fmt(args)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::stdout().flush()
     }
 }
 
-impl Uci {
-    pub fn new() -> Self {
+/// What the search thread gives back when it ends: the table, and whether it could
+/// write everything
+type SearchResult = (TranspositionTable, io::Result<()>);
+
+/// The engine's side of the protocol. Searches run in their own thread, so that `stop`
+/// and `isready` still get read; everything goes to `out`, which each search gets a
+/// copy of.
+pub struct Uci<W> {
+    board: Board,
+    /// The positions of the game before `board`, oldest first, for repetitions.
+    history: Vec<ZobristHash>,
+    /// The table, here whenever no search has it
+    tt: Option<TranspositionTable>,
+    /// The search running, which gives the table back once it ends
+    search: Option<JoinHandle<SearchResult>>,
+    /// Set by `stop` and `quit` to end the search early
+    stop: Arc<AtomicBool>,
+    out: W,
+    debug: bool,
+}
+
+impl Default for Uci<Stdout> {
+    fn default() -> Self {
+        Self::new(Stdout)
+    }
+}
+
+impl<W: Write + Clone + Send + 'static> Uci<W> {
+    pub fn new(out: W) -> Self {
         Self {
             board: Board::startpos(),
             history: Vec::new(),
+            tt: Some(TranspositionTable::new(HASH_MB)),
+            search: None,
+            stop: Arc::new(AtomicBool::new(false)),
+            out,
             debug: false,
-            tt: TranspositionTable::new(64),
         }
     }
 
@@ -70,17 +114,20 @@ impl Uci {
         &self.board
     }
 
-    pub fn handle(&mut self, line: &str, out: &mut impl Write) -> Result<Control, UciError> {
+    /// Runs `line`. A `go` that searches returns right away, and the search writes its
+    /// `bestmove` from its own thread.
+    pub fn handle(&mut self, line: &str) -> Result<Control, UciError> {
         let mut tokens = line.split_whitespace();
         let command = tokens.next().ok_or(UciError::EmptyInput)?;
 
         match command {
             "uci" => {
-                writeln!(out, "id name runner-chess")?;
-                writeln!(out, "id author Rafael Nunes Santana")?;
-                writeln!(out, "uciok")?;
+                writeln!(self.out, "id name runner-chess")?;
+                writeln!(self.out, "id author Rafael Nunes Santana")?;
+                writeln!(self.out, "uciok")?;
             }
-            "isready" => writeln!(out, "readyok")?,
+            // even while searching, without waiting for it
+            "isready" => writeln!(self.out, "readyok")?,
             "debug" => match tokens.next() {
                 Some("on") => self.debug = true,
                 Some("off") => self.debug = false,
@@ -96,38 +143,50 @@ impl Uci {
                 }
             },
             "ucinewgame" => {
+                self.wait_search()?;
                 self.board = Board::startpos();
                 self.history.clear();
-                self.tt.clear();
+                self.tt_mut().clear();
             }
             "position" => {
                 let args: Vec<&str> = tokens.collect();
                 self.set_position(&args)?;
             }
             "go" => {
+                // the GUI's clock started when it sent `go`
+                let start = Instant::now();
                 let args: Vec<&str> = tokens.collect();
+                // the GUI shouldn't send `go` while searching, but the table can't be
+                // in two searches at once
+                self.wait_search()?;
                 match args.as_slice() {
-                    ["perft", depth] => self.go_perft(depth, out)?,
+                    ["perft", depth] => self.go_perft(depth)?,
                     ["perft", ..] => {
                         return Err(UciError::UnexpectedArgs(
                             "usage: go perft <depth>".to_string(),
                         ));
                     }
-                    _ => self.go_search(&args, out)?,
+                    _ => self.go_search(&args, start)?,
                 }
             }
-            "stop" => (),      // TODO actually stop the engine
+            "stop" => self.stop_search()?,
             "setoption" => (), // TODO support some options
-            "d" => writeln!(out, "{}\n{}\n", self.board, self.board.to_fen())?,
+            "d" => writeln!(self.out, "{}\n{}\n", self.board, self.board.to_fen())?,
             "bench" => {
                 let args: Vec<&str> = tokens.collect();
-                run_bench(&args, out)?;
+                // a search at the same time would take half the CPU and mix its output
+                self.wait_search()?;
+                run_bench(&args, &mut self.out)?;
             }
-            "quit" => return Ok(Control::Quit),
+            "quit" => {
+                // what the search found doesn't matter anymore, only that it ends
+                let _ = self.stop_search();
+                return Ok(Control::Quit);
+            }
             _ => return Err(UciError::UnknownCommand(command.to_string())),
         }
 
-        out.flush()?;
+        self.out.flush()?;
         Ok(Control::Continue)
     }
 
@@ -173,7 +232,7 @@ impl Uci {
     }
 
     /// `go perft <depth>`: the divide of the current position, in Stockfish's format
-    fn go_perft(&self, depth: &str, out: &mut impl Write) -> Result<(), UciError> {
+    fn go_perft(&mut self, depth: &str) -> Result<(), UciError> {
         let depth =
             depth
                 .parse::<u32>()
@@ -189,34 +248,92 @@ impl Uci {
         let total: u64 = divide.iter().map(|&(_, count)| count).sum();
 
         for (mv, count) in divide {
-            writeln!(out, "{mv}: {count}")?;
+            writeln!(self.out, "{mv}: {count}")?;
         }
         if self.debug {
             writeln!(
-                out,
+                self.out,
                 "info time {} nodes {total} nps {}",
                 elapsed.as_millis(),
                 bench::nps(total, elapsed)
             )?;
         }
-        writeln!(out, "Nodes searched: {total}")?;
+        writeln!(self.out, "Nodes searched: {total}")?;
         Ok(())
     }
 
     /// `go [wtime <ms>] [btime <ms>] [winc <ms>] [binc <ms>] [movestogo <n>] [depth <n>]
-    /// [movetime <ms>] [nodes <n>]`
-    fn go_search(&mut self, args: &[&str], out: &mut impl Write) -> Result<(), UciError> {
-        // the GUI's clock started when it sent `go`
-        let start = Instant::now();
+    /// [movetime <ms>] [nodes <n>]`: starts a search in its own thread, with copies of
+    /// the game and the table, which comes back in `wait_search`
+    fn go_search(&mut self, args: &[&str], start: Instant) -> Result<(), UciError> {
         let limits = parse_go(args)?;
         let budget = Budget::new(&limits, self.board.side_to_move(), start);
 
-        match Searcher::new(budget, &mut self.tt).search_root(&self.board, &self.history, out)? {
-            Some(mv) => writeln!(out, "bestmove {mv}")?,
-            None => writeln!(out, "bestmove 0000")?,
-        }
+        let (board, history) = (self.board.clone(), self.history.clone());
+        let mut tt = self
+            .tt
+            .take()
+            .expect("no search is running, so the table is here");
+        let stop = Arc::clone(&self.stop);
+        let mut out = self.out.clone();
+
+        // before the thread starts, so that a `stop` right after can't get lost
+        stop.store(false, Ordering::Relaxed);
+        self.search = Some(thread::spawn(move || {
+            let result = search_and_report(&board, &history, budget, &mut tt, &stop, &mut out);
+            (tt, result)
+        }));
         Ok(())
     }
+
+    /// Asks the search to end, if one is running, and waits for its `bestmove`
+    fn stop_search(&mut self) -> Result<(), UciError> {
+        self.stop.store(true, Ordering::Relaxed);
+        self.wait_search()
+    }
+
+    /// Waits for the search, if one is running, and takes the table back
+    fn wait_search(&mut self) -> Result<(), UciError> {
+        let Some(search) = self.search.take() else {
+            return Ok(());
+        };
+        match search.join() {
+            Ok((tt, result)) => {
+                self.tt = Some(tt);
+                result.map_err(UciError::Io)
+            }
+            // the table went down with the thread: start over with a new one
+            Err(_) => {
+                self.tt = Some(TranspositionTable::new(HASH_MB));
+                Err(UciError::SearchPanicked)
+            }
+        }
+    }
+
+    fn tt_mut(&mut self) -> &mut TranspositionTable {
+        self.tt
+            .as_mut()
+            .expect("the table is back whenever no search is running")
+    }
+}
+
+/// The search and its `bestmove`, which only gets written if every `info` could be
+fn search_and_report(
+    board: &Board,
+    history: &[ZobristHash],
+    budget: Budget,
+    tt: &mut TranspositionTable,
+    stop: &AtomicBool,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let best = Searcher::new(budget, tt)
+        .stopped_by(stop)
+        .search_root(board, history, out)?;
+    match best {
+        Some(mv) => writeln!(out, "bestmove {mv}")?,
+        None => writeln!(out, "bestmove 0000")?,
+    }
+    out.flush()
 }
 
 /// `bench` runs perft on fixed positions, `bench search [depth]` searches them.
@@ -278,27 +395,60 @@ fn parse_go(args: &[&str]) -> Result<Limits, UciError> {
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
+    use std::{assert_matches, sync::Mutex};
 
     use crate::search::Limits;
 
     use super::*;
 
-    fn run(uci: &mut Uci, line: &str) -> Result<(Control, String), UciError> {
-        let mut out = Vec::new();
-        let control = uci.handle(line, &mut out)?;
-        Ok((control, String::from_utf8(out).unwrap()))
+    /// An output the tests can read, shared with the search thread
+    #[derive(Clone, Default)]
+    struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedBuffer {
+        /// Everything written since the last time
+        fn take(&self) -> String {
+            String::from_utf8(std::mem::take(&mut *self.0.lock().unwrap())).unwrap()
+        }
+    }
+
+    impl Write for SharedBuffer {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        // a line at a time, as Stdout
+        fn write_fmt(&mut self, args: fmt::Arguments) -> io::Result<()> {
+            self.0.lock().unwrap().write_fmt(args)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn uci() -> Uci<SharedBuffer> {
+        Uci::new(SharedBuffer::default())
+    }
+
+    /// Runs `line` and, if it started a search, waits for it. Returns what got written
+    /// since the last time.
+    fn run(uci: &mut Uci<SharedBuffer>, line: &str) -> Result<(Control, String), UciError> {
+        let control = uci.handle(line)?;
+        uci.wait_search()?;
+        Ok((control, uci.out.take()))
     }
 
     fn fen_after(line: &str) -> String {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         run(&mut uci, line).unwrap();
         uci.board().to_fen()
     }
 
     #[test]
     fn handshake() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
 
         let (control, out) = run(&mut uci, "uci").unwrap();
         assert_eq!(control, Control::Continue);
@@ -310,13 +460,13 @@ mod tests {
 
     #[test]
     fn quit() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         assert_eq!(run(&mut uci, "quit").unwrap().0, Control::Quit);
     }
 
     #[test]
     fn empty_and_unknown_commands() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         assert!(matches!(run(&mut uci, "   "), Err(UciError::EmptyInput)));
         assert!(matches!(
             run(&mut uci, "foo"),
@@ -361,7 +511,7 @@ mod tests {
 
     #[test]
     fn position_persists_between_commands() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         run(&mut uci, "position startpos moves e2e4").unwrap();
         run(&mut uci, "isready").unwrap();
         assert_eq!(
@@ -372,7 +522,7 @@ mod tests {
 
     #[test]
     fn ucinewgame_resets_board() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         run(&mut uci, "position startpos moves e2e4").unwrap();
         run(&mut uci, "ucinewgame").unwrap();
         assert_eq!(uci.board().to_fen(), Board::startpos().to_fen());
@@ -381,7 +531,7 @@ mod tests {
 
     #[test]
     fn position_invalid_args() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         for line in [
             "position",
             "position foo",
@@ -401,7 +551,7 @@ mod tests {
 
     #[test]
     fn position_bad_move_does_not_change_board() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         run(&mut uci, "position startpos moves e2e4").unwrap();
         let before = uci.board().to_fen();
         let history = uci.history.clone();
@@ -420,7 +570,7 @@ mod tests {
 
     #[test]
     fn position_keeps_the_game_for_repetitions() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         // back to the start: the current position is also the first of the history
         run(&mut uci, "position startpos moves g1f3 g8f6 f3g1 f6g8").unwrap();
         assert_eq!(uci.history.len(), 4);
@@ -444,7 +594,7 @@ mod tests {
 
     #[test]
     fn go_outputs_legal_bestmove() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         run(&mut uci, "position startpos").unwrap();
         let (_, out) = run(&mut uci, "go").unwrap();
 
@@ -454,7 +604,7 @@ mod tests {
 
     #[test]
     fn go_reports_info_before_bestmove() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         let (_, out) = run(&mut uci, "go depth 2").unwrap();
         let lines: Vec<&str> = out.lines().collect();
 
@@ -471,7 +621,7 @@ mod tests {
     #[test]
     fn go_sees_repetitions_of_the_game() {
         // Black is lost, but Kh8 brings back a position the game already had twice
-        let mut uci = Uci::new();
+        let mut uci = uci();
         run(
             &mut uci,
             "position fen 6k1/8/8/8/8/8/8/KQ6 b - - 0 1 \
@@ -485,8 +635,8 @@ mod tests {
     }
 
     #[test]
-    fn stop_gets_ignored() {
-        let mut uci = Uci::new();
+    fn stop_without_a_search_does_nothing() {
+        let mut uci = uci();
         let (control, out) = run(&mut uci, "stop").unwrap();
         let lines: Vec<&str> = out.lines().collect();
 
@@ -494,9 +644,88 @@ mod tests {
         assert_matches!(control, Control::Continue);
     }
 
+    /// Far deeper than a search can get in a test: only `stop` ends it in time
+    const LONG_SEARCH: &str = "go depth 64";
+
+    #[test]
+    fn stop_ends_the_search_with_a_move() {
+        let mut uci = uci();
+        uci.handle(LONG_SEARCH).unwrap();
+        let (control, out) = run(&mut uci, "stop").unwrap();
+
+        assert_matches!(control, Control::Continue);
+        let parsed = AbstractMove::from_uci(bestmove(&out)).unwrap();
+        assert!(uci.board().resolve_move(parsed).is_ok(), "{out}");
+    }
+
+    #[test]
+    fn isready_answers_while_searching() {
+        let mut uci = uci();
+        uci.handle(LONG_SEARCH).unwrap();
+        uci.handle("isready").unwrap();
+
+        // the search goes on, and readyok didn't wait for it
+        assert!(
+            uci.search
+                .as_ref()
+                .is_some_and(|search| !search.is_finished())
+        );
+        let out = uci.out.take();
+        assert!(out.lines().any(|line| line == "readyok"), "{out}");
+        assert!(!out.contains("bestmove"), "{out}");
+
+        run(&mut uci, "stop").unwrap();
+    }
+
+    #[test]
+    fn quit_stops_the_search() {
+        let mut uci = uci();
+        uci.handle(LONG_SEARCH).unwrap();
+        let (control, out) = run(&mut uci, "quit").unwrap();
+
+        assert_matches!(control, Control::Quit);
+        bestmove(&out);
+    }
+
+    #[test]
+    fn the_table_comes_back_after_a_search() {
+        let mut uci = uci();
+        run(&mut uci, "go depth 2").unwrap();
+        assert!(uci.search.is_none());
+        assert!(uci.tt.is_some());
+
+        // so a new game can clear it, and the next search use it
+        run(&mut uci, "ucinewgame").unwrap();
+        let (_, out) = run(&mut uci, "go depth 2").unwrap();
+        bestmove(&out);
+    }
+
+    #[test]
+    fn a_new_go_waits_for_the_last_search() {
+        let mut uci = uci();
+        uci.handle("go depth 3").unwrap();
+        let (_, out) = run(&mut uci, "go depth 1").unwrap();
+
+        // both searches finished, the first one before the second started
+        let bestmoves: Vec<usize> = out
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with("bestmove "))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(bestmoves.len(), 2, "{out}");
+        assert!(
+            out.lines()
+                .nth(bestmoves[0] + 1)
+                .unwrap()
+                .starts_with("info depth 1 "),
+            "{out}"
+        );
+    }
+
     #[test]
     fn setoption_gets_ignored() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         let (control, out) = run(&mut uci, "setoption name Nullmove value true").unwrap();
         let lines: Vec<&str> = out.lines().collect();
 
@@ -506,7 +735,7 @@ mod tests {
 
     #[test]
     fn go_without_legal_moves() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         // Fool's mate: white is checkmated.
         run(&mut uci, "position startpos moves f2f3 e7e5 g2g4 d8h4").unwrap();
         let (_, out) = run(&mut uci, "go").unwrap();
@@ -515,14 +744,14 @@ mod tests {
 
     #[test]
     fn go_with_search_args_still_answers() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         let (_, out) = run(&mut uci, "go wtime 1000 btime 1000").unwrap();
         bestmove(&out);
     }
 
     #[test]
     fn go_ignores_unsupported_options() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         let (_, out) = run(
             &mut uci,
             "go ponder depth 1 nodes 500 searchmoves e2e4 d2d4",
@@ -571,7 +800,7 @@ mod tests {
 
     #[test]
     fn go_invalid_args() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         for line in [
             "go depth",
             "go depth x",
@@ -585,14 +814,14 @@ mod tests {
         }
     }
 
-    fn perft_lines(uci: &mut Uci, depth: u32) -> Vec<String> {
+    fn perft_lines(uci: &mut Uci<SharedBuffer>, depth: u32) -> Vec<String> {
         let (_, out) = run(uci, &format!("go perft {depth}")).unwrap();
         out.lines().map(str::to_string).collect()
     }
 
     #[test]
     fn go_perft_startpos() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         let lines = perft_lines(&mut uci, 1);
         assert_eq!(lines.len(), 21);
         assert!(lines.contains(&"e2e4: 1".to_string()));
@@ -605,7 +834,7 @@ mod tests {
 
     #[test]
     fn go_perft_uses_current_position() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         run(
             &mut uci,
             "position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -619,14 +848,14 @@ mod tests {
 
     #[test]
     fn go_perft_without_moves() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         run(&mut uci, "position startpos moves f2f3 e7e5 g2g4 d8h4").unwrap();
         assert_eq!(perft_lines(&mut uci, 1), ["Nodes searched: 0"]);
     }
 
     #[test]
     fn go_perft_invalid_depth() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         for line in [
             "go perft",
             "go perft 0",
@@ -643,7 +872,7 @@ mod tests {
 
     #[test]
     fn d_prints_board_and_fen() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         run(&mut uci, "position startpos moves e2e4").unwrap();
         let (control, out) = run(&mut uci, "d").unwrap();
 
@@ -657,7 +886,7 @@ mod tests {
 
     #[test]
     fn debug_on_adds_timing_to_perft() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         assert!(
             !perft_lines(&mut uci, 1)
                 .iter()
@@ -682,7 +911,7 @@ mod tests {
 
     #[test]
     fn debug_invalid_args() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         for line in ["debug", "debug maybe"] {
             assert!(
                 matches!(run(&mut uci, line), Err(UciError::UnexpectedArgs(_))),
@@ -693,7 +922,7 @@ mod tests {
 
     #[test]
     fn bench_search_command() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         let (control, out) = run(&mut uci, "bench search 1").unwrap();
         assert_eq!(control, Control::Continue);
         assert_eq!(
@@ -706,7 +935,7 @@ mod tests {
 
     #[test]
     fn bench_invalid_args() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         for line in [
             "bench perft",
             "bench search 0",
@@ -723,7 +952,7 @@ mod tests {
     #[test]
     #[ignore = "slow in debug builds; run with cargo test --release -- --ignored"]
     fn bench_command() {
-        let mut uci = Uci::new();
+        let mut uci = uci();
         let (control, out) = run(&mut uci, "bench").unwrap();
         assert_eq!(control, Control::Continue);
         assert!(out.contains("Nodes searched  : 37918074"), "{out}");

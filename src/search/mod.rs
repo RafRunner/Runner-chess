@@ -9,6 +9,7 @@ pub use tt::Entry;
 pub use tt::TranspositionTable;
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::{
@@ -26,8 +27,11 @@ pub struct Searcher<'a> {
     /// The index of the hash of the root position on the hashes vec
     root_index: usize,
     null_ply: Option<u32>, // the ply that passed, in the line being searched
-    stopped: bool,         // later: Arc<AtomicBool> for UCI `stop`
-                           // later: killers, history
+    /// The search ran out of budget or got stopped, and is on its way back to the root
+    stopped: bool,
+    /// Set from another thread when the GUI sends `stop`
+    stop: Option<&'a AtomicBool>,
+    // later: killers, history
 }
 
 impl<'a> Searcher<'a> {
@@ -42,6 +46,15 @@ impl<'a> Searcher<'a> {
             root_index: 0,
             null_ply: None,
             stopped: false,
+            stop: None,
+        }
+    }
+
+    /// The search also ends, as soon as it can, once `stop` gets set
+    pub fn stopped_by(self, stop: &'a AtomicBool) -> Self {
+        Self {
+            stop: Some(stop),
+            ..self
         }
     }
 
@@ -289,7 +302,8 @@ impl<'a> Searcher<'a> {
             self.stopped = true
         }
         if self.nodes.is_multiple_of(2048)
-            && self.budget.hard.is_some_and(|hard| Instant::now() >= hard)
+            && (self.budget.hard.is_some_and(|hard| Instant::now() >= hard)
+                || self.stop.is_some_and(|stop| stop.load(Ordering::Relaxed)))
         {
             self.stopped = true;
         }
