@@ -266,6 +266,29 @@ impl Board {
         self.is_square_attacked(king.next().unwrap(), color.oposite())
     }
 
+    /// Passes the turn. Does not check if the returned position is legal
+    pub fn make_null_move(&self) -> Self {
+        let mut null = self.clone();
+        null.side_to_move = self.side_to_move().oposite();
+        null.hash = self.hash.toggle_turn_key();
+        null.halfmove_clock = 0; // so the repetition scans don’t reach past the null move, which no real line can
+
+        if let Some(sq) = self.en_passant() {
+            null.en_passant = None;
+            null.hash = null.hash().toggle_en_passant_key(sq);
+        }
+
+        null
+    }
+
+    pub fn has_non_pawn_material(&self, color: Color) -> bool {
+        !(self.pieces(Piece::new(color, PieceKind::Knight))
+            | self.pieces(Piece::new(color, PieceKind::Bishop))
+            | self.pieces(Piece::new(color, PieceKind::Rook))
+            | self.pieces(Piece::new(color, PieceKind::Queen)))
+        .is_empty()
+    }
+
     fn can_take_ep(&self, ep_square: Square, by: Color) -> bool {
         let can_take_ep =
             PAWN_ATTACKS[by.oposite()][ep_square] & self.pieces(Piece::new(by, PieceKind::Pawn));

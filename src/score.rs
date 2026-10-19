@@ -95,6 +95,14 @@ impl ops::Add for Score {
     }
 }
 
+impl ops::Add<i16> for Score {
+    type Output = Self;
+
+    fn add(self, rhs: i16) -> Self::Output {
+        Self(self.0 + rhs)
+    }
+}
+
 impl ops::Sub for Score {
     type Output = Self;
 

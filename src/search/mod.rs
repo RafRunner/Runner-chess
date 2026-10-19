@@ -5,6 +5,7 @@ mod tt;
 pub use limits::Budget;
 pub use limits::Limits;
 pub use tt::Bound;
+pub use tt::Entry;
 pub use tt::TranspositionTable;
 
 use std::io::{self, Write};
@@ -24,8 +25,9 @@ pub struct Searcher<'a> {
     tt: &'a mut TranspositionTable,
     /// The index of the hash of the root position on the hashes vec
     root_index: usize,
-    stopped: bool, // later: Arc<AtomicBool> for UCI `stop`
-                   // later: killers, history, a handle to the TT
+    null_ply: Option<u32>, // the ply that passed, in the line being searched
+    stopped: bool,         // later: Arc<AtomicBool> for UCI `stop`
+                           // later: killers, history
 }
 
 impl<'a> Searcher<'a> {
@@ -38,6 +40,7 @@ impl<'a> Searcher<'a> {
             hashes: Vec::with_capacity(100 + Score::MAX_PLY as usize),
             tt,
             root_index: 0,
+            null_ply: None,
             stopped: false,
         }
     }
@@ -139,10 +142,17 @@ impl<'a> Searcher<'a> {
             return eval(board);
         }
 
-        let (tt_move, tt_score) = self.check_tt(board, depth, ply, alpha, beta);
-
-        if let Some(score) = tt_score {
+        let entry = self.tt.probe(board.hash());
+        if let Some(score) = self.tt_cut(entry, board, depth, ply, alpha, beta) {
             return score;
+        }
+        let tt_move = entry.and_then(|e| e.best_move);
+
+        // the table says the value is at most something below beta: passing won't get there
+        let below_beta =
+            entry.is_some_and(|e| e.bound == Bound::Upper && e.score.from_tt(ply) < beta);
+        if !below_beta && let Some(null_cut) = self.null_move_pruning(board, depth, ply, beta) {
+            return null_cut;
         }
 
         let mut best = -Score::INF;
@@ -330,38 +340,70 @@ impl<'a> Searcher<'a> {
             .any(|back| self.hashes[current - back] == self.hashes[current])
     }
 
-    fn check_tt(
-        &mut self,
+    /// The score of the table entry for `board` when it can stand for this search: deep
+    /// enough, with a bound the window can use (see [`Bound`]), not at the root, which has
+    /// to return a move, and not for a position that already appeared, whose score may
+    /// depend on the way to it
+    fn tt_cut(
+        &self,
+        entry: Option<Entry>,
         board: &Board,
         depth: u32,
         ply: u32,
         alpha: Score,
         beta: Score,
-    ) -> (Option<Move>, Option<Score>) {
-        if let Some(entry) = self.tt.probe(board.hash()) {
-            let tt_move = entry.best_move;
-
-            if ply > 0 && entry.depth >= depth as u8 && !self.has_appenned(board) {
-                let score = entry.score.from_tt(ply);
-
-                match entry.bound {
-                    tt::Bound::Exact => return (tt_move, Some(score)),
-                    tt::Bound::Lower => {
-                        if score >= beta {
-                            return (tt_move, Some(score));
-                        }
-                    }
-                    tt::Bound::Upper => {
-                        if score <= alpha {
-                            return (tt_move, Some(score));
-                        }
-                    }
-                }
-            }
-            return (tt_move, None);
+    ) -> Option<Score> {
+        let entry = entry?;
+        if ply == 0 || u32::from(entry.depth) < depth || self.has_appenned(board) {
+            return None;
         }
 
-        (None, None)
+        let score = entry.score.from_tt(ply);
+        let usable = match entry.bound {
+            Bound::Exact => true,
+            Bound::Lower => score >= beta,
+            Bound::Upper => score <= alpha,
+        };
+        usable.then_some(score)
+    }
+
+    /// The side to move is so far ahead that even passing the turn
+    /// keeps it above beta: a shallower search confirms it
+    fn null_move_pruning(
+        &mut self,
+        board: &Board,
+        depth: u32,
+        ply: u32,
+        beta: Score,
+    ) -> Option<Score> {
+        if ply > 0
+            && depth >= 3
+            && self.null_ply != Some(ply - 1)
+            && !board.is_in_check(board.side_to_move())
+            && board.has_non_pawn_material(board.side_to_move()) // zugzwang protection
+            && eval(board) >= beta
+        {
+            let reduce = 2 + depth / 4;
+            let null = board.make_null_move();
+
+            let previous = self.null_ply.replace(ply);
+            self.push_hash(null.hash());
+            let score = -self.negamax(
+                &null,
+                depth.saturating_sub(reduce + 1),
+                ply + 1,
+                -beta,
+                -beta + 1,
+            );
+            self.pop_hash();
+            self.null_ply = previous;
+
+            if score >= beta {
+                return Some(if score.is_mate() { beta } else { score });
+            }
+        }
+
+        None
     }
 }
 
@@ -532,7 +574,7 @@ mod tests {
         assert_eq!(tt.probe(board.hash()).unwrap().bound, Bound::Upper);
     }
 
-    /// What `check_tt` makes of an entry with `bound` at depth 5, for a node at ply 1
+    /// What `tt_cut` makes of an entry with `bound` at depth 5, for a node at ply 1
     /// and depth 5 inside the window (alpha, beta).
     fn tt_cutoff(bound: Bound, score: i32, alpha: i32, beta: i32) -> Option<Score> {
         let board = board(Board::STARTPOS);
@@ -541,9 +583,15 @@ mod tests {
         let mut searcher = Searcher::new(Budget::depth(None), &mut tt);
         // as in the search, the node is on the stack of hashes when it's probed
         searcher.push_hash(board.hash());
-        searcher
-            .check_tt(&board, 5, 1, Score::new(alpha), Score::new(beta))
-            .1
+        let entry = searcher.tt.probe(board.hash());
+        searcher.tt_cut(entry, &board, 5, 1, Score::new(alpha), Score::new(beta))
+    }
+
+    /// The score `tt_cut` cuts with for `board` at `depth` and `ply`, with the whole
+    /// window open.
+    fn tt_cut_at(searcher: &Searcher, board: &Board, depth: u32, ply: u32) -> Option<Score> {
+        let entry = searcher.tt.probe(board.hash());
+        searcher.tt_cut(entry, board, depth, ply, -Score::INF, Score::INF)
     }
 
     #[test]
@@ -566,29 +614,18 @@ mod tests {
     }
 
     #[test]
-    fn a_shallow_entry_still_gives_its_move() {
+    fn only_a_deep_enough_entry_cuts() {
         let board = board(Board::STARTPOS);
-        let e4 = find_move(&board, "e2e4");
         let mut tt = TranspositionTable::new(1);
-        tt.store(board.hash(), 2, Score::new(30), Bound::Exact, Some(e4));
+        tt.store(board.hash(), 2, Score::new(30), Bound::Exact, None);
         let mut searcher = Searcher::new(Budget::depth(None), &mut tt);
         searcher.push_hash(board.hash());
-        let (alpha, beta) = (-Score::INF, Score::INF);
 
-        assert_eq!(
-            searcher.check_tt(&board, 2, 1, alpha, beta),
-            (Some(e4), Some(Score::new(30)))
-        );
-        // too shallow to cut, but the move still goes first
-        assert_eq!(
-            searcher.check_tt(&board, 3, 1, alpha, beta),
-            (Some(e4), None)
-        );
+        assert_eq!(tt_cut_at(&searcher, &board, 2, 1), Some(Score::new(30)));
+        // too shallow to stand for a search of depth 3, though its move still goes first
+        assert_eq!(tt_cut_at(&searcher, &board, 3, 1), None);
         // and the root never cuts, it has to return a move
-        assert_eq!(
-            searcher.check_tt(&board, 2, 0, alpha, beta),
-            (Some(e4), None)
-        );
+        assert_eq!(tt_cut_at(&searcher, &board, 2, 0), None);
     }
 
     #[test]
@@ -598,20 +635,16 @@ mod tests {
         let mut tt = TranspositionTable::new(1);
         tt.store(board.hash(), 5, Score::new(500), Bound::Exact, None);
         let mut searcher = Searcher::new(Budget::depth(None), &mut tt);
-        let (alpha, beta) = (-Score::INF, Score::INF);
 
         searcher.push_hash(board.hash());
-        assert_eq!(
-            searcher.check_tt(&board, 5, 1, alpha, beta),
-            (None, Some(Score::new(500)))
-        );
+        assert_eq!(tt_cut_at(&searcher, &board, 5, 1), Some(Score::new(500)));
 
         // two moves of each side later, the same position
         for _ in 0..3 {
             searcher.push_hash(ZobristHash::empty());
         }
         searcher.push_hash(board.hash());
-        assert_eq!(searcher.check_tt(&board, 5, 1, alpha, beta), (None, None));
+        assert_eq!(tt_cut_at(&searcher, &board, 5, 1), None);
     }
 
     #[test]
