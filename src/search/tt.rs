@@ -1,10 +1,28 @@
 use crate::{chess_move::Move, score::Score, zobrist::ZobristHash};
 
+/// What a search found out about the value of a position, given the window it was
+/// searched with. Alpha-beta rarely needs the exact value: knowing that it falls
+/// outside the window is often enough, and only that much gets searched.
+///
+/// The names say what the score is for the real value, not how the search ended, so
+/// they cross: failing low gives an upper bound, failing high a lower one.
+///
+/// | search ended     | real value | can stand for a later search when |
+/// |------------------|------------|-----------------------------------|
+/// | inside the window| = score    | always                            |
+/// | fail high (>= β) | >= score   | score >= its beta                 |
+/// | fail low (<= α)  | <= score   | score <= its alpha                |
+///
+/// Only the window of the later search matters, not the one the entry came from.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Bound {
-    Exact, // the score fell inside the window: it is the real value
-    Lower, // a beta cutoff: the real value is >= score
-    Upper, // no move beat alpha: the real value is <= score
+    /// The score fell inside the window: it is the real value
+    Exact,
+    /// A move reached beta and cut the search: the real value is at least the score,
+    /// maybe more, since the remaining moves were never searched
+    Lower,
+    /// No move beat alpha: the real value is at most the score
+    Upper,
 }
 
 impl Bound {

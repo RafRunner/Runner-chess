@@ -127,7 +127,25 @@ impl<'a> Searcher<'a> {
         Ok(best_move)
     }
 
-    fn negamax(&mut self, board: &Board, depth: u32, ply: u32, alpha: Score, beta: Score) -> Score {
+    /// The score of `board` for the side to move, searched `depth` plies deep, only as
+    /// precisely as the window (alpha, beta) needs:
+    /// - alpha is what the side to move already has for sure elsewhere on the way from the
+    ///   root, so a score at or below it won't change its choice
+    /// - beta is what the opponent already has for sure elsewhere, so it won't let the game
+    ///   come here if this position is worth that much: the search stops as soon as a move
+    ///   reaches it
+    ///
+    /// Fail soft: a score outside the window is a bound (see [`Bound`]), at most that when
+    /// <= alpha, at least that when >= beta. The children get (-beta, -alpha), since what
+    /// one side has for sure is the limit of the other.
+    fn negamax(
+        &mut self,
+        board: &Board,
+        depth: u32,
+        ply: u32,
+        mut alpha: Score,
+        beta: Score,
+    ) -> Score {
         if self.check_hard_budget() {
             return Score::DRAW;
         }
@@ -157,14 +175,14 @@ impl<'a> Searcher<'a> {
 
         let mut best = -Score::INF;
         let mut has_legal_move = false;
-        let mut mut_alpha = alpha;
+        let original_alpha = alpha;
         let mut best_move = None;
 
         for (mv, next) in self.legal_ordered(board, tt_move) {
             has_legal_move = true;
 
             self.push_hash(next.hash());
-            let score = -self.negamax(&next, depth - 1, ply + 1, -beta, -mut_alpha);
+            let score = -self.negamax(&next, depth - 1, ply + 1, -beta, -alpha);
             self.pop_hash();
 
             if self.stopped {
@@ -174,12 +192,12 @@ impl<'a> Searcher<'a> {
             if score > best {
                 best = score;
 
-                if best > mut_alpha {
+                if best > alpha {
                     // We found something better, so we raise the floor. The window closes and we cut more
-                    mut_alpha = best;
+                    alpha = best;
                     best_move = Some(mv);
 
-                    if mut_alpha >= beta {
+                    if alpha >= beta {
                         // Opponent has something better guaranteed, therefore we can cut the analysis here
                         break;
                     }
@@ -195,7 +213,7 @@ impl<'a> Searcher<'a> {
             };
         }
         if !self.stopped {
-            let bound = Bound::new(best, alpha, beta);
+            let bound = Bound::new(best, original_alpha, beta);
             self.tt
                 .store(board.hash(), depth, best.to_tt(ply), bound, best_move);
         }
