@@ -464,7 +464,7 @@ impl<'search> Searcher<'search> {
     /// depend on the way to it
     fn tt_cut(&self, entry: Option<Entry>, node: NodeInfo<'_>) -> Option<Score> {
         let entry = entry?;
-        if node.ply == 0 || u32::from(entry.depth) < node.depth || self.has_appenned(node.board) {
+        if node.ply == 0 || u32::from(entry.depth) < node.depth || self.has_appeared(node.board) {
             return None;
         }
 
