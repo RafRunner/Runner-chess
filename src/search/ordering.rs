@@ -34,12 +34,12 @@ impl Searcher<'_> {
     }
 
     /// Possibly strong moves come first
-    fn ordered_moves<'a>(
+    fn ordered_moves<'board>(
         &self,
-        board: &'a Board,
+        board: &'board Board,
         filter: impl Fn(&Move) -> bool,
         first: Option<Move>,
-    ) -> impl Iterator<Item = (Move, Board)> + 'a {
+    ) -> impl Iterator<Item = (Move, Board)> + 'board {
         let mut moves = board.generate_moves();
         moves.retain(|mv| filter(mv));
         moves.sort_by_cached_key(|&mv| Reverse(self.move_sort_key(board, mv, first)));
@@ -49,18 +49,18 @@ impl Searcher<'_> {
             .filter_map(move |mv| board.make_legal_move(mv).map(|next| (mv, next)))
     }
 
-    pub(super) fn legal_ordered<'a>(
+    pub(super) fn legal_ordered<'board>(
         &self,
-        board: &'a Board,
+        board: &'board Board,
         first: Option<Move>,
-    ) -> impl Iterator<Item = (Move, Board)> + 'a {
+    ) -> impl Iterator<Item = (Move, Board)> + 'board {
         self.ordered_moves(board, |_| true, first)
     }
 
-    pub(super) fn captures_ordered<'a>(
+    pub(super) fn captures_ordered<'board>(
         &self,
-        board: &'a Board,
-    ) -> impl Iterator<Item = (Move, Board)> + 'a {
+        board: &'board Board,
+    ) -> impl Iterator<Item = (Move, Board)> + 'board {
         self.ordered_moves(board, |mv| mv.is_capture(), None)
     }
 }

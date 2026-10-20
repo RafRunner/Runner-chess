@@ -16,26 +16,107 @@ use crate::{
     bench, board::Board, chess_move::Move, eval::eval, score::Score, zobrist::ZobristHash,
 };
 
-pub struct Searcher<'a> {
+/// Where a node is in the search and the window it gets searched with (see `negamax`)
+#[derive(Debug, Clone, Copy)]
+struct NodeInfo<'board> {
+    board: &'board Board,
+    depth: u32,
+    ply: u32,
+    alpha: Score,
+    beta: Score,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Outcome {
+    Worse,  // didn't beat alpha
+    Raised, // the new best, inside the window (alpha, beta)
+    Cut,    // reached beta
+}
+
+impl<'board> NodeInfo<'board> {
+    fn new(board: &'board Board, depth: u32, ply: u32, alpha: Score, beta: Score) -> Self {
+        Self {
+            board,
+            depth,
+            ply,
+            alpha,
+            beta,
+        }
+    }
+
+    /// The node after a move to `board`: a ply further, one less to go, and the window
+    /// seen from the other side
+    fn child<'next>(&self, board: &'next Board) -> NodeInfo<'next> {
+        NodeInfo {
+            board,
+            depth: self.depth.saturating_sub(1),
+            ply: self.ply + 1,
+            alpha: -self.beta,
+            beta: -self.alpha,
+        }
+    }
+
+    /// Creates a child with reduced depth and/or window, for tests like NMP
+    fn scout_child<'next>(
+        &self,
+        board: &'next Board,
+        reduce: u32,
+        threshold: Score,
+    ) -> NodeInfo<'next> {
+        NodeInfo {
+            board,
+            depth: self.depth.saturating_sub(reduce + 1),
+            ply: self.ply + 1,
+            alpha: threshold,
+            beta: threshold + 1,
+        }
+    }
+
+    /// Takes the score of a move into the node: the best so far, and the window
+    fn update(&mut self, best: &mut Score, score: Score) -> Outcome {
+        if score > *best {
+            *best = score;
+
+            if *best > self.alpha {
+                // We found something better, so we raise the floor. The window closes and we cut more
+                self.alpha = *best;
+
+                // the window closed: a beta cutoff
+                if self.alpha >= self.beta {
+                    // Opponent has something better guaranteed, therefore we can cut the analysis here
+                    return Outcome::Cut;
+                }
+
+                return Outcome::Raised;
+            }
+        }
+
+        Outcome::Worse
+    }
+}
+
+/// A search of one position, from `go` to `bestmove`. `'search` is how long it can use
+/// what it borrows from the engine: the table and the `stop` flag.
+pub struct Searcher<'search> {
     budget: Budget,
     nodes: u64,
     seldepth: u32,
     completed_depth: u32,
     /// The positions of the game before the root, then the line being searched
     hashes: Vec<ZobristHash>,
-    tt: &'a mut TranspositionTable,
+    tt: &'search mut TranspositionTable,
     /// The index of the hash of the root position on the hashes vec
     root_index: usize,
     null_ply: Option<u32>, // the ply that passed, in the line being searched
     /// The search ran out of budget or got stopped, and is on its way back to the root
     stopped: bool,
     /// Set from another thread when the GUI sends `stop`
-    stop: Option<&'a AtomicBool>,
+    stop: Option<&'search AtomicBool>,
     // later: killers, history
 }
 
-impl<'a> Searcher<'a> {
-    pub fn new(budget: Budget, tt: &'a mut TranspositionTable) -> Self {
+impl<'search> Searcher<'search> {
+    pub fn new(budget: Budget, tt: &'search mut TranspositionTable) -> Self {
         Self {
             budget,
             nodes: 0,
@@ -51,7 +132,7 @@ impl<'a> Searcher<'a> {
     }
 
     /// The search also ends, as soon as it can, once `stop` gets set
-    pub fn stopped_by(self, stop: &'a AtomicBool) -> Self {
+    pub fn stopped_by(self, stop: &'search AtomicBool) -> Self {
         Self {
             stop: Some(stop),
             ..self
@@ -67,8 +148,8 @@ impl<'a> Searcher<'a> {
         self.hashes.push(hash);
     }
 
-    fn pop_hash(&mut self) -> Option<ZobristHash> {
-        self.hashes.pop()
+    fn pop_hash(&mut self) {
+        self.hashes.pop();
     }
 
     /// Searches within the budget and writes an `info` line about it to `out`.
@@ -96,36 +177,24 @@ impl<'a> Searcher<'a> {
             {
                 legal_ordered[..=idx].rotate_right(1);
             }
+
+            let mut root = NodeInfo::new(board, depth, 0, best_score, Score::INF);
             for (mv, next) in legal_ordered.iter() {
-                self.push_hash(next.hash());
-                let score = -self.negamax(next, depth - 1, 1, -Score::INF, -best_score);
-                self.pop_hash();
+                let score = self.search_child(root.child(next));
 
                 if self.stopped {
                     break;
                 }
 
-                if score > best_score {
-                    best_score = score;
+                if matches!(
+                    root.update(&mut best_score, score),
+                    Outcome::Raised | Outcome::Cut
+                ) {
                     best_move = Some(*mv);
                 }
             }
 
-            if let Some(mv) = best_move
-                && best_score > -Score::INF
-            {
-                let elapsed = self.budget.start.elapsed();
-                writeln!(
-                    out,
-                    "info depth {depth} score {}{} nodes {} seldepth {} nps {} time {} pv {mv}",
-                    best_score.to_uci(),
-                    if self.stopped { " lowerbound" } else { "" },
-                    self.nodes,
-                    self.seldepth,
-                    bench::nps(self.nodes, elapsed),
-                    elapsed.as_millis(),
-                )?;
-            }
+            self.print_info_line(out, depth, best_move, best_score)?;
 
             if self.stopped {
                 break;
@@ -140,6 +209,32 @@ impl<'a> Searcher<'a> {
         Ok(best_move)
     }
 
+    fn print_info_line(
+        &self,
+        out: &mut impl Write,
+        depth: u32,
+        best_move: Option<Move>,
+        best_score: Score,
+    ) -> io::Result<()> {
+        if let Some(mv) = best_move
+            && best_score > -Score::INF
+        {
+            let elapsed = self.budget.start.elapsed();
+            writeln!(
+                out,
+                "info depth {depth} score {}{} nodes {} seldepth {} nps {} time {} pv {mv}",
+                best_score.to_uci(),
+                if self.stopped { " lowerbound" } else { "" },
+                self.nodes,
+                self.seldepth,
+                bench::nps(self.nodes, elapsed),
+                elapsed.as_millis(),
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// The score of `board` for the side to move, searched `depth` plies deep, only as
     /// precisely as the window (alpha, beta) needs:
     /// - alpha is what the side to move already has for sure elsewhere on the way from the
@@ -151,144 +246,139 @@ impl<'a> Searcher<'a> {
     /// Fail soft: a score outside the window is a bound (see [`Bound`]), at most that when
     /// <= alpha, at least that when >= beta. The children get (-beta, -alpha), since what
     /// one side has for sure is the limit of the other.
-    fn negamax(
-        &mut self,
-        board: &Board,
-        depth: u32,
-        ply: u32,
-        mut alpha: Score,
-        beta: Score,
-    ) -> Score {
+    fn negamax(&mut self, mut node: NodeInfo<'_>) -> Score {
         if self.check_hard_budget() {
             return Score::DRAW;
         }
-        if let Some(score) = self.check_draw(board, ply) {
+
+        if let Some(score) = self.check_draw(node.board, node.ply) {
             return score;
         }
-        if depth == 0 {
-            return self.quiescence(board, ply, alpha, beta);
+        if node.depth == 0 {
+            return self.quiescence(node);
         }
         self.nodes += 1;
-        if ply >= Score::MAX_PLY {
-            return eval(board);
+        if node.ply >= Score::MAX_PLY {
+            return eval(node.board);
         }
 
-        let entry = self.tt.probe(board.hash());
-        if let Some(score) = self.tt_cut(entry, board, depth, ply, alpha, beta) {
+        let entry = self.tt.probe(node.board.hash());
+        if let Some(score) = self.tt_cut(entry, node) {
             return score;
         }
         let tt_move = entry.and_then(|e| e.best_move);
 
         // the table says the value is at most something below beta: passing won't get there
         let below_beta =
-            entry.is_some_and(|e| e.bound == Bound::Upper && e.score.from_tt(ply) < beta);
-        if !below_beta && let Some(null_cut) = self.null_move_pruning(board, depth, ply, beta) {
+            entry.is_some_and(|e| e.bound == Bound::Upper && e.score.from_tt(node.ply) < node.beta);
+        if !below_beta && let Some(null_cut) = self.null_move_pruning(node) {
             return null_cut;
         }
 
         let mut best = -Score::INF;
         let mut has_legal_move = false;
-        let original_alpha = alpha;
+        let original_alpha = node.alpha;
         let mut best_move = None;
 
-        for (mv, next) in self.legal_ordered(board, tt_move) {
+        for (mv, next) in self.legal_ordered(node.board, tt_move) {
             has_legal_move = true;
 
-            self.push_hash(next.hash());
-            let score = -self.negamax(&next, depth - 1, ply + 1, -beta, -alpha);
-            self.pop_hash();
+            let score = self.search_child(node.child(&next));
 
             if self.stopped {
                 break;
             }
 
-            if score > best {
-                best = score;
-
-                if best > alpha {
-                    // We found something better, so we raise the floor. The window closes and we cut more
-                    alpha = best;
+            match node.update(&mut best, score) {
+                Outcome::Worse => (),
+                Outcome::Raised => {
                     best_move = Some(mv);
-
-                    if alpha >= beta {
-                        // Opponent has something better guaranteed, therefore we can cut the analysis here
-                        break;
-                    }
+                }
+                Outcome::Cut => {
+                    best_move = Some(mv);
+                    break;
                 }
             }
         }
 
         if !has_legal_move {
-            if board.is_in_check(board.side_to_move()) {
-                best = Score::mated_in(ply);
+            best = if node.board.is_in_check(node.board.side_to_move()) {
+                Score::mated_in(node.ply)
             } else {
-                best = Score::DRAW
+                Score::DRAW
             };
         }
+
         if !self.stopped {
-            let bound = Bound::new(best, original_alpha, beta);
-            self.tt
-                .store(board.hash(), depth, best.to_tt(ply), bound, best_move);
+            let bound = Bound::new(best, original_alpha, node.beta);
+            self.tt.store(
+                node.board.hash(),
+                node.depth,
+                best.to_tt(node.ply),
+                bound,
+                best_move,
+            );
         }
 
         best
     }
 
-    fn quiescence(&mut self, board: &Board, ply: u32, mut alpha: Score, beta: Score) -> Score {
+    /// Searches only captures, and every evasion when in check, until
+    /// the position is quiet: the static eval is only reliable where nothing hangs
+    fn quiescence(&mut self, mut node: NodeInfo<'_>) -> Score {
         if self.check_hard_budget() {
             return Score::DRAW;
         }
-        if ply > self.seldepth {
-            self.seldepth = ply;
+
+        if node.ply > self.seldepth {
+            self.seldepth = node.ply;
         }
-        if ply >= Score::MAX_PLY {
+        if node.ply >= Score::MAX_PLY {
             self.nodes += 1;
-            return eval(board);
+            return eval(node.board);
         }
-        if board.is_in_check(board.side_to_move()) {
+        if node.board.is_in_check(node.board.side_to_move()) {
             // If we're in check, we need to check all possible responses, not just captures
-            return self.negamax(board, 1, ply, alpha, beta);
+            return self.negamax(NodeInfo { depth: 1, ..node });
         }
         self.nodes += 1;
 
-        let static_eval = eval(board);
-        if static_eval >= beta {
+        let static_eval = eval(node.board);
+        if static_eval >= node.beta {
             // Not capturing is already too good for the opponent. No point in continuing
             return static_eval;
         }
-        if static_eval > alpha {
+        if static_eval > node.alpha {
             // Found something better
-            alpha = static_eval;
+            node.alpha = static_eval;
         }
 
         let mut best = static_eval;
 
-        for (_, next) in self.captures_ordered(board) {
+        for (_, next) in self.captures_ordered(node.board) {
             // We need to push and pop to the history because of check extensions
             self.push_hash(next.hash());
-            let score = -self.quiescence(&next, ply + 1, -beta, -alpha);
+            let score = -self.quiescence(node.child(&next));
             self.pop_hash();
 
             if self.stopped {
                 break;
             }
 
-            if score > best {
-                best = score;
-
-                if best > alpha {
-                    // We found something better, so we raise the floor. The window closes and we cut more
-                    alpha = best;
-
-                    if alpha >= beta {
-                        // Opponent has something better guaranteed, therefore we can cut the analysis here
-                        break;
-                    }
-                }
+            if node.update(&mut best, score) == Outcome::Cut {
+                break;
             }
         }
 
         best
+    }
+
+    /// The score of `child` for the side to move here, with its hash on the stack meanwhile
+    fn search_child(&mut self, child: NodeInfo<'_>) -> Score {
+        self.push_hash(child.board.hash());
+        let score = -self.negamax(child);
+        self.pop_hash();
+        score
     }
 
     fn check_hard_budget(&mut self) -> bool {
@@ -336,102 +426,78 @@ impl<'a> Searcher<'a> {
         None
     }
 
-    /// a position repeats once earlier but strictly after the root, or repeats twice before or at the root
-    fn is_repetition(&self, board: &Board) -> bool {
+    /// Where the current position appeared before, the most recent first: every other
+    /// ply, back to the last capture or pawn move, since nothing older can come back
+    fn earlier_occurrences(&self, board: &Board) -> impl Iterator<Item = usize> + '_ {
         debug_assert_eq!(self.hashes.last(), Some(&board.hash()));
 
-        let current = self.hashes.len() - 1;
-        // nothing from before the last capture or pawn move can come back
-        let reach = (board.halfmove_clock() as usize).min(current);
-
-        let mut repetition_counter = 0;
-
-        for back in (4..=reach).step_by(2) {
-            if self.hashes[current - back] == self.hashes[current] {
-                if current - back > self.root_index {
-                    return true;
-                }
-                repetition_counter += 1;
-                if repetition_counter > 1 {
-                    return true;
-                }
-            }
-        }
-
-        false
-    }
-
-    /// The position already appeared in the game or in the line being searched, so its
-    /// score may depend on the way to it, and an entry from another way can't be trusted
-    fn has_appenned(&self, board: &Board) -> bool {
         let current = self.hashes.len() - 1;
         let reach = (board.halfmove_clock() as usize).min(current);
 
         (4..=reach)
             .step_by(2)
-            .any(|back| self.hashes[current - back] == self.hashes[current])
+            .map(move |back| current - back)
+            .filter(move |&index| self.hashes[index] == self.hashes[current])
+    }
+
+    /// A draw by repetition, as the search counts it: once is enough inside the search,
+    /// but the game needs the position twice before, which makes the third time
+    fn is_repetition(&self, board: &Board) -> bool {
+        let mut earlier = self.earlier_occurrences(board);
+        match earlier.next() {
+            Some(index) if index > self.root_index => true,
+            // the most recent was already in the game, so any other one is too
+            Some(_) => earlier.next().is_some(),
+            None => false,
+        }
+    }
+
+    /// The position already appeared in the game or in the line being searched, so its
+    /// score may depend on the way to it, and an entry from another way can't be trusted
+    fn has_appeared(&self, board: &Board) -> bool {
+        self.earlier_occurrences(board).next().is_some()
     }
 
     /// The score of the table entry for `board` when it can stand for this search: deep
     /// enough, with a bound the window can use (see [`Bound`]), not at the root, which has
     /// to return a move, and not for a position that already appeared, whose score may
     /// depend on the way to it
-    fn tt_cut(
-        &self,
-        entry: Option<Entry>,
-        board: &Board,
-        depth: u32,
-        ply: u32,
-        alpha: Score,
-        beta: Score,
-    ) -> Option<Score> {
+    fn tt_cut(&self, entry: Option<Entry>, node: NodeInfo<'_>) -> Option<Score> {
         let entry = entry?;
-        if ply == 0 || u32::from(entry.depth) < depth || self.has_appenned(board) {
+        if node.ply == 0 || u32::from(entry.depth) < node.depth || self.has_appenned(node.board) {
             return None;
         }
 
-        let score = entry.score.from_tt(ply);
+        let score = entry.score.from_tt(node.ply);
         let usable = match entry.bound {
             Bound::Exact => true,
-            Bound::Lower => score >= beta,
-            Bound::Upper => score <= alpha,
+            Bound::Lower => score >= node.beta,
+            Bound::Upper => score <= node.alpha,
         };
         usable.then_some(score)
     }
 
     /// The side to move is so far ahead that even passing the turn
     /// keeps it above beta: a shallower search confirms it
-    fn null_move_pruning(
-        &mut self,
-        board: &Board,
-        depth: u32,
-        ply: u32,
-        beta: Score,
-    ) -> Option<Score> {
-        if ply > 0
-            && depth >= 3
-            && self.null_ply != Some(ply - 1)
+    fn null_move_pruning(&mut self, node: NodeInfo<'_>) -> Option<Score> {
+        let board = node.board;
+
+        if node.ply > 0
+            && node.depth >= 3
+            && self.null_ply != Some(node.ply - 1)
             && !board.is_in_check(board.side_to_move())
             && board.has_non_pawn_material(board.side_to_move()) // zugzwang protection
-            && eval(board) >= beta
+            && eval(board) >= node.beta
         {
-            let reduce = 2 + depth / 4;
+            let reduce = 2 + node.depth / 4;
             let null = board.make_null_move();
 
-            let previous = self.null_ply.replace(ply);
-            self.push_hash(null.hash());
-            let score = -self.negamax(
-                &null,
-                depth.saturating_sub(reduce + 1),
-                ply + 1,
-                -beta,
-                -beta + 1,
-            );
-            self.pop_hash();
+            let previous = self.null_ply.replace(node.ply);
+            let score = self.search_child(node.scout_child(&null, reduce, -node.beta));
             self.null_ply = previous;
 
-            if score >= beta {
-                return Some(if score.is_mate() { beta } else { score });
+            if score >= node.beta {
+                return Some(if score.is_mate() { node.beta } else { score });
             }
         }
 
@@ -472,7 +538,8 @@ mod tests {
         let board = board(fen);
         let mut searcher = Searcher::new(Budget::depth(Some(depth)), tt);
         searcher.push_hash(board.hash());
-        searcher.negamax(&board, depth, 0, -Score::INF, Score::INF)
+        let node = NodeInfo::new(&board, depth, 0, -Score::INF, Score::INF);
+        searcher.negamax(node)
     }
 
     /// The same move seen from the other side of the board: e2e4 becomes e7e5.
@@ -601,7 +668,8 @@ mod tests {
         let mut searcher = Searcher::new(Budget::depth(None), &mut tt);
         searcher.push_hash(board.hash());
 
-        let score = searcher.negamax(&board, 2, 3, Score::mate_in(3), Score::INF);
+        let node = NodeInfo::new(&board, 2, 3, Score::mate_in(3), Score::INF);
+        let score = searcher.negamax(node);
         assert_eq!(score, Score::mate_in(4));
         assert_eq!(tt.probe(board.hash()).unwrap().bound, Bound::Upper);
     }
@@ -616,14 +684,16 @@ mod tests {
         // as in the search, the node is on the stack of hashes when it's probed
         searcher.push_hash(board.hash());
         let entry = searcher.tt.probe(board.hash());
-        searcher.tt_cut(entry, &board, 5, 1, Score::new(alpha), Score::new(beta))
+        let node = NodeInfo::new(&board, 5, 1, Score::new(alpha), Score::new(beta));
+        searcher.tt_cut(entry, node)
     }
 
     /// The score `tt_cut` cuts with for `board` at `depth` and `ply`, with the whole
     /// window open.
     fn tt_cut_at(searcher: &Searcher, board: &Board, depth: u32, ply: u32) -> Option<Score> {
         let entry = searcher.tt.probe(board.hash());
-        searcher.tt_cut(entry, board, depth, ply, -Score::INF, Score::INF)
+        let node = NodeInfo::new(board, depth, ply, -Score::INF, Score::INF);
+        searcher.tt_cut(entry, node)
     }
 
     #[test]
@@ -689,7 +759,8 @@ mod tests {
         let mut searcher = Searcher::new(budget, &mut tt);
         searcher.completed_depth = 1; // the first iteration is never stopped
         searcher.push_hash(board.hash());
-        searcher.negamax(&board, 4, 0, -Score::INF, Score::INF);
+        let node = NodeInfo::new(&board, 4, 0, -Score::INF, Score::INF);
+        searcher.negamax(node);
 
         assert!(searcher.stopped);
         assert!(tt.probe(board.hash()).is_none());
