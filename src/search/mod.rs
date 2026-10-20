@@ -753,8 +753,7 @@ mod tests {
     fn an_interrupted_node_is_not_stored() {
         // the node limit stops the search in the middle of the moves of the root
         let board = board(KIWIPETE);
-        let mut budget = Budget::depth(Some(4));
-        budget.nodes = Some(1000);
+        let budget = Budget::depth(Some(4)).with_nodes(1000);
         let mut tt = TranspositionTable::new(1);
         let mut searcher = Searcher::new(budget, &mut tt);
         searcher.completed_depth = 1; // the first iteration is never stopped
@@ -872,8 +871,7 @@ mod tests {
 
     /// The best move and the output of a search of `fen` stopped after `nodes` nodes.
     fn search_with_node_limit(fen: &str, nodes: u64) -> (Option<String>, String) {
-        let mut budget = Budget::depth(Some(10));
-        budget.nodes = Some(nodes);
+        let budget = Budget::depth(Some(10)).with_nodes(nodes);
         let mut out = Vec::new();
         let mut tt = TranspositionTable::new(1);
         let best = Searcher::new(budget, &mut tt)
@@ -931,8 +929,7 @@ mod tests {
 
     #[test]
     fn stops_at_the_node_limit() {
-        let mut budget = Budget::depth(Some(7));
-        budget.nodes = Some(1000);
+        let budget = Budget::depth(Some(7)).with_nodes(1000);
         let mut tt = TranspositionTable::new(1);
         let mut searcher = Searcher::new(budget, &mut tt);
         let best = searcher

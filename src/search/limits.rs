@@ -69,6 +69,13 @@ impl Budget {
             nodes: None,
         }
     }
+
+    pub fn with_nodes(self, nodes: u64) -> Self {
+        Self {
+            nodes: Some(nodes),
+            ..self
+        }
+    }
 }
 
 #[cfg(test)]
