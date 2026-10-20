@@ -1,4 +1,6 @@
+mod draw;
 mod limits;
+mod node;
 mod ordering;
 mod tt;
 
@@ -8,6 +10,8 @@ pub use tt::Bound;
 pub use tt::Entry;
 pub use tt::TranspositionTable;
 
+use node::{NodeInfo, Outcome};
+
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -15,85 +19,6 @@ use std::time::Instant;
 use crate::{
     bench, board::Board, chess_move::Move, eval::eval, score::Score, zobrist::ZobristHash,
 };
-
-/// Where a node is in the search and the window it gets searched with (see `negamax`)
-#[derive(Debug, Clone, Copy)]
-struct NodeInfo<'board> {
-    board: &'board Board,
-    depth: u32,
-    ply: u32,
-    alpha: Score,
-    beta: Score,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum Outcome {
-    Worse,  // didn't beat alpha
-    Raised, // the new best, inside the window (alpha, beta)
-    Cut,    // reached beta
-}
-
-impl<'board> NodeInfo<'board> {
-    fn new(board: &'board Board, depth: u32, ply: u32, alpha: Score, beta: Score) -> Self {
-        Self {
-            board,
-            depth,
-            ply,
-            alpha,
-            beta,
-        }
-    }
-
-    /// The node after a move to `board`: a ply further, one less to go, and the window
-    /// seen from the other side
-    fn child<'next>(&self, board: &'next Board) -> NodeInfo<'next> {
-        NodeInfo {
-            board,
-            depth: self.depth.saturating_sub(1),
-            ply: self.ply + 1,
-            alpha: -self.beta,
-            beta: -self.alpha,
-        }
-    }
-
-    /// Creates a child with reduced depth and/or window, for tests like NMP
-    fn scout_child<'next>(
-        &self,
-        board: &'next Board,
-        reduce: u32,
-        threshold: Score,
-    ) -> NodeInfo<'next> {
-        NodeInfo {
-            board,
-            depth: self.depth.saturating_sub(reduce + 1),
-            ply: self.ply + 1,
-            alpha: threshold,
-            beta: threshold + 1,
-        }
-    }
-
-    /// Takes the score of a move into the node: the best so far, and the window
-    fn update(&mut self, best: &mut Score, score: Score) -> Outcome {
-        if score > *best {
-            *best = score;
-
-            if *best > self.alpha {
-                // We found something better, so we raise the floor. The window closes and we cut more
-                self.alpha = *best;
-
-                // the window closed: a beta cutoff
-                if self.alpha >= self.beta {
-                    // Opponent has something better guaranteed, therefore we can cut the analysis here
-                    return Outcome::Cut;
-                }
-
-                return Outcome::Raised;
-            }
-        }
-
-        Outcome::Worse
-    }
-}
 
 /// A search of one position, from `go` to `bestmove`. `'search` is how long it can use
 /// what it borrows from the engine: the table and the `stop` flag.
@@ -401,63 +326,6 @@ impl<'search> Searcher<'search> {
         self.stopped
     }
 
-    /// Draws by the rules, checked before quiescence so that a repetition right at
-    /// the horizon still counts. The root has to return a move anyway.
-    fn check_draw(&self, board: &Board, ply: u32) -> Option<Score> {
-        if ply == 0 {
-            return None;
-        }
-
-        if self.is_repetition(board) {
-            return Some(Score::DRAW);
-        }
-        if board.halfmove_clock() >= 100 {
-            // unless the move that completed the fifty moves gave mate
-            let mated = board.is_in_check(board.side_to_move())
-                && board.legal_successors().next().is_none();
-
-            return Some(if mated {
-                Score::mated_in(ply)
-            } else {
-                Score::DRAW
-            });
-        }
-
-        None
-    }
-
-    /// Where the current position appeared before, the most recent first: every other
-    /// ply, back to the last capture or pawn move, since nothing older can come back
-    fn earlier_occurrences(&self, board: &Board) -> impl Iterator<Item = usize> + '_ {
-        debug_assert_eq!(self.hashes.last(), Some(&board.hash()));
-
-        let current = self.hashes.len() - 1;
-        let reach = (board.halfmove_clock() as usize).min(current);
-
-        (4..=reach)
-            .step_by(2)
-            .map(move |back| current - back)
-            .filter(move |&index| self.hashes[index] == self.hashes[current])
-    }
-
-    /// A draw by repetition, as the search counts it: once is enough inside the search,
-    /// but the game needs the position twice before, which makes the third time
-    fn is_repetition(&self, board: &Board) -> bool {
-        let mut earlier = self.earlier_occurrences(board);
-        match earlier.next() {
-            Some(index) if index > self.root_index => true,
-            // the most recent was already in the game, so any other one is too
-            Some(_) => earlier.next().is_some(),
-            None => false,
-        }
-    }
-
-    /// The position already appeared in the game or in the line being searched, so its
-    /// score may depend on the way to it, and an entry from another way can't be trusted
-    fn has_appeared(&self, board: &Board) -> bool {
-        self.earlier_occurrences(board).next().is_some()
-    }
-
     /// The score of the table entry for `board` when it can stand for this search: deep
     /// enough, with a bound the window can use (see [`Bound`]), not at the root, which has
     /// to return a move, and not for a position that already appeared, whose score may
@@ -508,7 +376,7 @@ impl<'search> Searcher<'search> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{KIWIPETE, PERFT_POSITIONS, board, find_move, mirror_fen};
+    use crate::test_utils::{KIWIPETE, PERFT_POSITIONS, board, mirror_fen};
 
     // search
 
@@ -529,7 +397,7 @@ mod tests {
     }
 
     /// The score of `fen` for the side to move, searched `depth` plies deep.
-    fn score(fen: &str, depth: u32) -> Score {
+    pub(super) fn score(fen: &str, depth: u32) -> Score {
         score_with(&mut TranspositionTable::new(1), fen, depth)
     }
 
@@ -554,7 +422,7 @@ mod tests {
 
     /// `expected` must be the best move of `fen`, and its mirror the best move of
     /// the mirrored position, so every rule is checked for both colors.
-    fn assert_best(fen: &str, depth: u32, expected: &str) {
+    pub(super) fn assert_best(fen: &str, depth: u32, expected: &str) {
         assert_eq!(best_move(fen, depth).as_deref(), Some(expected), "{fen}");
 
         let mirrored = mirror_fen(fen);
@@ -765,108 +633,6 @@ mod tests {
         assert!(tt.probe(board.hash()).is_none());
     }
 
-    // draws by the rules
-
-    #[test]
-    fn perpetual_check_saves_the_lost_side() {
-        // White is lost, but Qe8+ Kh7 Qh5+ Kg8 Qe8+ repeats, which depth 5 reaches
-        for fen in both_colors("6k1/rr4p1/8/8/8/8/ppp1Q1PP/7K w - - 0 1") {
-            assert!(eval(&board(&fen)) < Score::new(-100), "{fen}");
-            assert_eq!(score(&fen, 5), Score::DRAW, "{fen}");
-        }
-    }
-
-    #[test]
-    fn fifty_move_rule() {
-        // 99 plies without a capture or pawn move: only the pawn move doesn't draw
-        for depth in 1..=3 {
-            assert_best("6k1/8/8/8/8/7P/8/R5K1 w - - 99 80", depth, "h3h4");
-        }
-    }
-
-    #[test]
-    fn mate_beats_the_fifty_move_rule() {
-        // Ra8# is the hundredth ply, and still mate
-        for fen in both_colors("6k1/5ppp/8/8/8/8/8/R5K1 w - - 99 80") {
-            assert_eq!(score(&fen, 2), Score::mate_in(1), "{fen}");
-        }
-    }
-
-    #[test]
-    fn trades_into_a_dead_draw_when_lost() {
-        // a knight down, Black trades rooks with check: K+N vs K can't be won
-        let fen = "3r3k/8/8/8/8/4N3/8/3R3K b - - 0 1";
-        for depth in 2..=3 {
-            assert_best(fen, depth, "d8d1");
-        }
-        for fen in both_colors(fen) {
-            assert_eq!(score(&fen, 2), Score::DRAW, "{fen}");
-        }
-    }
-
-    /// Plays `moves` from `fen` as the game so far, then searches the position they
-    /// reach: the best move and what the search wrote.
-    fn search_after(fen: &str, moves: &[&str], depth: u32) -> (Option<String>, String) {
-        let mut b = board(fen);
-        let mut history = Vec::new();
-        for &uci in moves {
-            history.push(b.hash());
-            b = b.make_move(find_move(&b, uci));
-        }
-
-        let mut out = Vec::new();
-        let mut tt = TranspositionTable::new(1);
-        let best = Searcher::new(Budget::depth(Some(depth)), &mut tt)
-            .search_root(&b, &history, &mut out)
-            .unwrap();
-        (best.map(Move::to_uci), String::from_utf8(out).unwrap())
-    }
-
-    /// Black is lost, with the king shuffling around h8 against a queen.
-    const LOST_KING: &str = "6k1/8/8/8/8/8/8/KQ6 b - - 0 1";
-
-    #[test]
-    fn repetitions_come_from_the_game_too() {
-        // Kh8 brings back a position the game already had twice
-        let moves = [
-            "g8h8", "b1c1", "h8g7", "c1b1", "g7h8", "b1c1", "h8g8", "c1b1",
-        ];
-
-        // at depth 1 the repetition is right at the horizon, so it has to be checked
-        // before quiescence
-        for depth in 1..=3 {
-            let (best, out) = search_after(LOST_KING, &moves, depth);
-            assert_eq!(best.as_deref(), Some("g8h8"), "{out}");
-            assert!(out.contains(" score cp 0 "), "{out}");
-
-            // the same position without the game behind it is just lost
-            let (_, out) = search_after(LOST_KING, &[], depth);
-            assert!(!out.contains(" score cp 0 "), "{out}");
-        }
-    }
-
-    #[test]
-    fn a_single_repetition_of_the_game_is_not_a_draw_yet() {
-        // the game had the position after Kh8 only once: playing it again makes it the
-        // second time, and White doesn't have to repeat it a third
-        let moves = ["g8h8", "b1c1", "h8g8", "c1b1"];
-        for depth in 1..=3 {
-            let (_, out) = search_after(LOST_KING, &moves, depth);
-            assert!(!out.contains(" score cp 0 "), "{out}");
-        }
-    }
-
-    #[test]
-    fn repetitions_inside_the_search_count_once_after_a_long_game() {
-        // the perpetual of perpetual_check_saves_the_lost_side, after two quiet moves:
-        // the halfmove clock reaches back into the game, but the repetition itself is
-        // all inside the search, where once is enough
-        let fen = "6k1/r5p1/1r6/8/8/8/ppp1Q1PP/6K1 w - - 0 1";
-        let (best, out) = search_after(fen, &["g1h1", "b6b7"], 5);
-        assert_eq!(best.as_deref(), Some("e2e8"), "{out}");
-        assert!(out.contains(" score cp 0 "), "{out}");
-    }
-
     // budget
 
     /// The best move and the output of a search of `fen` stopped after `nodes` nodes.
@@ -968,7 +734,7 @@ mod tests {
     // quiescence, which is all a depth 0 search does
 
     /// `fen` and its mirror, so every rule is checked for both colors.
-    fn both_colors(fen: &str) -> [String; 2] {
+    pub(super) fn both_colors(fen: &str) -> [String; 2] {
         [fen.to_string(), mirror_fen(fen)]
     }
 
