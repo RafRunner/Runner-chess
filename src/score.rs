@@ -1,4 +1,4 @@
-use std::ops;
+use std::ops::{self, Add};
 
 /// A score in centipawns, from the point of view of the side to move. Beyond
 /// `MAX_EVAL` it is a forced mate instead, and says how far away it is.
@@ -87,27 +87,20 @@ impl ops::Neg for Score {
     }
 }
 
-impl ops::Add for Score {
-    type Output = Self;
-
-    fn add(self, rhs: Self) -> Self::Output {
-        Self(self.0 + rhs.0)
-    }
-}
-
 impl ops::Add<i16> for Score {
     type Output = Self;
 
+    /// Never past infinity, either way, so the result can still be negated
     fn add(self, rhs: i16) -> Self::Output {
-        Self(self.0 + rhs)
+        Self(self.0.saturating_add(rhs).clamp(-Self::INF.0, Self::INF.0))
     }
 }
 
-impl ops::Sub for Score {
+impl ops::Sub<i16> for Score {
     type Output = Self;
 
-    fn sub(self, rhs: Self) -> Self::Output {
-        Self(self.0 - rhs.0)
+    fn sub(self, rhs: i16) -> Self::Output {
+        self.add(-rhs)
     }
 }
 
@@ -143,6 +136,25 @@ mod tests {
     fn infinity_is_beyond_every_mate() {
         assert!(Score::INF > Score::mate_in(0));
         assert!(-Score::INF < Score::mated_in(0));
+    }
+
+    #[test]
+    fn a_margin_moves_the_score() {
+        assert_eq!(Score::new(100) + 50, Score::new(150));
+        assert_eq!(Score::new(100) - 150, Score::new(-50));
+        // mates get nothing special: one more is a ply closer
+        assert_eq!(Score::mate_in(3) + 1, Score::mate_in(2));
+    }
+
+    #[test]
+    fn a_margin_never_goes_past_infinity() {
+        assert_eq!(Score::INF + 1, Score::INF);
+        assert_eq!(Score::INF + i16::MAX, Score::INF);
+        assert_eq!(-Score::INF + -1, -Score::INF);
+        assert_eq!(-Score::INF + i16::MIN, -Score::INF);
+        // so whatever comes out can still be negated
+        assert_eq!(-(Score::INF + i16::MAX), -Score::INF);
+        assert_eq!(-(-Score::INF + i16::MIN), Score::INF);
     }
 
     #[test]
