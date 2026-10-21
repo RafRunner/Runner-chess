@@ -1,0 +1,194 @@
+# Changelog
+
+Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
+
+- **Bench** is the node count of `runner-chess bench search` (depth 6), measured on
+  each tag's own binary. It only changes when the search does, so a refactor keeps
+  it and any other change shows up in it.
+- **Strength** is what was measured with `scripts/match.sh` against the previous
+  version, unless stated otherwise. Where nothing is listed, no match was recorded.
+
+## 0.8.0 - 2026-10-21
+
+### Added
+- Late move reductions: quiet moves that come late in the order get searched a few
+  plies shallower, with a null window just above alpha, and again at full depth and
+  with the full window only when that beats alpha. The reduction is
+  `0.99 + ln(depth) × ln(move index) / 3.14` plies, rounded, up to two plies less
+  with a good history and up to two more with a bad one, and the child always keeps
+  at least a ply. Never at the root, below depth 3, for the first 5 moves of a node,
+  for captures, promotions and killers, or when in check or giving check.
+
+### Measured
+- Bench: 432470 (from 954219): 55% fewer nodes at depth 6, and 86% fewer at depth 10,
+  where the search bench went from 8.0 s to 1.2 s, at about 10% fewer nodes per
+  second.
+- Strength: +100 ± 31 Elo against 0.7.0 at 10+0.1, SPRT [0, 10] passed in 338 games
+  (167 wins, 72 losses, 99 draws).
+
+## 0.7.0 - 2026-10-20
+
+### Added
+- Killer moves: the last two quiet moves that caused a beta cutoff at each ply come
+  right after the captures.
+- History heuristic for the other quiet moves: a bonus for the one that caused a
+  cutoff, a penalty for those tried before it, kept bounded by a gravity formula.
+- The search runs in its own thread, so `stop` ends it, `isready` gets answered
+  during it, and `quit` or the end of the input stop it before exiting.
+
+### Changed
+- Score margins saturate at infinity instead of overflowing.
+- The non-regression SPRT of `scripts/match.sh` tests [-10, 0] instead of [-5, 0].
+- Internal: the window, depth and ply of a node travel together (`NodeInfo`), and
+  draw detection and move ordering live in their own files.
+
+### Measured
+- Bench: 954219 (from 1204565): 21% fewer nodes to the same depth.
+- Strength: +128 ± 33 Elo against 0.6.0 at 10+0.1, SPRT [0, 10] passed in 260 games
+  (143 wins, 51 losses, 66 draws).
+- Absolute strength, against Stockfish with `UCI_Elo` 2400 at 10+0.1: 38 wins, 56
+  losses and 6 draws in 100 games (-63 ± 68), about 2340 on that scale.
+
+## 0.6.0 - 2026-10-18
+
+### Added
+- Null move pruning: when the static eval is already above beta, a search after
+  passing the turn, reduced by `2 + depth / 4` plies, can cut the node. Not in check,
+  not twice in a row, not without pieces besides pawns, and not when the table says
+  the node fails low. Mates found that way aren't trusted.
+
+### Changed
+- The probe of the transposition table and its cutoff became separate steps, so the
+  null move can use the entry too.
+
+### Measured
+- Bench: 1204565 (from 2495104): 52% fewer nodes to the same depth.
+- Strength: +84 ± 30 Elo against 0.5.1 at 10+0.1, SPRT [0, 10] passed in 408 games
+  (201 wins, 104 losses, 103 draws).
+
+## 0.5.1 - 2026-10-18
+
+### Fixed
+- The table no longer cuts at positions that already appeared in the game or the
+  line being searched. Its entries could come from before a repetition through them
+  was possible, which made the engine walk into threefold repetitions it thought it
+  was winning: in 82 repetition draws of 0.5.0 against a development version, the
+  side allowing the repetition thought it was better in 43.
+
+### Added
+- `scripts/match.sh --non-regression`, an SPRT for changes not meant to gain.
+
+### Measured
+- Bench: 2495104 (unchanged: no bench position has a game behind it).
+- Strength: about +33 ± 17 Elo against 0.5.0 at 5+0.05, after about 600 games of a
+  non-regression SPRT, stopped before it finished.
+
+## 0.5.0 - 2026-10-16
+
+### Added
+- A transposition table of 64 MB, always replacing: exact scores and bounds cut
+  the search where the stored depth is enough, and the stored move is tried first
+  everywhere. Mate scores get stored relative to the node and restored relative to
+  the root. Interrupted searches store nothing.
+
+### Measured
+- Bench: 2495104 (from 9352583): 73% fewer nodes to the same depth. At depth 8 the
+  search bench went from 66.9 s to 10.6 s.
+- Strength: +234 ± 45 Elo against 0.4.1 at 10+0.1, SPRT [0, 10] passed in 194 games
+  (130 wins, 16 losses, 48 draws).
+
+## 0.4.1 - 2026-10-16
+
+### Changed
+- The move lists start with room for 64 moves, which avoids most reallocations.
+- Rust edition 2024.
+
+### Fixed
+- The `info` line of an interrupted iteration says `lowerbound`, since its score
+  only counts the moves searched before the stop.
+
+### Measured
+- Bench: 9352583 (unchanged), with 19% more nodes per second.
+- Strength: -11 ± 22 Elo against 0.4.0 at 5+0.05 over 760 games, so no measurable
+  gain from the speed: the average depth reached only went from 6.31 to 6.34.
+- Absolute strength, measured around this version against Stockfish limited with
+  `UCI_Elo`: 91 wins and 9 losses against 1500 (+402 ± 128), and 61 wins, 35 losses
+  and 4 draws against 1900 (+92 ± 67), about 1990 on that scale.
+
+## 0.4.0 - 2026-10-15
+
+### Added
+- Iterative deepening, with the best move of each iteration searched first in the
+  next, and an `info` line per depth.
+- Time control for `wtime`, `btime`, `winc`, `binc`, `movestogo`, `movetime` and
+  `nodes`: no new iteration after a soft limit, and a stop in the middle of one at a
+  hard limit, short of the clock. The first iteration always finishes, and an
+  interrupted one still gives its best move when it found one.
+
+### Measured
+- Bench: 9352583 (from 10995543).
+- Strength: +137 ± 81 Elo against 0.3.1 at 120+1, about +85 without the forfeited
+  games.
+
+## 0.3.1 - 2026-10-14
+
+### Added
+- Draws by insufficient material: positions where no sequence of moves can end in
+  mate are scored as draws.
+
+### Measured
+- Bench: 10995543 (unchanged). No measurable change in strength against 0.3.0.
+
+## 0.3.0 - 2026-10-14
+
+### Added
+- Zobrist hashing with the Polyglot keys, updated incrementally on every move. The
+  en passant square is only recorded when a pawn can take.
+- Draws by threefold repetition and by the fifty-move rule inside the search. A
+  repetition inside the search counts at once, one with the game only on the third
+  time; a mate on the hundredth ply still counts as mate.
+- `bench search`, the search benchmark.
+
+### Changed
+- A `Score` type for centipawns and mate distances, and the search split into its
+  own module.
+
+### Measured
+- Bench: 10995543.
+
+## 0.2.0 - 2026-10-12
+
+### Added
+- Quiescence search: captures until the position is quiet, and every evasion when in
+  check.
+
+## 0.1.0 - 2026-10-12
+
+### Added
+- Board with bitboards and a mailbox, FEN parsing and writing with sanity checks.
+- Legal move generation, verified against the reference perft results, and
+  `bench`, the perft benchmark.
+- Evaluation by material and piece-square tables, blended between the middlegame
+  and the endgame by the material left.
+- Fixed-depth alpha-beta negamax.
+- The UCI protocol: `uci`, `isready`, `ucinewgame`, `position`, `go`, `go perft`,
+  `debug`, `d` and `quit`.
+- `scripts/build-engine.sh` and `scripts/match.sh` to build tagged versions and play
+  them against each other with fastchess.
+
+## Tried and left out
+
+- **Evaluation terms** (bishop pair, doubled, isolated and passed pawns, pawn shield
+  and open files next to the king): +75 ± 28 Elo against 0.5.0 at 10+0.1, SPRT [0, 10]
+  passed in 456 games. Kept out on purpose: the plan is to see how far search goes
+  with a minimal evaluation, then move to NNUE. Saved in a git stash.
+- **Root moves ordered by the score of the previous iteration**, instead of only
+  bringing the best one to the front: neutral, 0 ± 25 Elo after more than 1000 games.
+  It only matters when an iteration gets interrupted or the best move changes in the
+  middle of one. Worth trying again with PVS, LMR and a time control based on the
+  stability of the best move.
+- **Check status stored in the board**, recalculated at the end of every move: the
+  same nodes, but 9% slower perft and 2% slower search, since every board pays for
+  it, illegal ones and nodes the table cuts included. Worth it once checks get
+  computed incrementally (the moved piece and the lines it opens) and the move
+  generator uses them, for evasions and pins.
