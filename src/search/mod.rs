@@ -16,6 +16,7 @@ use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use crate::search::ordering::MoveOrdering;
 use crate::{
     bench, board::Board, chess_move::Move, eval::eval, score::Score, zobrist::ZobristHash,
 };
@@ -37,7 +38,7 @@ pub struct Searcher<'search> {
     stopped: bool,
     /// Set from another thread when the GUI sends `stop`
     stop: Option<&'search AtomicBool>,
-    // later: killers, history
+    ordering: MoveOrdering,
 }
 
 impl<'search> Searcher<'search> {
@@ -53,6 +54,7 @@ impl<'search> Searcher<'search> {
             null_ply: None,
             stopped: false,
             stop: None,
+            ordering: MoveOrdering::new(),
         }
     }
 
@@ -86,36 +88,29 @@ impl<'search> Searcher<'search> {
         history: &[ZobristHash],
         out: &mut impl Write,
     ) -> io::Result<Option<Move>> {
-        let mut best_score = -Score::INF;
-
         self.hashes.extend_from_slice(history);
         self.root_index = history.len();
         self.push_hash(board.hash());
 
-        let mut legal_ordered: Vec<(Move, Board)> = self.legal_ordered(board, None).collect();
-
-        let mut best_move = legal_ordered.first().map(|(mv, _)| *mv);
+        let mut best_move = self
+            .ordering
+            .legal_ordered(board, 0, None)
+            .next()
+            .map(|(mv, _)| mv);
 
         for depth in 1..=self.budget.depth {
-            if let Some(idx) =
-                best_move.and_then(|best| legal_ordered.iter().position(|(mv, _)| mv == &best))
-            {
-                legal_ordered[..=idx].rotate_right(1);
-            }
+            let mut best_score = -Score::INF;
+            let mut root = NodeInfo::full_window(board, depth, 0);
 
-            let mut root = NodeInfo::new(board, depth, 0, best_score, Score::INF);
-            for (mv, next) in legal_ordered.iter() {
-                let score = self.search_child(root.child(next));
+            for (mv, next) in self.ordering.legal_ordered(board, 0, best_move) {
+                let score = self.search_child(root.child(&next));
 
                 if self.stopped {
                     break;
                 }
 
-                if matches!(
-                    root.update(&mut best_score, score),
-                    Outcome::Raised | Outcome::Cut
-                ) {
-                    best_move = Some(*mv);
+                if root.update(&mut best_score, score) != Outcome::Worse {
+                    best_move = Some(mv);
                 }
             }
 
@@ -204,8 +199,9 @@ impl<'search> Searcher<'search> {
         let mut has_legal_move = false;
         let original_alpha = node.alpha;
         let mut best_move = None;
+        let mut quiets_tried = Vec::with_capacity(64);
 
-        for (mv, next) in self.legal_ordered(node.board, tt_move) {
+        for (mv, next) in self.ordering.legal_ordered(node.board, node.ply, tt_move) {
             has_legal_move = true;
 
             let score = self.search_child(node.child(&next));
@@ -221,8 +217,12 @@ impl<'search> Searcher<'search> {
                 }
                 Outcome::Cut => {
                     best_move = Some(mv);
+                    self.ordering.on_beta_cutoff(node, mv, &quiets_tried);
                     break;
                 }
+            }
+            if mv.is_quiet() {
+                quiets_tried.push(mv);
             }
         }
 
@@ -280,7 +280,7 @@ impl<'search> Searcher<'search> {
 
         let mut best = static_eval;
 
-        for (_, next) in self.captures_ordered(node.board) {
+        for (_, next) in self.ordering.captures_ordered(node.board) {
             // We need to push and pop to the history because of check extensions
             self.push_hash(next.hash());
             let score = -self.quiescence(node.child(&next));

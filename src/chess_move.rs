@@ -184,6 +184,10 @@ impl Move {
         self.flags() & Self::PROMOTION == Self::PROMOTION
     }
 
+    pub const fn is_quiet(self) -> bool {
+        !self.is_capture() && !self.is_promotion()
+    }
+
     pub fn to_uci(self) -> String {
         let piece =
             if let MoveKind::Promotion(piece) | MoveKind::PromotionCapture(piece) = self.kind() {

@@ -34,6 +34,10 @@ impl<'board> NodeInfo<'board> {
         }
     }
 
+    pub(super) fn full_window(board: &'board Board, depth: u32, ply: u32) -> Self {
+        Self::new(board, depth, ply, -Score::INF, Score::INF)
+    }
+
     /// The node after a move to `board`: a ply further, one less to go, and the window
     /// seen from the other side
     pub(super) fn child<'next>(&self, board: &'next Board) -> NodeInfo<'next> {
