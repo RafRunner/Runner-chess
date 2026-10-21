@@ -1,5 +1,6 @@
 mod draw;
 mod limits;
+mod lmr;
 mod node;
 mod ordering;
 mod tt;
@@ -201,10 +202,14 @@ impl<'search> Searcher<'search> {
         let mut best_move = None;
         let mut quiets_tried = Vec::with_capacity(64);
 
-        for (mv, next) in self.ordering.legal_ordered(node.board, node.ply, tt_move) {
+        for (idx, (mv, next)) in self
+            .ordering
+            .legal_ordered(node.board, node.ply, tt_move)
+            .enumerate()
+        {
             has_legal_move = true;
 
-            let score = self.search_child(node.child(&next));
+            let score = self.lmr_search(node, mv, idx, &next);
 
             if self.stopped {
                 break;

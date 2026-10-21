@@ -10,13 +10,14 @@ use crate::{
 
 pub(super) struct MoveOrdering {
     killers: [[Option<Move>; 2]; Score::MAX_PLY as usize],
+    // History is 34 KB. When moving this struct to UCI, wrap inside a box to avoid copying
     history: [[[i32; 64]; 64]; 2],
 }
 
 impl MoveOrdering {
     const NOISY_BASE: i32 = 2_000_000;
     const KILLER_BASE: i32 = 1_000_000;
-    const MAX_BONUS: i32 = 16_384;
+    pub(super) const MAX_BONUS: i32 = 16_384;
 
     pub(super) fn new() -> Self {
         Self {
@@ -41,6 +42,14 @@ impl MoveOrdering {
         for &mv in quiets_tried {
             self.update_history(node.board.side_to_move(), mv, -bonus);
         }
+    }
+
+    pub(super) fn is_killer(&self, mv: Move, ply: u32) -> bool {
+        self.killers[ply as usize][0] == Some(mv) || self.killers[ply as usize][1] == Some(mv)
+    }
+
+    pub(super) fn history_bonus(&self, mv: Move, color: Color) -> i32 {
+        self.history[color][mv.from()][mv.to()]
     }
 
     fn update_history(&mut self, color: Color, mv: Move, bonus: i32) {
@@ -78,8 +87,24 @@ impl MoveOrdering {
             .position(|&killer| killer == Some(mv))
         {
             Some(idx) => Self::KILLER_BASE + (1 - idx as i32),
-            None => self.history[board.side_to_move()][mv.from()][mv.to()],
+            None => self.history_bonus(mv, board.side_to_move()),
         }
+    }
+
+    pub(super) fn legal_ordered<'board>(
+        &self,
+        board: &'board Board,
+        ply: u32,
+        first: Option<Move>,
+    ) -> impl Iterator<Item = (Move, Board)> + 'board {
+        self.ordered_moves(board, ply, |_| true, first)
+    }
+
+    pub(super) fn captures_ordered<'board>(
+        &self,
+        board: &'board Board,
+    ) -> impl Iterator<Item = (Move, Board)> + 'board {
+        self.ordered_moves(board, 0, |mv| mv.is_capture(), None)
     }
 
     /// Possibly strong moves come first
@@ -97,22 +122,6 @@ impl MoveOrdering {
         moves
             .into_iter()
             .filter_map(move |mv| board.make_legal_move(mv).map(|next| (mv, next)))
-    }
-
-    pub(super) fn legal_ordered<'board>(
-        &self,
-        board: &'board Board,
-        ply: u32,
-        first: Option<Move>,
-    ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        self.ordered_moves(board, ply, |_| true, first)
-    }
-
-    pub(super) fn captures_ordered<'board>(
-        &self,
-        board: &'board Board,
-    ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        self.ordered_moves(board, 0, |mv| mv.is_capture(), None)
     }
 }
 
