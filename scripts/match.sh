@@ -14,9 +14,11 @@
 #   --rounds <n>        pairs of games to play (default: 200, or 5000 with an SPRT)
 #   --sprt              stop as soon as <engine> is shown to be 10 Elo better than
 #                       <baseline>, or not better at all
-#   --non-regression    for changes not meant to gain, like fixes and cleanups: stop
+#   --non-regression    for changes not meant to gain, like simplifications: stop
 #                       as soon as <engine> is shown to be no worse than <baseline>,
-#                       or 5 Elo worse
+#                       or 10 Elo worse. Refactors that keep the bench node count
+#                       don't need a match at all
+#                       (both measure fastchess's normalized Elo)
 #   --concurrency <n>   games played at the same time (default: half the CPUs)
 set -euo pipefail
 
@@ -46,7 +48,7 @@ while [[ $# -gt 0 ]]; do
     --depth) limit="depth=${2:?--depth needs a depth}" && shift 2 ;;
     --rounds) rounds=${2:?--rounds needs a number} && shift 2 ;;
     --sprt) sprt="elo0=0 elo1=10 alpha=0.05 beta=0.05" && shift ;;
-    --non-regression) sprt="elo0=-5 elo1=0 alpha=0.05 beta=0.05" && shift ;;
+    --non-regression) sprt="elo0=-10 elo1=0 alpha=0.05 beta=0.05" && shift ;;
     --concurrency) concurrency=${2:?--concurrency needs a number} && shift 2 ;;
     --) shift && break ;;
     -*) echo "unknown option $1" >&2 && usage 1 ;;
