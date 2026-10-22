@@ -1,72 +1,68 @@
 # Road to NNUE
 
-What is left before generating training data, how the data gets generated, and the
-format bullet expects.
+How the training data gets generated, and the format bullet expects.
 
-## 1. Before generating data
+## 1. Before generating data (done)
 
-| Step | Why | Measured |
+| Step | Version | Measured |
 |---|---|---|
-| History with aging, kept in the `Uci` | Each search starts from what the previous ones learned | +18 ± 12 Elo against 0.8.0 at 10+0.1 over 1860 games (the SPRT stopped at LLR 2.73 of 2.94) |
-| `generate_captures` for the quiescence | The quiescence stops generating quiet moves and castling just to throw them away | 8% less time to the same depth, with the same nodes |
-| A soft node limit in `Budget` | Data generation searches a fixed number of nodes per move | - |
-| `go infinite` | Completes the UCI side | - |
+| History and killers kept between searches, with aging | 0.8.1 | +25 ± 15 Elo for 0.8.1 against 0.8.0, together with the next two |
+| `generate_captures` for the quiescence | 0.8.1 | 8% less time to the same depth |
+| Promotions ordered by the material they win | 0.8.1 | 0.6% fewer nodes in the bench |
+| A soft node limit in `Budget` | after 0.8.1 | - |
+| `go infinite` | after 0.8.1 | - |
 
-### History with aging
-
-- `MoveOrdering` lives in the `Uci`, next to the table, and goes into the search thread
-  and back with it.
-- On every `go`: halve the history and clear the killers. The killers are indexed by ply
-  from the root, which moves two plies between searches.
-- On `ucinewgame`: a new `MoveOrdering`.
-
-### `generate_captures`
-
-The captures of `generate_moves`, in the same order, so the search stays the same: the
-targets of pieces masked with the opponent's pieces, pawn captures with their
-promotions, and en passant. Promotions that don't capture stay out, as the quiescence
-skips them today. Checking that the bench node count doesn't change is the test.
-
-### Soft node limit
-
-- **Soft**: no new iteration once it is reached, so the score always comes from a
-  complete one.
-- **Hard**: a stop in the middle of an iteration, well above the soft limit (10 times,
-  for example), only as a safety net.
-
-### `go infinite`
-
-Search up to `MAX_PLY` with no deadline. `bestmove` only comes after `stop`, even when the
-search ends earlier, as it can with a forced mate.
+- **Soft node limit** (`Budget::with_soft_nodes`): no new iteration once it is reached,
+  so the score always comes from a complete one (`Searcher::score`). The hard limit
+  (`Budget::with_nodes`, and `go nodes`) stops in the middle of one.
+- **`go infinite`**: searches up to `MAX_PLY` with no deadline, and writes `bestmove`
+  only after `stop`, even when the search ends earlier. A `go`, `ucinewgame` or `bench`
+  that comes without the `stop` ends it, since waiting would hang.
 
 ## 2. Data generation
 
-A `runner-chess datagen` subcommand that plays games inside the process, without UCI.
+```
+runner-chess datagen <dir> [--threads <n>] [--positions <n>] [--nodes <n>] [--seed <n>]
+```
 
-- **Threads**: one game per thread (`std::thread::scope`), each with its own small table
-  (16 MB), cleared between games, and its own seed.
-- **Random numbers**: a small generator such as splitmix64 or xorshift64*, so no
-  dependency is needed.
-- **Openings**: 8 or 9 random legal plies from the starting position, so both sides get
-  to move first. Then a short search (around 10,000 nodes) and discard the opening when
-  `|score| > 400`.
-- **Moves**: a search with a soft limit of about 5,000 nodes. Keep the move and the score
-  of the last complete iteration.
-- **Positions kept**, after the random plies:
+| Option | Default |
+|---|---|
+| `--threads` | every CPU |
+| `--positions` | 1,000,000, between all threads; each one stops starting games once they get there |
+| `--nodes` | 5,000, the soft limit of every search, with a hard one 10 times higher |
+| `--seed` | from the clock, printed at the start |
+
+The games are played inside the process, without UCI, and written to
+`<dir>/<version>-<seed>-<thread>.txt`. The files of another run never get written over:
+a seed already used fails at the start. Searches are limited by nodes only, so the same
+seed and number of threads play the same games again.
+
+- **Threads**: each with its own table (16 MB) and ordering, both cleared before every
+  game, and its own random numbers (splitmix64), seeded from `--seed`.
+- **Openings**: 8 or 9 random legal moves from the starting position, so that either
+  side can be the first to move after them. A game whose first search finds
+  `|score| > 400` gets thrown away.
+- **Moves**: the best move of the search; the score of the last iteration that
+  finished labels the position.
+- **Positions kept**, after the random moves:
   - not when the side to move is in check;
   - not when the best move is a capture or a promotion, since the network should learn
     quiet positions;
-  - not with mate scores, which would distort the training.
+  - not with mate scores.
 - **End of a game**:
-  - by the rules: mate, stalemate, threefold repetition (with the hashes of the game),
-    the fifty-move rule, insufficient material;
-  - adjudicated, to save time: a win once `|score| >= 2000` for several plies in a row,
-    a draw after move 40 once `|score| <= 10` for 8 plies in a row. These numbers are a
-    starting point.
-- **Output**: once a game ends, its positions get written with its result, one file per
-  thread, flushed often so a stopped run keeps what it had.
-- **Volume**: 10 to 100 million positions for a first, small network. Text takes about
-  70 to 90 bytes per position, so 100 million is around 8 GB.
+  - by the rules: mate, stalemate, the third repetition, the fifty-move rule, and
+    positions where no sequence of moves can end in mate;
+  - adjudicated: a win once one side is ahead by 2000 or more for 4 plies in a row, a
+    draw after move 40 once `|score| <= 10` for 8 plies in a row, and a draw at 1000
+    plies, only so that no game goes on forever.
+- **Output**: a game gets written once it ends, and its file flushed, so a run stopped
+  in the middle keeps every game it finished. At most the last line can be cut, and
+  bullet skips lines that don't parse.
+
+Measured with 0.8.1 on 10 threads, 5,000 nodes: about 2,600 positions per second (9
+million an hour), 89 kept per game, 65 bytes each. Results: 38% White wins, 21% draws,
+41% Black wins. 100 million positions, enough for a first network, take about 11 hours
+and 6.5 GB.
 
 ## 3. The bullet format
 

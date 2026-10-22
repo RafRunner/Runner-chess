@@ -35,6 +35,11 @@ impl Score {
         self.0.abs() > Self::MAX_EVAL.0
     }
 
+    /// The evaluation in centipawns, or `None` for a mate.
+    pub fn centipawns(self) -> Option<i16> {
+        (!self.is_mate()).then_some(self.0)
+    }
+
     /// How many plies away the mate is, whoever gives it.
     pub fn mate_plies(self) -> Option<u32> {
         self.is_mate().then(|| (Self::MATE.0 - self.0.abs()) as u32)
@@ -164,6 +169,14 @@ mod tests {
         assert_eq!(Score::new(100).mate_plies(), None);
         assert_eq!(Score::MAX_EVAL.mate_plies(), None);
         assert!(Score::mate_in(Score::MAX_PLY).is_mate());
+    }
+
+    #[test]
+    fn centipawns() {
+        assert_eq!(Score::new(-35).centipawns(), Some(-35));
+        assert_eq!(Score::MAX_EVAL.centipawns(), Some(Score::MAX_EVAL.0));
+        assert_eq!(Score::mate_in(5).centipawns(), None);
+        assert_eq!(Score::mated_in(5).centipawns(), None);
     }
 
     #[test]

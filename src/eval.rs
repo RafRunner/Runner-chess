@@ -155,7 +155,7 @@ pub fn eval(board: &Board) -> Score {
 
 /// No sequence of legal moves can end in mate: besides the kings, at most one minor
 /// piece, or only bishops, all on squares of the same color.
-fn is_dead_position(board: &Board) -> bool {
+pub fn is_dead_position(board: &Board) -> bool {
     let both = |kind: PieceKind| board.both(kind);
 
     if both(PieceKind::Pawn) | both(PieceKind::Rook) | both(PieceKind::Queen) != BitBoard::EMPTY {
