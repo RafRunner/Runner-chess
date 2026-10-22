@@ -88,6 +88,8 @@ pub struct Uci<W> {
     search_memory: Option<SearchMemory>,
     /// The search running, which gives them back once it ends
     search: Option<JoinHandle<SearchResult>>,
+    /// The search running is a `go infinite`, which only ends with `stop`
+    infinite: bool,
     /// Set by `stop` and `quit` to end the search early
     stop: Arc<AtomicBool>,
     out: W,
@@ -107,6 +109,7 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             history: Vec::new(),
             search_memory: Some((TranspositionTable::new(HASH_MB), MoveOrdering::new())),
             search: None,
+            infinite: false,
             stop: Arc::new(AtomicBool::new(false)),
             out,
             debug: false,
@@ -269,17 +272,18 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
     }
 
     /// `go [wtime <ms>] [btime <ms>] [winc <ms>] [binc <ms>] [movestogo <n>] [depth <n>]
-    /// [movetime <ms>] [nodes <n>]`: starts a search in its own thread, with a copy of
-    /// the game, and the table and the ordering, which come back in `wait_search`
+    /// [movetime <ms>] [nodes <n>] [infinite]`: starts a search in its own thread, with a
+    /// copy of the game, and the table and the ordering, which come back in `wait_search`
     fn go_search(&mut self, args: &[&str], start: Instant) -> Result<(), UciError> {
         let limits = parse_go(args)?;
         let budget = Budget::new(&limits, self.board.side_to_move(), start);
 
         let (board, history) = (self.board.clone(), self.history.clone());
-        let (mut tt, mut ordering) = self
+        let mut memory = self
             .search_memory
             .take()
             .expect("no search is running, so the values are here");
+        let infinite = limits.infinite;
         let stop = Arc::clone(&self.stop);
         let mut out = self.out.clone();
 
@@ -290,13 +294,14 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                 &board,
                 &history,
                 budget,
-                &mut tt,
-                &mut ordering,
+                &mut memory,
                 &stop,
+                infinite,
                 &mut out,
             );
-            ((tt, ordering), result)
+            (memory, result)
         }));
+        self.infinite = infinite;
         Ok(())
     }
 
@@ -311,6 +316,12 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
         let Some(search) = self.search.take() else {
             return Ok(());
         };
+        // the GUI should have sent `stop`, but an infinite search would never end
+        if self.infinite {
+            self.stop.store(true, Ordering::Relaxed);
+        }
+        // in case it already finished and waits for `stop` to write its `bestmove`
+        search.thread().unpark();
         match search.join() {
             Ok((values, result)) => {
                 self.search_memory = Some(values);
@@ -332,19 +343,24 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
     }
 }
 
-/// The search and its `bestmove`, which only gets written if every `info` could be
+/// The search and its `bestmove`, which only gets written if every `info` could be.
+/// After an `infinite` one, only once `stop` comes, even if the search ended before.
 fn search_and_report(
     board: &Board,
     history: &[ZobristHash],
     budget: Budget,
-    tt: &mut TranspositionTable,
-    ordering: &mut MoveOrdering,
+    (tt, ordering): &mut SearchMemory,
     stop: &AtomicBool,
+    infinite: bool,
     out: &mut impl Write,
 ) -> io::Result<()> {
     let best = Searcher::new(budget, tt, ordering)
         .stopped_by(stop)
         .search_root(board, history, out)?;
+    // `wait_search` unparks this thread after setting `stop`
+    while infinite && !stop.load(Ordering::Relaxed) {
+        thread::park();
+    }
     match best {
         Some(mv) => writeln!(out, "bestmove {mv}")?,
         None => writeln!(out, "bestmove 0000")?,
@@ -377,8 +393,8 @@ fn run_bench(args: &[&str], out: &mut impl Write) -> Result<(), UciError> {
     Ok(())
 }
 
-/// Parses the arguments of a searching `go`. Anything not supported yet (`infinite`,
-/// `ponder`, `searchmoves`, `mate`) is ignored, so the GUI still gets a move.
+/// Parses the arguments of a searching `go`. Anything not supported yet (`ponder`,
+/// `searchmoves`, `mate`) is ignored, so the GUI still gets a move.
 fn parse_go(args: &[&str]) -> Result<Limits, UciError> {
     let mut limits = Limits::default();
     let mut args = args.iter();
@@ -402,6 +418,7 @@ fn parse_go(args: &[&str]) -> Result<Limits, UciError> {
             "winc" => limits.inc[Color::White] = millis(number()?),
             "binc" => limits.inc[Color::Black] = millis(number()?),
             "nodes" => limits.nodes = Some(number()?.max(1) as u64),
+            "infinite" => limits.infinite = true,
             _ => (),
         }
     }
@@ -776,6 +793,33 @@ mod tests {
         bestmove(&out);
     }
 
+    /// Black to move and mated, so the search has nothing to do
+    const MATED: &str = "7k/6Q1/6K1/8/8/8/8/8 b - - 0 1";
+
+    #[test]
+    fn an_infinite_search_writes_its_bestmove_only_after_stop() {
+        let mut uci = uci();
+        run(&mut uci, &format!("position fen {MATED}")).unwrap();
+        uci.handle("go infinite").unwrap();
+        // long after the search itself ended
+        thread::sleep(Duration::from_millis(100));
+        assert!(!uci.out.take().contains("bestmove"));
+
+        let (_, out) = run(&mut uci, "stop").unwrap();
+        assert_eq!(bestmove(&out), "0000");
+    }
+
+    #[test]
+    fn a_command_that_waits_for_the_search_ends_an_infinite_one() {
+        // the GUI forgot the `stop`, and waiting would hang
+        for command in ["ucinewgame", "go depth 1", "bench search 1"] {
+            let mut uci = uci();
+            uci.handle("go infinite").unwrap();
+            let (_, out) = run(&mut uci, command).unwrap();
+            assert!(out.contains("bestmove"), "{command}: {out}");
+        }
+    }
+
     #[test]
     fn go_limits_parse() {
         let ms = Duration::from_millis;
@@ -808,6 +852,7 @@ mod tests {
                 movetime: Some(ms(500)),
                 movestogo: Some(12),
                 nodes: Some(5_000_000_000),
+                infinite: true,
                 ..Limits::default()
             }
         );

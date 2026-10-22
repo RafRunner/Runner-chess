@@ -13,6 +13,8 @@ pub struct Limits {
     pub inc: [Duration; 2],
     pub movestogo: Option<u32>,
     pub nodes: Option<u64>,
+    /// Search until `stop`, whatever the clock says
+    pub infinite: bool,
 }
 
 const DEFAULT_DEPTH: u32 = 7;
@@ -25,6 +27,9 @@ pub struct Budget {
     pub depth: u32,            // `depth`, or as deep as the search can go
     pub soft: Option<Instant>, // no new iteration after this
     pub hard: Option<Instant>, // stop in the middle of one after this
+    /// No new iteration after this many nodes
+    pub soft_nodes: Option<u64>,
+    /// Stop in the middle of an iteration after this many nodes
     pub nodes: Option<u64>,
 }
 
@@ -36,6 +41,11 @@ impl Budget {
         let mut budget = Self::depth(limits.depth);
         budget.start = start;
         budget.nodes = limits.nodes;
+
+        if limits.infinite {
+            budget.depth = limits.depth.unwrap_or(Score::MAX_PLY);
+            return budget;
+        }
 
         match (limits.movetime, limits.time[us]) {
             (Some(movetime), _) => {
@@ -66,6 +76,7 @@ impl Budget {
             depth: depth.unwrap_or(DEFAULT_DEPTH),
             soft: None,
             hard: None,
+            soft_nodes: None,
             nodes: None,
         }
     }
@@ -73,6 +84,13 @@ impl Budget {
     pub fn with_nodes(self, nodes: u64) -> Self {
         Self {
             nodes: Some(nodes),
+            ..self
+        }
+    }
+
+    pub fn with_soft_nodes(self, nodes: u64) -> Self {
+        Self {
+            soft_nodes: Some(nodes),
             ..self
         }
     }
@@ -160,6 +178,23 @@ mod tests {
                 "{time} {inc} {movestogo:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_infinite_search_ignores_the_clock() {
+        let (budget, _) = budget(
+            Limits {
+                infinite: true,
+                time: [Some(ms(1_000)); 2],
+                movetime: Some(ms(1_000)),
+                ..Limits::default()
+            },
+            Color::White,
+        );
+        assert_eq!(
+            (budget.depth, budget.soft, budget.hard),
+            (Score::MAX_PLY, None, None)
+        );
     }
 
     #[test]

@@ -29,6 +29,8 @@ pub struct Searcher<'search> {
     nodes: u64,
     seldepth: u32,
     completed_depth: u32,
+    /// The score of the last iteration that finished
+    completed_score: Option<Score>,
     /// The positions of the game before the root, then the line being searched
     hashes: Vec<ZobristHash>,
     tt: &'search mut TranspositionTable,
@@ -53,6 +55,7 @@ impl<'search> Searcher<'search> {
             nodes: 0,
             seldepth: 0,
             completed_depth: 0,
+            completed_score: None,
             hashes: Vec::with_capacity(100 + Score::MAX_PLY as usize),
             tt,
             ordering,
@@ -74,6 +77,12 @@ impl<'search> Searcher<'search> {
     /// How many positions the searches so far have visited.
     pub fn nodes(&self) -> u64 {
         self.nodes
+    }
+
+    /// The score of the root for the side to move, from the last iteration that
+    /// finished: an interrupted one only has a bound
+    pub fn score(&self) -> Option<Score> {
+        self.completed_score
     }
 
     fn push_hash(&mut self, hash: ZobristHash) {
@@ -126,7 +135,13 @@ impl<'search> Searcher<'search> {
                 break;
             }
             self.completed_depth = depth;
-            if self.budget.soft.is_some_and(|soft| Instant::now() >= soft) {
+            self.completed_score = Some(best_score);
+            if self.budget.soft.is_some_and(|soft| Instant::now() >= soft)
+                || self
+                    .budget
+                    .soft_nodes
+                    .is_some_and(|nodes| self.nodes >= nodes)
+            {
                 break;
             }
             best_score = -Score::INF;
@@ -715,6 +730,26 @@ mod tests {
         let (best, out) = search_with_node_limit(Board::STARTPOS, 1);
         assert!(out.starts_with("info depth 1 "), "{out}");
         assert_eq!(best, best_move(Board::STARTPOS, 1));
+    }
+
+    #[test]
+    fn a_soft_node_limit_lets_the_iteration_finish() {
+        let budget = Budget::depth(Some(Score::MAX_PLY)).with_soft_nodes(2_000);
+        let mut tt = TranspositionTable::new(1);
+        let mut ordering = MoveOrdering::new();
+        let mut searcher = Searcher::new(budget, &mut tt, &mut ordering);
+        let mut out = Vec::new();
+        searcher
+            .search_root(&board(KIWIPETE), &[], &mut out)
+            .unwrap();
+        let out = String::from_utf8(out).unwrap();
+
+        // the iteration that passed the limit still finished, and was the last
+        assert!(searcher.nodes() >= 2_000);
+        assert!(!out.contains("lowerbound"), "{out}");
+        let last = out.lines().last().unwrap();
+        let score = searcher.score().unwrap().to_uci();
+        assert!(last.contains(&format!("score {score} ")), "{score} {last}");
     }
 
     #[test]
