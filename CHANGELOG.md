@@ -8,6 +8,30 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 0.8.1 - 2026-10-22
+
+### Changed
+- The history and the killers carry over from one search to the next, kept in the
+  `Uci` next to the table: every `go` halves the history and clears the killers, and
+  `ucinewgame` clears both.
+- The quiescence generates only the captures, instead of every move to throw the
+  quiet ones away.
+
+### Fixed
+- Captures and promotions are ordered by the material they win, then by the cheaper
+  piece moving, and a promotion wins the new piece less the pawn. Promotions to a
+  rook or a bishop, which a queen does better, come after every quiet move. Before,
+  promotions tied with pawn captures by accident, so the order of the move generator
+  decided between them, and underpromotions came before the killers.
+
+### Measured
+- Bench: 429937 (from 432470), from the order of the promotions. The history kept
+  between searches doesn't show in it, since every position of the bench starts
+  with a new one. With only the captures, the quiescence takes about 8% less time to
+  the same depth.
+- Strength: +25 ± 15 Elo against 0.8.0 at 10+0.1, SPRT [0, 10] passed in 1368 games
+  (498 wins, 400 losses, 470 draws).
+
 ## 0.8.0 - 2026-10-21
 
 ### Added
@@ -192,3 +216,11 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
   it, illegal ones and nodes the table cuts included. Worth it once checks get
   computed incrementally (the moved piece and the lines it opens) and the move
   generator uses them, for evasions and pins.
+- **Check extension**, searching a ply deeper after a move that gives check: -10 ±
+  15 Elo against 0.8.0 after about 1350 games, so neutral at best. LMR already
+  leaves those moves unreduced.
+- **Legality from pins**: the pinned pieces computed once per node, so only king
+  moves, en passant, moves out of check and pinned pieces need the full check. The
+  same nodes, with 24% faster perft but 2 to 4.5% slower search, in four variants:
+  most nodes cut after one to three moves, so the setup of each node costs more than
+  the checks it saves. Worth it with a fully legal move generator.
