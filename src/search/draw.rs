@@ -67,7 +67,7 @@ mod tests {
         chess_move::Move,
         eval::eval,
         search::{
-            Budget, TranspositionTable,
+            Budget, MoveOrdering, TranspositionTable,
             tests::{assert_best, both_colors, score},
         },
         test_utils::{board, find_move},
@@ -122,9 +122,13 @@ mod tests {
 
         let mut out = Vec::new();
         let mut tt = TranspositionTable::new(1);
-        let best = Searcher::new(Budget::depth(Some(depth)), &mut tt)
-            .search_root(&b, &history, &mut out)
-            .unwrap();
+        let best = Searcher::new(
+            Budget::depth(Some(depth)),
+            &mut tt,
+            &mut MoveOrdering::new(),
+        )
+        .search_root(&b, &history, &mut out)
+        .unwrap();
         (best.map(Move::to_uci), String::from_utf8(out).unwrap())
     }
 

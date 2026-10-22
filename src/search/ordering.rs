@@ -8,7 +8,7 @@ use crate::{
     search::NodeInfo,
 };
 
-pub(super) struct MoveOrdering {
+pub struct MoveOrdering {
     killers: [[Option<Move>; 2]; Score::MAX_PLY as usize],
     // History is 34 KB. When moving this struct to UCI, wrap inside a box to avoid copying
     history: [[[i32; 64]; 64]; 2],
@@ -19,11 +19,28 @@ impl MoveOrdering {
     const KILLER_BASE: i32 = 1_000_000;
     pub(super) const MAX_BONUS: i32 = 16_384;
 
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             killers: [[None; 2]; Score::MAX_PLY as usize],
             history: [[[0; 64]; 64]; 2],
         }
+    }
+
+    pub fn new_search(&mut self) {
+        self.killers = [[None; 2]; Score::MAX_PLY as usize];
+
+        for color in self.history.iter_mut() {
+            for to in color.iter_mut() {
+                for bonus in to.iter_mut() {
+                    *bonus /= 2;
+                }
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.killers = [[None; 2]; Score::MAX_PLY as usize];
+        self.history = [[[0; 64]; 64]; 2];
     }
 
     pub(super) fn on_beta_cutoff(&mut self, node: NodeInfo, mv: Move, quiets_tried: &[Move]) {
@@ -50,6 +67,39 @@ impl MoveOrdering {
 
     pub(super) fn history_bonus(&self, mv: Move, color: Color) -> i32 {
         self.history[color][mv.from()][mv.to()]
+    }
+
+    pub(super) fn legal_ordered<'board>(
+        &self,
+        board: &'board Board,
+        ply: u32,
+        first: Option<Move>,
+    ) -> impl Iterator<Item = (Move, Board)> + 'board {
+        self.ordered_moves(board, ply, |_| true, first)
+    }
+
+    pub(super) fn captures_ordered<'board>(
+        &self,
+        board: &'board Board,
+    ) -> impl Iterator<Item = (Move, Board)> + 'board {
+        self.ordered_moves(board, 0, |mv| mv.is_capture(), None)
+    }
+
+    /// Possibly strong moves come first
+    fn ordered_moves<'board>(
+        &self,
+        board: &'board Board,
+        ply: u32,
+        filter: impl Fn(&Move) -> bool,
+        first: Option<Move>,
+    ) -> impl Iterator<Item = (Move, Board)> + 'board {
+        let mut moves = board.generate_moves();
+        moves.retain(|mv| filter(mv));
+        moves.sort_by_cached_key(|&mv| Reverse(self.move_sort_key(board, ply, mv, first)));
+
+        moves
+            .into_iter()
+            .filter_map(move |mv| board.make_legal_move(mv).map(|next| (mv, next)))
     }
 
     fn update_history(&mut self, color: Color, mv: Move, bonus: i32) {
@@ -90,38 +140,11 @@ impl MoveOrdering {
             None => self.history_bonus(mv, board.side_to_move()),
         }
     }
+}
 
-    pub(super) fn legal_ordered<'board>(
-        &self,
-        board: &'board Board,
-        ply: u32,
-        first: Option<Move>,
-    ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        self.ordered_moves(board, ply, |_| true, first)
-    }
-
-    pub(super) fn captures_ordered<'board>(
-        &self,
-        board: &'board Board,
-    ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        self.ordered_moves(board, 0, |mv| mv.is_capture(), None)
-    }
-
-    /// Possibly strong moves come first
-    fn ordered_moves<'board>(
-        &self,
-        board: &'board Board,
-        ply: u32,
-        filter: impl Fn(&Move) -> bool,
-        first: Option<Move>,
-    ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        let mut moves = board.generate_moves();
-        moves.retain(|mv| filter(mv));
-        moves.sort_by_cached_key(|&mv| Reverse(self.move_sort_key(board, ply, mv, first)));
-
-        moves
-            .into_iter()
-            .filter_map(move |mv| board.make_legal_move(mv).map(|next| (mv, next)))
+impl Default for MoveOrdering {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

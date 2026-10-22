@@ -14,7 +14,7 @@ use crate::{
     board::{Board, FenParseError, movegen::IllegalMoveError},
     chess_move::{AbstractMove, MoveParseError},
     piece::Color,
-    search::{Budget, Limits, Searcher, TranspositionTable},
+    search::{Budget, Limits, MoveOrdering, Searcher, TranspositionTable},
     zobrist::ZobristHash,
 };
 
@@ -70,9 +70,12 @@ impl Write for Stdout {
     }
 }
 
-/// What the search thread gives back when it ends: the table, and whether it could
-/// write everything
-type SearchResult = (TranspositionTable, io::Result<()>);
+/// What a search learns and the next one starts from: the table and the move ordering
+type SearchMemory = (TranspositionTable, MoveOrdering);
+
+/// What the search thread gives back when it ends: the table and the ordering, and
+/// whether it could write everything
+type SearchResult = (SearchMemory, io::Result<()>);
 
 /// The engine's side of the protocol. Searches run in their own thread, so that `stop`
 /// and `isready` still get read; everything goes to `out`, which each search gets a
@@ -81,9 +84,9 @@ pub struct Uci<W> {
     board: Board,
     /// The positions of the game before `board`, oldest first, for repetitions.
     history: Vec<ZobristHash>,
-    /// The table, here whenever no search has it
-    tt: Option<TranspositionTable>,
-    /// The search running, which gives the table back once it ends
+    /// The table and the ordering, here whenever no search has them
+    search_memory: Option<SearchMemory>,
+    /// The search running, which gives them back once it ends
     search: Option<JoinHandle<SearchResult>>,
     /// Set by `stop` and `quit` to end the search early
     stop: Arc<AtomicBool>,
@@ -102,7 +105,7 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
         Self {
             board: Board::startpos(),
             history: Vec::new(),
-            tt: Some(TranspositionTable::new(HASH_MB)),
+            search_memory: Some((TranspositionTable::new(HASH_MB), MoveOrdering::new())),
             search: None,
             stop: Arc::new(AtomicBool::new(false)),
             out,
@@ -146,7 +149,10 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                 self.wait_search()?;
                 self.board = Board::startpos();
                 self.history.clear();
-                self.tt_mut().clear();
+
+                let (tt, ordering) = self.search_memory_mut();
+                tt.clear();
+                ordering.clear();
             }
             "position" => {
                 let args: Vec<&str> = tokens.collect();
@@ -156,8 +162,8 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                 // the GUI's clock started when it sent `go`
                 let start = Instant::now();
                 let args: Vec<&str> = tokens.collect();
-                // the GUI shouldn't send `go` while searching, but the table can't be
-                // in two searches at once
+                // the GUI shouldn't send `go` while searching, but the table and the
+                // ordering can't be in two searches at once
                 self.wait_search()?;
                 match args.as_slice() {
                     ["perft", depth] => self.go_perft(depth)?,
@@ -263,25 +269,33 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
     }
 
     /// `go [wtime <ms>] [btime <ms>] [winc <ms>] [binc <ms>] [movestogo <n>] [depth <n>]
-    /// [movetime <ms>] [nodes <n>]`: starts a search in its own thread, with copies of
-    /// the game and the table, which comes back in `wait_search`
+    /// [movetime <ms>] [nodes <n>]`: starts a search in its own thread, with a copy of
+    /// the game, and the table and the ordering, which come back in `wait_search`
     fn go_search(&mut self, args: &[&str], start: Instant) -> Result<(), UciError> {
         let limits = parse_go(args)?;
         let budget = Budget::new(&limits, self.board.side_to_move(), start);
 
         let (board, history) = (self.board.clone(), self.history.clone());
-        let mut tt = self
-            .tt
+        let (mut tt, mut ordering) = self
+            .search_memory
             .take()
-            .expect("no search is running, so the table is here");
+            .expect("no search is running, so the values are here");
         let stop = Arc::clone(&self.stop);
         let mut out = self.out.clone();
 
         // before the thread starts, so that a `stop` right after can't get lost
         stop.store(false, Ordering::Relaxed);
         self.search = Some(thread::spawn(move || {
-            let result = search_and_report(&board, &history, budget, &mut tt, &stop, &mut out);
-            (tt, result)
+            let result = search_and_report(
+                &board,
+                &history,
+                budget,
+                &mut tt,
+                &mut ordering,
+                &stop,
+                &mut out,
+            );
+            ((tt, ordering), result)
         }));
         Ok(())
     }
@@ -292,28 +306,29 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
         self.wait_search()
     }
 
-    /// Waits for the search, if one is running, and takes the table back
+    /// Waits for the search, if one is running, and takes the table and the ordering back
     fn wait_search(&mut self) -> Result<(), UciError> {
         let Some(search) = self.search.take() else {
             return Ok(());
         };
         match search.join() {
-            Ok((tt, result)) => {
-                self.tt = Some(tt);
+            Ok((values, result)) => {
+                self.search_memory = Some(values);
                 result.map_err(UciError::Io)
             }
-            // the table went down with the thread: start over with a new one
+            // the table and the ordering went down with the thread: start over with new
+            // ones
             Err(_) => {
-                self.tt = Some(TranspositionTable::new(HASH_MB));
+                self.search_memory = Some((TranspositionTable::new(HASH_MB), MoveOrdering::new()));
                 Err(UciError::SearchPanicked)
             }
         }
     }
 
-    fn tt_mut(&mut self) -> &mut TranspositionTable {
-        self.tt
+    fn search_memory_mut(&mut self) -> &mut SearchMemory {
+        self.search_memory
             .as_mut()
-            .expect("the table is back whenever no search is running")
+            .expect("the values are back whenever no search is running")
     }
 }
 
@@ -323,10 +338,11 @@ fn search_and_report(
     history: &[ZobristHash],
     budget: Budget,
     tt: &mut TranspositionTable,
+    ordering: &mut MoveOrdering,
     stop: &AtomicBool,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    let best = Searcher::new(budget, tt)
+    let best = Searcher::new(budget, tt, ordering)
         .stopped_by(stop)
         .search_root(board, history, out)?;
     match best {
@@ -692,7 +708,7 @@ mod tests {
         let mut uci = uci();
         run(&mut uci, "go depth 2").unwrap();
         assert!(uci.search.is_none());
-        assert!(uci.tt.is_some());
+        assert!(uci.search_memory.is_some());
 
         // so a new game can clear it, and the next search use it
         run(&mut uci, "ucinewgame").unwrap();
