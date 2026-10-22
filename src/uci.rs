@@ -49,7 +49,9 @@ pub enum Control {
     Quit,
 }
 
+/// The size of the table, unless the `Hash` option says otherwise
 const HASH_MB: usize = 64;
+const MAX_HASH_MB: usize = 65_536;
 
 /// The standard output, a line at a time: `write_fmt` locks it once for the whole line,
 /// so the lines of the search thread and of the main one never get mixed
@@ -86,6 +88,8 @@ pub struct Uci<W> {
     history: Vec<ZobristHash>,
     /// The table and the ordering, here whenever no search has them
     search_memory: Option<SearchMemory>,
+    /// The size of the table in MB, from the `Hash` option
+    hash_mb: usize,
     /// The search running, which gives them back once it ends
     search: Option<JoinHandle<SearchResult>>,
     /// The search running is a `go infinite`, which only ends with `stop`
@@ -108,6 +112,7 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             board: Board::startpos(),
             history: Vec::new(),
             search_memory: Some((TranspositionTable::new(HASH_MB), MoveOrdering::new())),
+            hash_mb: HASH_MB,
             search: None,
             infinite: false,
             stop: Arc::new(AtomicBool::new(false)),
@@ -130,6 +135,10 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             "uci" => {
                 writeln!(self.out, "id name runner-chess")?;
                 writeln!(self.out, "id author Rafael Nunes Santana")?;
+                writeln!(
+                    self.out,
+                    "option name Hash type spin default {HASH_MB} min 1 max {MAX_HASH_MB}"
+                )?;
                 writeln!(self.out, "uciok")?;
             }
             // even while searching, without waiting for it
@@ -179,7 +188,10 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                 }
             }
             "stop" => self.stop_search()?,
-            "setoption" => (), // TODO support some options
+            "setoption" => {
+                let args: Vec<&str> = tokens.collect();
+                self.set_option(&args)?;
+            }
             "d" => writeln!(self.out, "{}\n{}\n", self.board, self.board.to_fen())?,
             "bench" => {
                 let args: Vec<&str> = tokens.collect();
@@ -237,6 +249,37 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
 
         self.board = board;
         self.history = history;
+        Ok(())
+    }
+
+    /// `setoption name <name> [value <value>]`. Names don't depend on case, and the
+    /// options the engine doesn't have get ignored.
+    fn set_option(&mut self, args: &[&str]) -> Result<(), UciError> {
+        let ["name", rest @ ..] = args else {
+            return Err(UciError::UnexpectedArgs(
+                "usage: setoption name <name> [value <value>]".to_string(),
+            ));
+        };
+        let (name, value) = match rest.iter().position(|&token| token == "value") {
+            Some(i) => (&rest[..i], Some(rest[i + 1..].join(" "))),
+            None => (rest, None),
+        };
+
+        if name.join(" ").eq_ignore_ascii_case("hash") {
+            let megabytes = value
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|megabytes| (1..=MAX_HASH_MB).contains(megabytes))
+                .ok_or_else(|| {
+                    UciError::UnexpectedArgs(format!("Hash goes from 1 to {MAX_HASH_MB} MB"))
+                })?;
+
+            self.wait_search()?;
+            self.hash_mb = megabytes;
+            let (tt, _) = self.search_memory_mut();
+            // the old table goes first, so that both never take the memory at once
+            *tt = TranspositionTable::new(0);
+            *tt = TranspositionTable::new(megabytes);
+        }
         Ok(())
     }
 
@@ -330,7 +373,8 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             // the table and the ordering went down with the thread: start over with new
             // ones
             Err(_) => {
-                self.search_memory = Some((TranspositionTable::new(HASH_MB), MoveOrdering::new()));
+                self.search_memory =
+                    Some((TranspositionTable::new(self.hash_mb), MoveOrdering::new()));
                 Err(UciError::SearchPanicked)
             }
         }
@@ -485,6 +529,10 @@ mod tests {
 
         let (control, out) = run(&mut uci, "uci").unwrap();
         assert_eq!(control, Control::Continue);
+        assert!(
+            out.contains("option name Hash type spin default 64 min 1 max 65536\n"),
+            "{out}"
+        );
         assert!(out.ends_with("uciok\n"));
 
         let (_, out) = run(&mut uci, "isready").unwrap();
@@ -757,7 +805,37 @@ mod tests {
     }
 
     #[test]
-    fn setoption_gets_ignored() {
+    fn the_hash_option_sets_the_size_of_the_table() {
+        let mut uci = uci();
+        // names don't depend on case
+        for (line, megabytes) in [
+            ("setoption name Hash value 2", 2),
+            ("setoption name hash value 1", 1),
+        ] {
+            let (_, out) = run(&mut uci, line).unwrap();
+            assert_eq!((out.as_str(), uci.hash_mb), ("", megabytes), "{line}");
+        }
+        let (_, out) = run(&mut uci, "go depth 3").unwrap();
+        bestmove(&out);
+
+        for line in [
+            "setoption name Hash value 0",
+            "setoption name Hash value 65537",
+            "setoption name Hash value x",
+            "setoption name Hash",
+            "setoption Hash value 16",
+        ] {
+            assert_matches!(
+                run(&mut uci, line),
+                Err(UciError::UnexpectedArgs(_)),
+                "{line}"
+            );
+        }
+        assert_eq!(uci.hash_mb, 1);
+    }
+
+    #[test]
+    fn an_unknown_option_gets_ignored() {
         let mut uci = uci();
         let (control, out) = run(&mut uci, "setoption name Nullmove value true").unwrap();
         let lines: Vec<&str> = out.lines().collect();
@@ -812,7 +890,12 @@ mod tests {
     #[test]
     fn a_command_that_waits_for_the_search_ends_an_infinite_one() {
         // the GUI forgot the `stop`, and waiting would hang
-        for command in ["ucinewgame", "go depth 1", "bench search 1"] {
+        for command in [
+            "ucinewgame",
+            "go depth 1",
+            "bench search 1",
+            "setoption name Hash value 2",
+        ] {
             let mut uci = uci();
             uci.handle("go infinite").unwrap();
             let (_, out) = run(&mut uci, command).unwrap();
