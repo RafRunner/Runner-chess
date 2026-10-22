@@ -65,18 +65,19 @@ impl Entry {
 }
 
 pub struct TranspositionTable {
-    entries: Vec<Option<Entry>>, // a power of 2 long, so the index is the low bits of the hash
+    entries: Vec<Option<Entry>>, // any length: the index scales the hash to it
 }
 
 impl TranspositionTable {
+    /// As many entries as fit in `megabytes`, and at least the 1 MB of the `Hash` option
     pub fn new(megabytes: usize) -> Self {
-        let bytes = megabytes * 1024 * 1024;
-        let capacity = (bytes / size_of::<Option<Entry>>()).max(1);
+        let bytes = megabytes.max(1) * 1024 * 1024;
+        Self::with_entries(bytes / size_of::<Option<Entry>>())
+    }
 
-        let capacity = 1 << capacity.ilog2();
-
+    fn with_entries(entries: usize) -> Self {
         Self {
-            entries: vec![None; capacity],
+            entries: vec![None; entries],
         }
     }
 
@@ -102,8 +103,10 @@ impl TranspositionTable {
         self.entries[index] = Some(Entry::new(hash, depth, score, bound, best_move));
     }
 
+    /// The hash as a fraction of 2^64, times the length: always inside the table, and
+    /// from the high bits of the hash
     fn index(&self, hash: ZobristHash) -> usize {
-        hash.raw() as usize & (self.entries.len() - 1)
+        ((hash.raw() as u128 * self.entries.len() as u128) >> 64) as usize
     }
     // later: new_search() (a generation, to age entries) and hashfull() for `info`
 }
@@ -126,13 +129,28 @@ mod tests {
     }
 
     #[test]
-    fn the_largest_power_of_two_that_fits() {
-        for megabytes in [1, 3, 64] {
-            let bytes =
-                TranspositionTable::new(megabytes).entries.len() * size_of::<Option<Entry>>();
-            assert!(bytes.is_power_of_two(), "{megabytes}");
+    fn the_table_takes_every_megabyte_it_gets() {
+        // as many entries as fit, whatever the size
+        let entry = size_of::<Option<Entry>>();
+        for megabytes in [1, 3, 100] {
+            let bytes = TranspositionTable::new(megabytes).entries.len() * entry;
             assert!(bytes <= megabytes << 20, "{megabytes}");
-            assert!(2 * bytes > megabytes << 20, "{megabytes}");
+            assert!(bytes + entry > megabytes << 20, "{megabytes}");
+        }
+        // no less than the `Hash` option allows
+        assert_eq!(
+            TranspositionTable::new(0).entries.len(),
+            TranspositionTable::new(1).entries.len()
+        );
+    }
+
+    #[test]
+    fn a_table_of_any_size_keeps_what_it_gets() {
+        // 3 MB isn't a power of two of entries, and the index still lands inside
+        let mut tt = TranspositionTable::new(3);
+        for fen in PERFT_POSITIONS {
+            tt.store(hash(fen), 1, Score::DRAW, Bound::Exact, None);
+            assert!(tt.probe(hash(fen)).is_some(), "{fen}");
         }
     }
 
@@ -161,7 +179,7 @@ mod tests {
     #[test]
     fn positions_sharing_a_slot_do_not_mix() {
         // a single entry, so every position falls on it and the last one stays
-        let mut tt = TranspositionTable::new(0);
+        let mut tt = TranspositionTable::with_entries(1);
         let (startpos, kiwipete) = (hash(Board::STARTPOS), hash(KIWIPETE));
 
         tt.store(startpos, 3, Score::DRAW, Bound::Exact, None);
