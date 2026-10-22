@@ -8,6 +8,31 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 0.8.2 - 2026-10-22
+
+### Added
+- `runner-chess datagen <dir>`: games of the engine against itself, written as
+  training data in bullet's text format, one file per thread (see `docs/nnue.md`).
+  Every game opens with 8 or 9 random moves, every move is a search with a soft
+  limit of 5000 nodes, and only quiet positions get written: not in check, with a
+  quiet best move and no mate in sight. Games end by the rules or by adjudication.
+  The same seed and number of threads play the same games again.
+- A soft node limit for the search: no new iteration after that many nodes, so the
+  score always comes from one that finished.
+- `go infinite`: no deadline, and `bestmove` only after `stop`.
+- The `Hash` option, from 1 to 65536 MB.
+- `id name` has the version.
+
+### Changed
+- The table takes any size: the index scales the hash to the number of entries
+  instead of taking its low bits, so `Hash 100` uses 100 MB instead of 64.
+
+### Measured
+- Bench: 431809 (from 429937): the same search, with other positions sharing a
+  slot of the table. No match was played for that.
+- Data generation: about 2600 positions per second on 10 threads, 65 bytes each,
+  with 38% White wins, 21% draws and 41% Black wins.
+
 ## 0.8.1 - 2026-10-22
 
 ### Changed
