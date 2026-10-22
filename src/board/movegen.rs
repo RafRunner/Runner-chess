@@ -14,12 +14,16 @@ use crate::{
 pub struct IllegalMoveError;
 
 impl Board {
-    pub fn generate_moves(&self) -> Vec<Move> {
-        let mut moves = Vec::with_capacity(64);
+    pub fn generate_captures(&self) -> Vec<Move> {
+        let mut moves = Vec::with_capacity(16);
+        self.generate_normal_moves(self.by_color(self.side_to_move().oposite()), &mut moves);
 
+        moves
+    }
+
+    fn generate_normal_moves(&self, allowed: BitBoard, moves: &mut Vec<Move>) {
         let us = self.side_to_move();
         let them = us.oposite();
-        let white_to_move = us == Color::White;
 
         let our_pieces = self.by_color(us);
         let their_pieces = self.by_color(them);
@@ -36,7 +40,7 @@ impl Board {
         for kind in kinds {
             let piece = Piece::new(us, kind);
             for from in self.pieces(piece) {
-                let targets = attacks(piece, from, occupied) & !our_pieces;
+                let targets = attacks(piece, from, occupied) & !our_pieces & allowed;
                 for to in targets {
                     moves.push(Move::new(
                         from,
@@ -50,6 +54,33 @@ impl Board {
                 }
             }
         }
+
+        let pawns = self.pieces(Piece::new(us, PieceKind::Pawn));
+
+        for from in pawns {
+            for to in PAWN_ATTACKS[us][from] & their_pieces {
+                self.add_pawn_moves(from, to, moves);
+            }
+        }
+
+        if let Some(to) = self.en_passant() {
+            for from in PAWN_ATTACKS[them][to] & pawns {
+                moves.push(Move::new(from, to, MoveKind::EnPassant))
+            }
+        }
+    }
+
+    pub fn generate_moves(&self) -> Vec<Move> {
+        let mut moves = Vec::with_capacity(64);
+        self.generate_normal_moves(BitBoard::FULL, &mut moves);
+
+        let us = self.side_to_move();
+        let them = us.oposite();
+        let white_to_move = us == Color::White;
+
+        let our_pieces = self.by_color(us);
+        let their_pieces = self.by_color(them);
+        let occupied = our_pieces | their_pieces;
 
         // Castling
         let castle_checks = [
@@ -131,18 +162,6 @@ impl Board {
         for to in single_move {
             let from = to.offset(-delta).unwrap();
             self.add_pawn_moves(from, to, &mut moves);
-        }
-
-        for from in pawns {
-            for to in PAWN_ATTACKS[us][from] & their_pieces {
-                self.add_pawn_moves(from, to, &mut moves);
-            }
-        }
-
-        if let Some(to) = self.en_passant() {
-            for from in PAWN_ATTACKS[them][to] & pawns {
-                moves.push(Move::new(from, to, MoveKind::EnPassant))
-            }
         }
 
         moves

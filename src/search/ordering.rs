@@ -75,26 +75,26 @@ impl MoveOrdering {
         ply: u32,
         first: Option<Move>,
     ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        self.ordered_moves(board, ply, |_| true, first)
+        let moves = board.generate_moves();
+        self.ordered_moves(moves, board, ply, first)
     }
 
     pub(super) fn captures_ordered<'board>(
         &self,
         board: &'board Board,
     ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        self.ordered_moves(board, 0, |mv| mv.is_capture(), None)
+        let moves = board.generate_captures();
+        self.ordered_moves(moves, board, 0, None)
     }
 
     /// Possibly strong moves come first
     fn ordered_moves<'board>(
         &self,
+        mut moves: Vec<Move>,
         board: &'board Board,
         ply: u32,
-        filter: impl Fn(&Move) -> bool,
         first: Option<Move>,
     ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        let mut moves = board.generate_moves();
-        moves.retain(|mv| filter(mv));
         moves.sort_by_cached_key(|&mv| Reverse(self.move_sort_key(board, ply, mv, first)));
 
         moves
