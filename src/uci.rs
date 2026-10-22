@@ -133,7 +133,11 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
 
         match command {
             "uci" => {
-                writeln!(self.out, "id name runner-chess")?;
+                writeln!(
+                    self.out,
+                    "id name runner-chess {}",
+                    env!("CARGO_PKG_VERSION")
+                )?;
                 writeln!(self.out, "id author Rafael Nunes Santana")?;
                 writeln!(
                     self.out,
@@ -275,10 +279,13 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
 
             self.wait_search()?;
             self.hash_mb = megabytes;
-            let (tt, _) = self.search_memory_mut();
+            let (tt, ordering) = self
+                .search_memory
+                .take()
+                .expect("the values are back whenever no search is running");
             // the old table goes first, so that both never take the memory at once
-            *tt = TranspositionTable::new(0);
-            *tt = TranspositionTable::new(megabytes);
+            drop(tt);
+            self.search_memory = Some((TranspositionTable::new(megabytes), ordering));
         }
         Ok(())
     }
@@ -529,6 +536,11 @@ mod tests {
 
         let (control, out) = run(&mut uci, "uci").unwrap();
         assert_eq!(control, Control::Continue);
+        let version = env!("CARGO_PKG_VERSION");
+        assert!(
+            out.starts_with(&format!("id name runner-chess {version}\n")),
+            "{out}"
+        );
         assert!(
             out.contains("option name Hash type spin default 64 min 1 max 65536\n"),
             "{out}"
