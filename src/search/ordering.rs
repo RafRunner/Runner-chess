@@ -2,8 +2,8 @@ use std::cmp::Reverse;
 
 use crate::{
     board::Board,
-    chess_move::{Move, MoveKind},
-    piece::Color,
+    chess_move::{Move, MoveKind, PromotionPiece},
+    piece::{Color, PieceKind},
     score::Score,
     search::NodeInfo,
 };
@@ -17,6 +17,11 @@ pub struct MoveOrdering {
 impl MoveOrdering {
     const NOISY_BASE: i32 = 2_000_000;
     const KILLER_BASE: i32 = 1_000_000;
+    /// Rook and bishop promotions come after every quiet move: a queen does all they do,
+    /// and the knight's moves are the only ones it lacks
+    const UNDERPROMOTION_BASE: i32 = -2_000_000;
+    /// Only for the order of captures and promotions
+    const VALUES: [i32; 6] = [100, 320, 330, 500, 900, 0];
     pub(super) const MAX_BONUS: i32 = 16_384;
 
     pub fn new() -> Self {
@@ -113,23 +118,7 @@ impl MoveOrdering {
             return i32::MAX;
         }
         if !mv.is_quiet() {
-            let mut key = Self::NOISY_BASE;
-            if mv.is_capture() {
-                let attacker = board
-                    .piece_at(mv.from())
-                    .map_or(0, |p| p.kind().index() as i32);
-                let victim = board
-                    .piece_at(mv.to())
-                    .map_or(0, |p| p.kind().index() as i32);
-
-                key += 1 + 6 * victim + (5 - attacker);
-            }
-
-            if let MoveKind::Promotion(piece) | MoveKind::PromotionCapture(piece) = mv.kind() {
-                key += piece.to_piece_kind().index() as i32 * 6;
-            }
-
-            return key;
+            return Self::noisy_key(board, mv);
         }
 
         match self.killers[ply as usize]
@@ -139,6 +128,37 @@ impl MoveOrdering {
             Some(idx) => Self::KILLER_BASE + (1 - idx as i32),
             None => self.history_bonus(mv, board.side_to_move()),
         }
+    }
+
+    /// Captures and promotions by the material they win, then by the cheaper piece
+    /// moving: a promotion wins the new piece, less the pawn
+    fn noisy_key(board: &Board, mv: Move) -> i32 {
+        let attacker = board
+            .piece_at(mv.from())
+            .map_or(0, |p| p.kind().index() as i32);
+
+        let mut gain = 0;
+        if mv.is_capture() {
+            // en passant takes a pawn that isn't on the target square
+            let victim = board
+                .piece_at(mv.to())
+                .map_or(PieceKind::Pawn, |p| p.kind());
+            gain += Self::VALUES[victim];
+        }
+
+        let base = match mv.kind() {
+            MoveKind::Promotion(piece) | MoveKind::PromotionCapture(piece) => {
+                gain += Self::VALUES[piece.to_piece_kind()] - Self::VALUES[PieceKind::Pawn];
+                match piece {
+                    PromotionPiece::Rook | PromotionPiece::Bishop => Self::UNDERPROMOTION_BASE,
+                    PromotionPiece::Queen | PromotionPiece::Knight => Self::NOISY_BASE,
+                }
+            }
+            _ => Self::NOISY_BASE,
+        };
+
+        // the 8 keeps any difference in gain above the attacker's 0 to 5
+        base + 8 * gain + (5 - attacker)
     }
 }
 
@@ -220,16 +240,16 @@ mod tests {
         );
     }
 
-    /// No capture or promotion comes after a quiet move.
+    /// Captures and promotions come before the quiet moves, and rook and bishop
+    /// promotions after them.
     fn assert_noisy_first(moves: &[Move]) {
-        let first_quiet = moves
-            .iter()
-            .position(|mv| mv.is_quiet())
-            .unwrap_or(moves.len());
-        assert!(
-            moves[first_quiet..].iter().all(|mv| mv.is_quiet()),
-            "{moves:?}"
-        );
+        let band = |mv: &Move| match mv.kind() {
+            MoveKind::Promotion(PromotionPiece::Rook | PromotionPiece::Bishop)
+            | MoveKind::PromotionCapture(PromotionPiece::Rook | PromotionPiece::Bishop) => 2,
+            _ if mv.is_quiet() => 1,
+            _ => 0,
+        };
+        assert!(moves.iter().map(band).is_sorted(), "{moves:?}");
     }
 
     // the order of a fresh ordering
@@ -298,13 +318,21 @@ mod tests {
     }
 
     #[test]
-    fn promotions_come_by_the_value_of_the_new_piece() {
+    fn a_promotion_counts_as_taking_the_new_piece_less_the_pawn() {
+        // a queen less a pawn: less than taking a queen, more than a rook
+        let moves = ordered_uci("7k/1P6/8/3r1q2/4P3/8/8/6K1 w - - 0 1");
+        assert_eq!(moves[..3], ["e4f5", "b7b8q", "e4d5"], "{moves:?}");
+
+        // a knight less a pawn: less than taking a knight, more than a pawn
+        let moves = ordered_uci("7k/1P6/8/3n1p2/4P3/8/8/6K1 w - - 0 1");
+        assert_eq!(moves[..4], ["b7b8q", "e4d5", "b7b8n", "e4f5"], "{moves:?}");
+    }
+
+    #[test]
+    fn rook_and_bishop_promotions_come_last() {
         let moves = ordered_uci("4k3/1P6/8/8/8/8/8/4K3 w - - 0 1");
-        assert_eq!(
-            moves[..4],
-            ["b7b8q", "b7b8r", "b7b8b", "b7b8n"],
-            "{moves:?}"
-        );
+        assert_eq!(moves[..2], ["b7b8q", "b7b8n"], "{moves:?}");
+        assert_eq!(moves[moves.len() - 2..], ["b7b8r", "b7b8b"], "{moves:?}");
     }
 
     #[test]
