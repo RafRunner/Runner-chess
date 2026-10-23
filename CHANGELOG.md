@@ -8,6 +8,37 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 0.9.0 - 2026-10-23
+
+### Changed
+- The evaluation is a neural network, `(768 -> 128)x2 -> 1` with SCReLU, instead of
+  the piece-square tables: `nets/net-002.bin`, embedded in the binary. Trained with
+  bullet on 25 million positions of 0.8.2's games against itself, 30 passes. Its
+  output is halved, since it gives about twice the scores it learned from.
+- The hidden layer of both sides' views gets updated move by move from the pieces
+  that moved, on a stack next to the hashes of the line being searched.
+- Dead positions are still draws, before the network.
+- Internal: the root and null move pruning in their own files.
+
+### Added
+- `trainer/`, which trains the networks with bullet, and its `validate`, the loss of
+  a network on positions it didn't train on. `scripts/prepare-data.sh` turns the
+  output of `datagen` into bullet's shuffled binary format.
+
+### Removed
+- The piece-square tables.
+
+### Measured
+- Bench: 486750 (from 431809). At depth 10 the search visits 66% more nodes than
+  0.8.2's, at the same speed.
+- Validation: a loss of 0.0575 on 4.9 million positions from games it didn't train
+  on, against 0.0606 for a network trained on 10 million.
+- Strength: +235 ± 56 Elo against 0.8.2 at 10+0.1, SPRT [0, 10] passed in 202 games
+  (154 wins, 35 losses, 13 draws).
+- Mates against a lone king defended by Stockfish, within the fifty moves, from 10
+  random positions each: all 10 with a rook, 4 with two bishops, and 1 with bishop
+  and knight, as 0.8.2.
+
 ## 0.8.2 - 2026-10-22
 
 ### Added
