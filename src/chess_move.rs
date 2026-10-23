@@ -1,6 +1,9 @@
 use std::fmt::{Debug, Display};
 
-use crate::{piece::PieceKind, square::Square};
+use crate::{
+    piece::{Color, PieceKind},
+    square::{Delta, Square},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -201,6 +204,30 @@ impl Move {
             self.to().to_algebraic(),
             piece
         )
+    }
+
+    /// Gets where the rook should go on castling
+    pub fn get_rook_squares(self) -> (Square, Square) {
+        match self.to() {
+            Square::G1 => (Square::H1, Square::F1),
+            Square::C1 => (Square::A1, Square::D1),
+            Square::G8 => (Square::H8, Square::F8),
+            Square::C8 => (Square::A8, Square::D8),
+            _ => unreachable!("castling ends on c1, g1, c8 or g8"),
+        }
+    }
+
+    /// Gets the victim of an en passant take or the ep square on a double push
+    pub fn get_ep_square(self, side: Color) -> Square {
+        // the pawn taken is behind the square the capture lands on
+        let behind = if side == Color::White {
+            Delta::SOUTH
+        } else {
+            Delta::NORTH
+        };
+        self.to()
+            .offset(behind)
+            .expect("en passant is never on the edge")
     }
 
     const fn flags(self) -> u16 {

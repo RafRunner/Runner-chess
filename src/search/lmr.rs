@@ -32,16 +32,20 @@ impl Searcher<'_> {
             || node.board.is_in_check(node.board.side_to_move())
             || next.is_in_check(next.side_to_move())
         {
-            self.search_child(node.child(next))
+            self.search_child(node.board, node.child(next), Some(mv))
         } else {
             let history = self.ordering.history_bonus(mv, node.board.side_to_move());
             let reduce = reduction(node.depth, move_idx, history);
             // check if the move is promising on a smaller window and depth
-            let hypothesis = self.search_child(node.scout_child(next, reduce, -node.alpha - 1));
+            let hypothesis = self.search_child(
+                node.board,
+                node.scout_child(next, reduce, -node.alpha - 1),
+                Some(mv),
+            );
 
             if hypothesis > node.alpha {
                 // we need to search with a full window and depth
-                self.search_child(node.child(next))
+                self.search_child(node.board, node.child(next), Some(mv))
             } else {
                 // the reduced search says it doesn't beat alpha: we bet a full one wouldn't either.
                 // Only this side is trusted, a fail high always gets searched again

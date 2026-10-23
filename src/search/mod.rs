@@ -19,7 +19,13 @@ use node::{NodeInfo, Outcome};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use crate::{eval::eval, score::Score, zobrist::ZobristHash};
+use crate::{
+    board::Board,
+    chess_move::Move,
+    eval::{self, Accumulators},
+    score::Score,
+    zobrist::ZobristHash,
+};
 
 /// A search of one position, from `go` to `bestmove`. `'search` is how long it can use
 /// what it borrows from the engine: the table and the `stop` flag.
@@ -32,6 +38,8 @@ pub struct Searcher<'search> {
     completed_score: Option<Score>,
     /// The positions of the game before the root, then the line being searched
     hashes: Vec<ZobristHash>,
+    /// The network's hidden layer along the line being searched, the current node's last
+    accumulators: Vec<Accumulators>,
     tt: &'search mut TranspositionTable,
     ordering: &'search mut MoveOrdering,
     /// The index of the hash of the root position on the hashes vec
@@ -56,6 +64,7 @@ impl<'search> Searcher<'search> {
             completed_depth: 0,
             completed_score: None,
             hashes: Vec::with_capacity(100 + Score::MAX_PLY as usize),
+            accumulators: Vec::with_capacity(Score::MAX_PLY as usize + 1),
             tt,
             ordering,
             root_index: 0,
@@ -116,7 +125,7 @@ impl<'search> Searcher<'search> {
         }
         self.nodes += 1;
         if node.ply >= Score::MAX_PLY {
-            return eval(node.board);
+            return self.evaluate(node);
         }
 
         let entry = self.tt.probe(node.board.hash());
@@ -201,7 +210,7 @@ impl<'search> Searcher<'search> {
         }
         if node.ply >= Score::MAX_PLY {
             self.nodes += 1;
-            return eval(node.board);
+            return self.evaluate(node);
         }
         if node.board.is_in_check(node.board.side_to_move()) {
             // If we're in check, we need to check all possible responses, not just captures
@@ -209,7 +218,7 @@ impl<'search> Searcher<'search> {
         }
         self.nodes += 1;
 
-        let static_eval = eval(node.board);
+        let static_eval = self.evaluate(node);
         if static_eval >= node.beta {
             // Not capturing is already too good for the opponent. No point in continuing
             return static_eval;
@@ -221,11 +230,8 @@ impl<'search> Searcher<'search> {
 
         let mut best = static_eval;
 
-        for (_, next) in self.ordering.captures_ordered(node.board) {
-            // We need to push and pop to the history because of check extensions
-            self.push_hash(next.hash());
-            let score = -self.quiescence(node.child(&next));
-            self.pop_hash();
+        for (mv, next) in self.ordering.captures_ordered(node.board) {
+            let score = self.quiescence_child(node.board, node.child(&next), mv);
 
             if self.stopped {
                 break;
@@ -239,12 +245,46 @@ impl<'search> Searcher<'search> {
         best
     }
 
-    /// The score of `child` for the side to move here, with its hash on the stack meanwhile
-    fn search_child(&mut self, child: NodeInfo<'_>) -> Score {
-        self.push_hash(child.board.hash());
+    /// The score of `child`, reached by `mv` (`None` passes), for the side to move here
+    fn search_child(&mut self, parent: &Board, child: NodeInfo<'_>, mv: Option<Move>) -> Score {
+        self.enter(parent, &child, mv);
         let score = -self.negamax(child);
-        self.pop_hash();
+        self.leave();
         score
+    }
+
+    /// The same, for a capture of the quiescence
+    fn quiescence_child(&mut self, parent: &Board, child: NodeInfo<'_>, mv: Move) -> Score {
+        self.enter(parent, &child, Some(mv));
+        let score = -self.quiescence(child);
+        self.leave();
+        score
+    }
+
+    fn enter(&mut self, parent: &Board, child: &NodeInfo<'_>, mv: Option<Move>) {
+        // updated in place: building them apart and pushing cost 2% of the speed
+        let parent_index = self.accumulators.len() - 1;
+        self.accumulators.extend_from_within(parent_index..);
+        if let Some(mv) = mv {
+            self.accumulators[parent_index + 1].apply(parent, mv);
+        }
+        self.push_hash(child.board.hash());
+    }
+
+    fn leave(&mut self) {
+        self.pop_hash();
+        self.accumulators.pop();
+    }
+
+    fn current_accumulators(&self) -> &Accumulators {
+        self.accumulators
+            .last()
+            .expect("the root's go on the stack first")
+    }
+
+    /// `node` has to be the current one, whose accumulators are on top
+    fn evaluate(&self, node: NodeInfo<'_>) -> Score {
+        eval::evaluate(node.board, self.current_accumulators())
     }
 
     fn check_hard_budget(&mut self) -> bool {
@@ -295,7 +335,7 @@ mod tests {
     use crate::{
         board::Board,
         chess_move::Move,
-        test_utils::{KIWIPETE, PERFT_POSITIONS, board, mirror_fen},
+        test_utils::{KIWIPETE, PERFT_POSITIONS, board, mirror_fen, static_eval},
     };
 
     // search
@@ -311,6 +351,12 @@ mod tests {
         .map(Move::to_uci)
     }
 
+    /// The stacks of `board` as `search_root` sets them up
+    fn start_at(searcher: &mut Searcher, board: &Board) {
+        searcher.push_hash(board.hash());
+        searcher.accumulators.push(Accumulators::new(board));
+    }
+
     /// The score of `fen` for the side to move, searched `depth` plies deep.
     pub(super) fn score(fen: &str, depth: u32) -> Score {
         score_with(&mut TranspositionTable::new(1), fen, depth)
@@ -321,7 +367,7 @@ mod tests {
         let board = board(fen);
         let mut ordering = MoveOrdering::new();
         let mut searcher = Searcher::new(Budget::depth(Some(depth)), tt, &mut ordering);
-        searcher.push_hash(board.hash());
+        start_at(&mut searcher, &board);
         let node = NodeInfo::new(&board, depth, 0, -Score::INF, Score::INF);
         searcher.negamax(node)
     }
@@ -451,7 +497,7 @@ mod tests {
         let mut tt = TranspositionTable::new(1);
         let mut ordering = MoveOrdering::new();
         let mut searcher = Searcher::new(Budget::depth(None), &mut tt, &mut ordering);
-        searcher.push_hash(board.hash());
+        start_at(&mut searcher, &board);
 
         let node = NodeInfo::new(&board, 2, 3, Score::mate_in(3), Score::INF);
         let score = searcher.negamax(node);
@@ -546,7 +592,7 @@ mod tests {
         let mut ordering = MoveOrdering::new();
         let mut searcher = Searcher::new(budget, &mut tt, &mut ordering);
         searcher.completed_depth = 1; // the first iteration is never stopped
-        searcher.push_hash(board.hash());
+        start_at(&mut searcher, &board);
         let node = NodeInfo::new(&board, 4, 0, -Score::INF, Score::INF);
         searcher.negamax(node);
 
@@ -580,7 +626,7 @@ mod tests {
     fn quiescence_sees_the_recapture() {
         // Black is a queen down, but exd5 takes it back
         for fen in both_colors("4k3/8/4p3/3Q4/8/8/8/4K3 b - - 0 1") {
-            assert!(eval(&board(&fen)) < Score::new(-500), "{fen}");
+            assert!(static_eval(&board(&fen)) < Score::new(-500), "{fen}");
             assert!(score(&fen, 0) > Score::DRAW, "{fen}");
         }
     }
@@ -589,7 +635,7 @@ mod tests {
     fn quiescence_stands_pat_when_captures_lose() {
         // the only capture, Qxd5, loses the queen, so not capturing keeps the static eval
         for fen in both_colors("4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1") {
-            assert_eq!(score(&fen, 0), eval(&board(&fen)), "{fen}");
+            assert_eq!(score(&fen, 0), static_eval(&board(&fen)), "{fen}");
         }
     }
 
@@ -599,7 +645,7 @@ mod tests {
         // Nxa8 follows, which standing pat on the static eval would miss. The pawns keep
         // the knight from being a dead draw afterwards
         for fen in both_colors("r3k3/2N4p/8/8/8/8/7P/7K b - - 0 1") {
-            assert!(eval(&board(&fen)) > Score::new(100), "{fen}");
+            assert!(static_eval(&board(&fen)) > Score::new(100), "{fen}");
             assert!(score(&fen, 0) < Score::new(-100), "{fen}");
         }
     }

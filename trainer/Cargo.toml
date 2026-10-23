@@ -3,6 +3,7 @@ name = "trainer"
 version = "0.1.0"
 edition = "2024"
 publish = false
+default-run = "trainer"
 
 # not part of the engine, which stays without dependencies: built on its own, from
 # this directory
@@ -15,3 +16,5 @@ rocm = ["bullet/rocm"]
 
 [dependencies]
 bullet = { git = "https://github.com/jw1912/bullet", rev = "579b78b37a694cacd6e9ede4706386c15c34837c", package = "bullet_lib" }
+# the same version bullet uses, for the positions of `validate`
+bulletformat = "1.8.0"

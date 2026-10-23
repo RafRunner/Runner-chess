@@ -65,19 +65,18 @@ mod tests {
     use super::*;
     use crate::{
         chess_move::Move,
-        eval::eval,
         search::{
             Budget, MoveOrdering, TranspositionTable,
             tests::{assert_best, both_colors, score},
         },
-        test_utils::{board, find_move},
+        test_utils::{board, find_move, static_eval},
     };
 
     #[test]
     fn perpetual_check_saves_the_lost_side() {
         // White is lost, but Qe8+ Kh7 Qh5+ Kg8 Qe8+ repeats, which depth 5 reaches
         for fen in both_colors("6k1/rr4p1/8/8/8/8/ppp1Q1PP/7K w - - 0 1") {
-            assert!(eval(&board(&fen)) < Score::new(-100), "{fen}");
+            assert!(static_eval(&board(&fen)) < Score::new(-100), "{fen}");
             assert_eq!(score(&fen, 5), Score::DRAW, "{fen}");
         }
     }

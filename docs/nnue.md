@@ -145,7 +145,9 @@ cd trainer && cargo r -r -- ../data/<name>.data <net id> [superbatches] [wdl]
   `wdl x result + (1 - wdl) x sigmoid(score / 400)`, with `wdl = 0.75` by default.
 - **Output**: `trainer/checkpoints/<net id>-<superbatch>/quantised.bin`, the network the
   engine embeds, 197,440 bytes for 128 neurons: bullet pads it to a multiple of 64
-  bytes, the size of the network's struct with its `align(64)` columns. At the end,
+  bytes, the size of the network's struct with its `align(64)` columns. The one the
+  engine uses gets copied to `nets/<net id>.bin` and committed, since
+  `trainer/checkpoints` is ignored. At the end,
   `<net id>-evals.txt` has the evaluation of a few positions, in `f32`, for the
   engine's inference to be compared with.
 - **Backend**: Metal by default, `--no-default-features --features cuda` on NVIDIA.

@@ -7,6 +7,7 @@ use crate::{
     bench,
     board::Board,
     chess_move::Move,
+    eval::Accumulators,
     score::Score,
     search::{NodeInfo, Outcome, Searcher},
     zobrist::ZobristHash,
@@ -26,6 +27,7 @@ impl Searcher<'_> {
         self.hashes.extend_from_slice(history);
         self.root_index = history.len();
         self.push_hash(board.hash());
+        self.accumulators.push(Accumulators::new(board));
 
         let mut best_move = self
             .ordering
@@ -38,7 +40,7 @@ impl Searcher<'_> {
             let mut root = NodeInfo::full_window(board, depth, 0);
 
             for (mv, next) in self.ordering.legal_ordered(board, 0, best_move) {
-                let score = self.search_child(root.child(&next));
+                let score = self.search_child(root.board, root.child(&next), Some(mv));
 
                 if self.stopped {
                     break;

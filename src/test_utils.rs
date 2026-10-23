@@ -1,6 +1,11 @@
 //! Helpers shared by the tests of every module.
 
-use crate::{board::Board, chess_move::Move};
+use crate::{
+    board::Board,
+    chess_move::Move,
+    eval::{self, Accumulators},
+    score::Score,
+};
 
 pub use crate::bench::{KIWIPETE, POSITION_3, POSITION_4, POSITION_5};
 
@@ -15,6 +20,11 @@ pub const PERFT_POSITIONS: [&str; 5] = [
 /// A board the test expects to be valid.
 pub fn board(fen: &str) -> Board {
     Board::from_fen(fen).unwrap_or_else(|err| panic!("{fen}: {err:?}"))
+}
+
+/// The search's evaluation of `board`, from fresh accumulators
+pub fn static_eval(board: &Board) -> Score {
+    eval::evaluate(board, &Accumulators::new(board))
 }
 
 pub fn moves_of(board: &Board) -> Vec<Move> {

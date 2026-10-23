@@ -2,7 +2,7 @@ use crate::{
     board::Board,
     chess_move::{Move, MoveKind},
     piece::{Color, Piece, PieceKind},
-    square::{Delta, Square},
+    square::Square,
 };
 
 impl Board {
@@ -22,12 +22,6 @@ impl Board {
         let piece = self.piece_at(from).expect("No piece in 'from' square");
         let target = self.piece_at(to);
 
-        let delta = if white_to_move {
-            Delta::SOUTH
-        } else {
-            Delta::NORTH
-        };
-
         match mv.kind() {
             MoveKind::Normal | MoveKind::Capture => {
                 if let Some(captured) = target {
@@ -44,9 +38,7 @@ impl Board {
             MoveKind::DoublePush => {
                 next.move_piece(piece, from, to, None);
 
-                let ep_square = to
-                    .offset(delta)
-                    .expect("Double Push: unexpected 'to' Square");
+                let ep_square = mv.get_ep_square(us);
 
                 if self.can_take_ep(ep_square, them) {
                     next.en_passant = Some(ep_square);
@@ -56,9 +48,7 @@ impl Board {
             MoveKind::EnPassant => {
                 next.move_piece(piece, from, to, None);
 
-                let captured = to
-                    .offset(delta)
-                    .expect("En Passant: unexpected 'to' Square");
+                let captured = mv.get_ep_square(us);
 
                 next.remove_piece(Piece::new(them, PieceKind::Pawn), captured);
             }
@@ -67,17 +57,7 @@ impl Board {
                 next.move_piece(piece, from, to, None);
 
                 // and the rook
-                let (rook_from, rook_to) = if to == Square::G1 {
-                    (Square::H1, Square::F1)
-                } else if to == Square::C1 {
-                    (Square::A1, Square::D1)
-                } else if to == Square::G8 {
-                    (Square::H8, Square::F8)
-                } else if to == Square::C8 {
-                    (Square::A8, Square::D8)
-                } else {
-                    panic!("Castling: unexpected to square")
-                };
+                let (rook_from, rook_to) = mv.get_rook_squares();
 
                 next.move_piece(Piece::new(us, PieceKind::Rook), rook_from, rook_to, None);
             }
