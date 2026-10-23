@@ -2,3 +2,6 @@
 /engines
 logs*.csv
 profile.json.gz
+/data
+/trainer/target
+/trainer/checkpoints

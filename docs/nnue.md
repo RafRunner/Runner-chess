@@ -126,21 +126,63 @@ interleave them. They also suggest storing data as viriformat binpacks, which ke
 whole games, and converting to bulletformat only when loading speed matters. Text is
 the simplest way to start.
 
-### First network
+## 4. Training
 
-The bullet docs recommend starting from `examples/simple`, its architecture and training
-schedule.
+bullet lives next to this repository, in `../bullet`, where `bullet-utils` gets built
+with `cargo b -r --package bullet-utils`. The trainer, in `trainer/`, is a project of
+its own, so the engine stays without dependencies, and pins bullet to a commit.
 
-## 4. In the engine, later
+```
+scripts/prepare-data.sh <name> <.txt files or directories>...   # data/<name>.data
+cd trainer && cargo r -r -- ../data/<name>.data <net id> [superbatches] [wdl]
+```
 
+- **Network**: `(768 -> 128)x2 -> 1` with SCReLU, as bullet's `examples/simple`: the
+  weights of the hidden layer quantised by `QA = 255`, those of the output by
+  `QB = 64`, and an eval scale of 400.
+- **Schedule**: every superbatch is one pass over the data, 30 by default, with the
+  learning rate decaying as a cosine from 0.001 to 0.001 x 0.3^5. The target is
+  `wdl x result + (1 - wdl) x sigmoid(score / 400)`, with `wdl = 0.75` by default.
+- **Output**: `trainer/checkpoints/<net id>-<superbatch>/quantised.bin`, the network the
+  engine embeds, 197,440 bytes for 128 neurons: bullet pads it to a multiple of 64
+  bytes, the size of the network's struct with its `align(64)` columns. At the end,
+  `<net id>-evals.txt` has the evaluation of a few positions, in `f32`, for the
+  engine's inference to be compared with.
+- **Backend**: Metal by default, `--no-default-features --features cuda` on NVIDIA.
+- bullet doesn't implement a validation set yet: it prints a warning when given one.
+
+On an M4 Pro, training goes at about 4.6 million positions a second: 30 passes over 10
+million positions take 70 seconds.
+
+### `net-001`
+
+10 million positions of 0.8.2, 30 passes. On 100 positions it didn't train on, against
+Stockfish searching to depth 12: a correlation of 0.89, with the sign right in 92% of
+the positions, as a static evaluation, against 0.90 and 96% for a search of 0.8.2 of
+5000 nodes. With `wdl = 0.75` its output is about twice the scores it learned from,
+since it mostly predicts the result of the game: the engine can divide it back by
+using a scale of 200 instead of 400.
+
+## 5. In the engine
+
+- **Inputs**: for each side's view, `(own piece ? 0 : 384) + 64 x kind + square`, with
+  the kinds in the order P N B R Q K and the square from a1 = 0, flipped (`^ 56`) for
+  Black's view.
+- **Accumulator**: for each view, the bias plus the column of every input on the board.
+- **Output**, for the side to move:
+  `(sum(screlu(us) x w[..128]) + sum(screlu(them) x w[128..])) / QA + bias`, times the
+  scale, divided by `QA x QB`, where `screlu(x) = clamp(x, 0, QA)^2`.
 - The weights embedded with `include_bytes!` in a `static`, read-only and shared by
   every thread.
-- A stack of accumulators, one per ply, in the search state, never in `Board`, which gets
-  copied on every move.
-- `make_move` telling what changed (the piece that left a square, the one that arrived,
-  the one captured) for the accumulator to update from.
-- Before trusting it: the engine's evaluation of a few positions has to match what
-  bullet reports for the same network.
+- A stack of accumulators, one pair per ply, in the `Searcher`, never in `Board`, which
+  gets copied on every move, and on the heap, so that moving the `Searcher` stays cheap.
+- What a move changes comes from the parent and the move, next to `push_hash`, so only
+  the moves searched pay for it. Comparing it with the difference of the piece
+  bitboards in a `debug_assert` catches mistakes in castling, en passant and
+  promotions.
+- Before trusting it: incremental updates equal to a refresh along perft trees, the
+  same evaluation for a position and its colors swapped, and the evaluations of
+  `<net id>-evals.txt` within the quantisation error.
 
 ## Sources
 
