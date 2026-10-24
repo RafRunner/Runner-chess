@@ -8,6 +8,19 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 0.9.1 - 2026-10-23
+
+### Changed
+- Move ordering sorts plain integers: every move packed with its key and its index into
+  a `u64`, in a buffer the ordering keeps between nodes. `sort_by_cached_key` allocated
+  pairs of key and index at every node, then moved the moves around to match them. Ties
+  still keep the order of generation, so the search is the same.
+
+### Measured
+- Bench: 486750 (unchanged).
+- Speed: 27% more nodes per second, and 21% less time to depth 11 on the search bench
+  (2856 ms against 3628 ms). No match was played, since the search is the same.
+
 ## 0.9.0 - 2026-10-23
 
 ### Changed
