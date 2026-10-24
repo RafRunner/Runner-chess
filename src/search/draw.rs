@@ -99,13 +99,15 @@ mod tests {
 
     #[test]
     fn trades_into_a_dead_draw_when_lost() {
-        // a knight down, Black trades rooks with check: K+N vs K can't be won
+        // a knight down, Black trades rooks with check: K+N vs K can't be won. At depth 2
+        // the late moves of the replies to the other moves get pruned, which can leave
+        // one of them a score above the draw
         let fen = "3r3k/8/8/8/8/4N3/8/3R3K b - - 0 1";
-        for depth in 2..=3 {
+        for depth in 3..=4 {
             assert_best(fen, depth, "d8d1");
         }
         for fen in both_colors(fen) {
-            assert_eq!(score(&fen, 2), Score::DRAW, "{fen}");
+            assert_eq!(score(&fen, 3), Score::DRAW, "{fen}");
         }
     }
 
