@@ -29,6 +29,7 @@ impl Searcher<'_> {
         out: &mut impl Write,
     ) -> io::Result<Option<Move>> {
         self.ordering.new_search();
+        self.tt.new_search();
         self.hashes.extend_from_slice(history);
         self.root_index = history.len();
         self.push_hash(board.hash());

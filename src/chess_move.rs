@@ -1,4 +1,7 @@
-use std::fmt::{Debug, Display};
+use std::{
+    fmt::{Debug, Display},
+    num::NonZeroU16,
+};
 
 use crate::{
     piece::{Color, PieceKind},
@@ -112,8 +115,9 @@ impl AbstractMove {
     }
 }
 
+/// Never 0, which would be a1 to a1: `Option<Move>` takes no more room than a move
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Move(u16);
+pub struct Move(NonZeroU16);
 
 impl Move {
     const MOVE_MASK: u16 = 0b11_1111;
@@ -144,15 +148,18 @@ impl Move {
 
         raw |= flags << Self::FLAG_SHIFT;
 
-        Self(raw)
+        match NonZeroU16::new(raw) {
+            Some(raw) => Self(raw),
+            None => panic!("a move can't stay on its square"),
+        }
     }
 
     pub const fn from(self) -> Square {
-        Square::new((self.0 & Self::MOVE_MASK) as u8)
+        Square::new((self.0.get() & Self::MOVE_MASK) as u8)
     }
 
     pub const fn to(self) -> Square {
-        let to = self.0 & (Self::MOVE_MASK << Self::TO_SHIFT);
+        let to = self.0.get() & (Self::MOVE_MASK << Self::TO_SHIFT);
         Square::new((to >> Self::TO_SHIFT) as u8)
     }
 
@@ -231,7 +238,7 @@ impl Move {
     }
 
     const fn flags(self) -> u16 {
-        self.0 >> Self::FLAG_SHIFT
+        self.0.get() >> Self::FLAG_SHIFT
     }
 }
 
@@ -280,7 +287,8 @@ mod tests {
         let kinds = all_kinds();
         assert_eq!(kinds.len(), 13);
         for from in (0..64).map(Square::new) {
-            for to in (0..64).map(Square::new) {
+            // a piece always leaves its square
+            for to in (0..64).map(Square::new).filter(|&to| to != from) {
                 for &kind in &kinds {
                     let mv = Move::new(from, to, kind);
                     assert_eq!(
@@ -291,6 +299,11 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn no_move_takes_no_room() {
+        assert_eq!(size_of::<Option<Move>>(), size_of::<Move>());
     }
 
     #[test]
@@ -422,7 +435,8 @@ mod tests {
     #[test]
     fn abstract_roundtrips_every_move() {
         for from in (0..64).map(Square::new) {
-            for to in (0..64).map(Square::new) {
+            // a piece always leaves its square
+            for to in (0..64).map(Square::new).filter(|&to| to != from) {
                 for kind in all_kinds() {
                     let mv = Move::new(from, to, kind);
                     let parsed = AbstractMove::from_uci(&mv.to_uci())

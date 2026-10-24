@@ -44,6 +44,8 @@ pub struct Entry {
     pub score: Score, // mates counted from this position, not the root (Score::to_tt)
     pub depth: u8,
     pub bound: Bound,
+    /// The search that stored it, see [`TranspositionTable::new_search`]
+    generation: u8,
 }
 
 impl Entry {
@@ -60,11 +62,10 @@ impl Entry {
             score,
             depth: depth.min(u8::MAX.into()) as u8,
             bound,
+            generation: 0,
         }
     }
-}
 
-impl Entry {
     /// The static eval of the position, made closer to its real value by the score of
     /// the entry, a search of it, where the bound says which side it's on. A mate is
     /// left out: it is counted from where it was stored, and nothing to prune on
@@ -81,31 +82,47 @@ impl Entry {
     }
 }
 
+/// Two entries share each slot of the table. The first keeps the deepest of the current
+/// search, which saved the most work, and the second the latest of the rest, which is
+/// likely to be needed again soon
+type Bucket = [Option<Entry>; 2];
+
 pub struct TranspositionTable {
-    entries: Vec<Option<Entry>>, // any length: the index scales the hash to it
+    buckets: Vec<Bucket>, // any length: the index scales the hash to it
+    /// Of the current search: entries of earlier ones give way to the new ones
+    generation: u8,
 }
 
 impl TranspositionTable {
     /// As many entries as fit in `megabytes`, and at least the 1 MB of the `Hash` option
     pub fn new(megabytes: usize) -> Self {
         let bytes = megabytes.max(1) * 1024 * 1024;
-        Self::with_entries(bytes / size_of::<Option<Entry>>())
+        Self::with_buckets(bytes / size_of::<Bucket>())
     }
 
-    fn with_entries(entries: usize) -> Self {
+    fn with_buckets(buckets: usize) -> Self {
         Self {
-            entries: vec![None; entries],
+            buckets: vec![[None; 2]; buckets],
+            generation: 0,
         }
     }
 
     pub fn clear(&mut self) {
-        self.entries.fill(None);
+        self.buckets.fill([None; 2]);
+        self.generation = 0;
+    }
+
+    /// The entries stored from now on belong to a new search, and the ones of the earlier
+    /// searches, which may be of positions the game left behind, can be replaced by any
+    pub fn new_search(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
     }
 
     pub fn probe(&self, hash: ZobristHash) -> Option<Entry> {
-        let index = self.index(hash);
-
-        self.entries[index].filter(|entry| entry.key == hash)
+        self.buckets[self.index(hash)]
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.key == hash)
     }
 
     pub fn store(
@@ -116,16 +133,38 @@ impl TranspositionTable {
         bound: Bound,
         best_move: Option<Move>,
     ) {
+        let generation = self.generation;
         let index = self.index(hash);
-        self.entries[index] = Some(Entry::new(hash, depth, score, bound, best_move));
+        let bucket = &mut self.buckets[index];
+        let mut new = Entry {
+            generation,
+            ..Entry::new(hash, depth, score, bound, best_move)
+        };
+
+        // the same position goes where it was, keeping its move if this search has none
+        let same = bucket.iter().position(|e| e.is_some_and(|e| e.key == hash));
+        let slot = same.unwrap_or_else(|| match bucket[0] {
+            Some(deepest) if deepest.generation == generation && deepest.depth > new.depth => 1,
+            _ => 0,
+        });
+        if let Some(old) = bucket[slot]
+            && old.key == hash
+        {
+            new.best_move = new.best_move.or(old.best_move);
+        }
+        // the entry it pushes out of the first slot may still be the latest of the rest
+        if same.is_none() && slot == 0 {
+            bucket[1] = bucket[0];
+        }
+        bucket[slot] = Some(new);
     }
 
     /// The hash as a fraction of 2^64, times the length: always inside the table, and
     /// from the high bits of the hash
     fn index(&self, hash: ZobristHash) -> usize {
-        ((hash.raw() as u128 * self.entries.len() as u128) >> 64) as usize
+        ((hash.raw() as u128 * self.buckets.len() as u128) >> 64) as usize
     }
-    // later: new_search() (a generation, to age entries) and hashfull() for `info`
+    // later: hashfull() for `info`
 }
 
 #[cfg(test)]
@@ -143,21 +182,22 @@ mod tests {
     #[test]
     fn an_entry_takes_16_bytes() {
         assert_eq!(size_of::<Option<Entry>>(), 16);
+        assert_eq!(size_of::<Bucket>(), 32);
     }
 
     #[test]
     fn the_table_takes_every_megabyte_it_gets() {
         // as many entries as fit, whatever the size
-        let entry = size_of::<Option<Entry>>();
+        let bucket = size_of::<Bucket>();
         for megabytes in [1, 3, 100] {
-            let bytes = TranspositionTable::new(megabytes).entries.len() * entry;
+            let bytes = TranspositionTable::new(megabytes).buckets.len() * bucket;
             assert!(bytes <= megabytes << 20, "{megabytes}");
-            assert!(bytes + entry > megabytes << 20, "{megabytes}");
+            assert!(bytes + bucket > megabytes << 20, "{megabytes}");
         }
         // no less than the `Hash` option allows
         assert_eq!(
-            TranspositionTable::new(0).entries.len(),
-            TranspositionTable::new(1).entries.len()
+            TranspositionTable::new(0).buckets.len(),
+            TranspositionTable::new(1).buckets.len()
         );
     }
 
@@ -193,18 +233,73 @@ mod tests {
         assert_eq!(entry.best_move, Some(e4));
     }
 
+    /// Hashes of positions that all fall on the single bucket of a table
+    fn three_positions() -> [ZobristHash; 3] {
+        [Board::STARTPOS, KIWIPETE, PERFT_POSITIONS[2]].map(hash)
+    }
+
     #[test]
     fn positions_sharing_a_slot_do_not_mix() {
-        // a single entry, so every position falls on it and the last one stays
-        let mut tt = TranspositionTable::with_entries(1);
-        let (startpos, kiwipete) = (hash(Board::STARTPOS), hash(KIWIPETE));
+        let mut tt = TranspositionTable::with_buckets(1);
+        let [startpos, kiwipete, _] = three_positions();
 
         tt.store(startpos, 3, Score::DRAW, Bound::Exact, None);
         assert!(tt.probe(kiwipete).is_none());
 
-        tt.store(kiwipete, 1, Score::DRAW, Bound::Exact, None);
-        assert!(tt.probe(startpos).is_none());
-        assert!(tt.probe(kiwipete).is_some());
+        tt.store(kiwipete, 1, Score::new(10), Bound::Exact, None);
+        assert_eq!(tt.probe(startpos).unwrap().depth, 3);
+        assert_eq!(tt.probe(kiwipete).unwrap().score, Score::new(10));
+    }
+
+    #[test]
+    fn the_deepest_entry_of_the_search_stays() {
+        let mut tt = TranspositionTable::with_buckets(1);
+        let [deep, a, b] = three_positions();
+
+        tt.store(deep, 8, Score::DRAW, Bound::Exact, None);
+        tt.store(a, 2, Score::DRAW, Bound::Exact, None);
+        tt.store(b, 3, Score::DRAW, Bound::Exact, None);
+        // the shallow ones take turns in the other slot
+        assert!(tt.probe(deep).is_some());
+        assert!(tt.probe(a).is_none());
+        assert!(tt.probe(b).is_some());
+
+        // a deeper one takes the first slot, and the deep one moves to the second
+        tt.store(a, 9, Score::DRAW, Bound::Exact, None);
+        assert!(tt.probe(a).is_some());
+        assert!(tt.probe(deep).is_some());
+        assert!(tt.probe(b).is_none());
+    }
+
+    #[test]
+    fn a_new_search_replaces_the_entries_of_the_old_ones() {
+        let mut tt = TranspositionTable::with_buckets(1);
+        let [deep, shallow, _] = three_positions();
+
+        tt.store(deep, 8, Score::DRAW, Bound::Exact, None);
+        tt.new_search();
+        tt.store(shallow, 1, Score::DRAW, Bound::Exact, None);
+        assert_eq!(tt.probe(shallow).unwrap().depth, 1);
+        // still there, in the second slot, until something else comes
+        assert!(tt.probe(deep).is_some());
+    }
+
+    #[test]
+    fn the_same_position_keeps_its_slot_and_its_move() {
+        let board = board(Board::STARTPOS);
+        let e4 = find_move(&board, "e2e4");
+        let mut tt = TranspositionTable::with_buckets(1);
+        let [_, other, _] = three_positions();
+
+        tt.store(board.hash(), 5, Score::new(30), Bound::Lower, Some(e4));
+        tt.store(other, 2, Score::DRAW, Bound::Exact, None);
+        // a fail low has no move, the one from before is still the best guess
+        tt.store(board.hash(), 6, Score::new(10), Bound::Upper, None);
+
+        let entry = tt.probe(board.hash()).unwrap();
+        assert_eq!((entry.depth, entry.bound), (6, Bound::Upper));
+        assert_eq!(entry.best_move, Some(e4));
+        assert!(tt.probe(other).is_some());
     }
 
     #[test]
