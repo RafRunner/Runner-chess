@@ -28,6 +28,9 @@ use crate::{
     zobrist::ZobristHash,
 };
 
+/// Nodes without a move from the table get a ply less from this depth on
+const IIR_MIN_DEPTH: u32 = 4;
+
 /// A search of one position, from `go` to `bestmove`. `'search` is how long it can use
 /// what it borrows from the engine: the table and the `stop` flag.
 pub struct Searcher<'search> {
@@ -134,6 +137,13 @@ impl<'search> Searcher<'search> {
             return score;
         }
         let tt_move = entry.and_then(|e| e.best_move);
+
+        // internal iterative reduction: without a move from the table, the order is a
+        // guess, and the node probably wasn't important before. A shallower search is
+        // cheaper, and leaves a move for the next iteration
+        if tt_move.is_none() && node.depth >= IIR_MIN_DEPTH {
+            node.depth -= 1;
+        }
 
         // in check it says nothing: every evasion has to be searched
         let in_check = node.board.is_in_check(node.board.side_to_move());
