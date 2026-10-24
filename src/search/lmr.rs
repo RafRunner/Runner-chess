@@ -44,8 +44,8 @@ impl Searcher<'_> {
         let reduce = if self.is_reducible(node, mv, move_idx, next) {
             let history = self.ordering.history_bonus(mv, node.board.side_to_move());
             // a ply more off the principal variation, whose moves are expected to fail
-            // low anyway, and a ply less when the line is improving
-            let extra = i32::from(!node.is_pv()) - i32::from(self.is_improving(node.ply));
+            // low anyway
+            let extra = i32::from(!node.is_pv());
             reduction(node.depth, move_idx, history, extra)
         } else {
             0

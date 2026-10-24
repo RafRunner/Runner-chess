@@ -26,14 +26,12 @@ const SEE_CAPTURE_MARGIN: i32 = 100;
 impl Searcher<'_> {
     /// The static eval is so far above beta that the few plies left can't bring it
     /// back down: the node fails high without searching a move. Never on the principal
-    /// variation, whose score has to be exact. When the line is improving, the eval is
-    /// less likely to drop, and a ply less of margin is enough
+    /// variation, whose score has to be exact
     pub(super) fn reverse_futility_pruning(
         node: NodeInfo<'_>,
         static_eval: Score,
-        improving: bool,
     ) -> Option<Score> {
-        let margin = RFP_MARGIN * (node.depth - u32::from(improving)) as i16;
+        let margin = RFP_MARGIN * node.depth as i16;
 
         (!node.is_pv()
             && node.depth <= RFP_MAX_DEPTH
@@ -50,12 +48,10 @@ impl Searcher<'_> {
 /// - futility pruning: the static eval is so far below alpha that a quiet move can't
 ///   make up for it in the plies left
 ///
-/// `static_eval` is `None` in check, where every evasion gets searched. When the line is
-/// not improving, half as many quiet moves get tried.
+/// `static_eval` is `None` in check, where every evasion gets searched.
 pub(super) fn prunes_quiet(
     node: NodeInfo<'_>,
     static_eval: Option<Score>,
-    improving: bool,
     best: Score,
     quiets_tried: usize,
     mv: Move,
@@ -71,7 +67,7 @@ pub(super) fn prunes_quiet(
         return false;
     }
 
-    let late = node.depth <= LMP_MAX_DEPTH && quiets_tried >= lmp_threshold(node.depth, improving);
+    let late = node.depth <= LMP_MAX_DEPTH && quiets_tried >= lmp_threshold(node.depth);
     let futile = node.depth <= FP_MAX_DEPTH
         && static_eval + FP_BASE + FP_MARGIN * node.depth as i16 <= node.alpha;
 
@@ -105,9 +101,8 @@ pub(super) fn prunes_by_see(
 }
 
 /// How many quiet moves a node `depth` plies deep tries before skipping the rest
-fn lmp_threshold(depth: u32, improving: bool) -> usize {
-    let threshold = 3 + (depth * depth) as usize;
-    if improving { threshold } else { threshold / 2 }
+fn lmp_threshold(depth: u32) -> usize {
+    3 + (depth * depth) as usize
 }
 
 #[cfg(test)]
@@ -124,14 +119,14 @@ mod tests {
         let mv = find_move(&board, "g1f3");
         let next = board.make_move(mv);
         let node = NodeInfo::new(&board, depth, 3, Score::new(alpha), Score::new(alpha + 1));
-        prunes_quiet(node, eval.map(Score::new), true, best, quiets, mv, &next)
+        prunes_quiet(node, eval.map(Score::new), best, quiets, mv, &next)
     }
 
     #[test]
     fn late_quiet_moves_get_skipped() {
         let best = Score::new(0);
-        assert!(!prunes(2, Some(0), 0, best, lmp_threshold(2, true) - 1));
-        assert!(prunes(2, Some(0), 0, best, lmp_threshold(2, true)));
+        assert!(!prunes(2, Some(0), 0, best, lmp_threshold(2) - 1));
+        assert!(prunes(2, Some(0), 0, best, lmp_threshold(2)));
         // too far from the horizon
         assert!(!prunes(LMP_MAX_DEPTH + 1, Some(0), 0, best, 1000));
     }
@@ -165,30 +160,10 @@ mod tests {
             let mv = find_move(&board, uci);
             let next = board.make_move(mv);
             assert!(
-                !prunes_quiet(node, eval, false, Score::new(0), 100, mv, &next),
+                !prunes_quiet(node, eval, Score::new(0), 100, mv, &next),
                 "{uci}"
             );
         }
-    }
-
-    #[test]
-    fn without_improving_fewer_quiet_moves_get_tried() {
-        for depth in 1..=LMP_MAX_DEPTH {
-            assert!(lmp_threshold(depth, false) < lmp_threshold(depth, true));
-            assert!(lmp_threshold(depth, false) >= 2);
-        }
-    }
-
-    #[test]
-    fn improving_needs_a_ply_less_of_margin_to_cut() {
-        let board = board(QUIET_FEN);
-        let node = NodeInfo::new(&board, 3, 3, Score::new(0), Score::new(1));
-        let eval = Score::new(i32::from(2 * RFP_MARGIN) + 1);
-        assert_eq!(Searcher::reverse_futility_pruning(node, eval, false), None);
-        assert_eq!(
-            Searcher::reverse_futility_pruning(node, eval, true),
-            Some(eval)
-        );
     }
 
     #[test]

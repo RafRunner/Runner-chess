@@ -49,8 +49,6 @@ pub struct Searcher<'search> {
     /// The index of the hash of the root position on the hashes vec
     root_index: usize,
     null_ply: Option<u32>, // the ply that passed, in the line being searched
-    /// The static eval of each ply of the line being searched, `None` in check
-    static_evals: Vec<Option<Score>>,
     /// The search ran out of budget or got stopped, and is on its way back to the root
     stopped: bool,
     /// Set from another thread when the GUI sends `stop`
@@ -75,7 +73,6 @@ impl<'search> Searcher<'search> {
             ordering,
             root_index: 0,
             null_ply: None,
-            static_evals: vec![None; Score::MAX_PLY as usize + 1],
             stopped: false,
             stop: None,
         }
@@ -155,11 +152,8 @@ impl<'search> Searcher<'search> {
             entry.map_or(eval, |entry| entry.refine(eval))
         });
 
-        self.static_evals[node.ply as usize] = static_eval;
-        let improving = self.is_improving(node.ply);
-
         if let Some(eval) = static_eval
-            && let Some(score) = Self::reverse_futility_pruning(node, eval, improving)
+            && let Some(score) = Self::reverse_futility_pruning(node, eval)
         {
             return score;
         }
@@ -184,8 +178,7 @@ impl<'search> Searcher<'search> {
         {
             has_legal_move = true;
 
-            let quiets = quiets_tried.len();
-            if futility::prunes_quiet(node, static_eval, improving, best, quiets, mv, &next)
+            if futility::prunes_quiet(node, static_eval, best, quiets_tried.len(), mv, &next)
                 || futility::prunes_by_see(node, in_check, best, mv, &next)
             {
                 continue;
@@ -322,21 +315,6 @@ impl<'search> Searcher<'search> {
     /// `node` has to be the current one, whose accumulators are on top
     fn evaluate(&self, node: NodeInfo<'_>) -> Score {
         eval::evaluate(node.board, self.current_accumulators())
-    }
-
-    /// The static eval at `ply` is better than at the last ply of the same side, so the
-    /// line is going its way: what looks bad here is less likely to stay so. A ply in
-    /// check has none, the one before is used instead, and without that either the
-    /// line counts as improving, which prunes less
-    fn is_improving(&self, ply: u32) -> bool {
-        let Some(eval) = self.static_evals[ply as usize] else {
-            return false;
-        };
-        let earlier = [2, 4]
-            .into_iter()
-            .filter_map(|back| ply.checked_sub(back))
-            .find_map(|earlier| self.static_evals[earlier as usize]);
-        earlier.is_none_or(|earlier| eval > earlier)
     }
 
     fn check_hard_budget(&mut self) -> bool {
