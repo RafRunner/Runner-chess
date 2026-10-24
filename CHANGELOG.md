@@ -8,6 +8,55 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## Unreleased
+
+### Added
+- Principal variation search: the first move of a node gets the whole window, the
+  others a null window, searched again only when they beat alpha.
+- Aspiration windows: from depth 4, each iteration starts 25 centipawns around the
+  score of the last one, and the side it falls out of opens wider each time.
+- Reverse futility pruning: up to depth 7 off the PV, a static eval 80 centipawns per
+  ply above beta fails high without searching.
+- Check extension: a move that gives check gets a ply more.
+- Futility pruning and late move pruning of the quiet moves that don't give check,
+  near the horizon.
+- Internal iterative reduction: from depth 4, a node without a move from the table
+  gets a ply less.
+- Static exchange evaluation: the quiescence skips the captures that lose material,
+  the main search tries them after the quiet moves, and near the horizon prunes the
+  moves that lose too much of it.
+
+### Changed
+- The static eval is computed once per node, and refined by the score of the table
+  when its bound says it's closer to the real value.
+- The table keeps two entries per slot, the deepest of the current search and the
+  latest of the rest. Entries of earlier searches give way to the new ones, and a
+  position stored again keeps its move when the new search has none. `Option<Move>`
+  takes 2 bytes, so an entry is still 16.
+- Null move pruning reduces `3 + depth / 3`, plus a ply for every 200 centipawns the
+  eval is above beta, up to 3, and no longer runs on the PV.
+- Late move reductions reduce a ply more off the PV.
+
+### Measured
+- Bench: 36356 (from 486750). At depth 10 the search visits 447867 nodes, against
+  10089419 for 0.9.0.
+- Strength, with a match runner of the session instead of `scripts/match.sh`, from
+  balanced 8-ply random openings, each played with both colors:
+  - +338 ± 45 Elo against 0.9.0 at 2+0.02, in 400 games (325 wins, 25 losses,
+    50 draws)
+  - +390 ± 111 Elo against 0.9.0 at 10+0.1, in 120 games (102 wins, 5 losses,
+    13 draws)
+- Each change against the one before, at 2+0.02, up to 600 games: PVS +54 ± 72
+  (only 52 games), RFP +70 ± 30 (SPRT passed), aspiration windows +20 ± 23, check
+  extension +16 ± 24, futility and late move pruning +40 ± 23, the refined static
+  eval +24 ± 24, SEE in the quiescence +84 ± 33 (SPRT passed), the table +111 ± 40
+  (SPRT passed), the order of losing captures +4 ± 24, SEE pruning +24 ± 23, null
+  move pruning -3 ± 24. Internal iterative reduction lost 97 ± 39 with the old table,
+  which lost the move of every node that failed low, and taking it out of the final
+  search loses 37 ± 24. An `improving` flag (the static eval against two plies
+  before) for RFP, LMP and LMR lost 58 ± 29, and was reverted. The extra reduction
+  off the PV was only measured together with it.
+
 ## 0.9.0 - 2026-10-23
 
 ### Changed
