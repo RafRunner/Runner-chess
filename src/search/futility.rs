@@ -17,6 +17,12 @@ const FP_MAX_DEPTH: u32 = 6;
 const FP_BASE: i16 = 100;
 const FP_MARGIN: i16 = 100;
 
+/// Moves get pruned by the exchange this close to the horizon, when they lose more than
+/// this much material for each ply left
+const SEE_MAX_DEPTH: u32 = 8;
+const SEE_QUIET_MARGIN: i32 = 60;
+const SEE_CAPTURE_MARGIN: i32 = 100;
+
 impl Searcher<'_> {
     /// The static eval is so far above beta that the few plies left can't bring it
     /// back down: the node fails high without searching a move. Never on the principal
@@ -70,6 +76,32 @@ pub(super) fn prunes_quiet(
         && static_eval + FP_BASE + FP_MARGIN * node.depth as i16 <= node.alpha;
 
     late || futile
+}
+
+/// A move, that doesn't give check, of a node not in check that already has a move that
+/// doesn't lose to a mate, which loses so much material in the exchange on its square
+/// (see [`Board::see`]) that the plies left are unlikely to win it back: a quiet move
+/// that leaves a piece where it can be taken, or a capture of something defended
+pub(super) fn prunes_by_see(
+    node: NodeInfo<'_>,
+    in_check: bool,
+    best: Score,
+    mv: Move,
+    next: &Board,
+) -> bool {
+    if node.ply == 0 || in_check || best <= -Score::MAX_EVAL || node.depth > SEE_MAX_DEPTH {
+        return false;
+    }
+    if mv.is_promotion() || next.is_in_check(next.side_to_move()) {
+        return false;
+    }
+
+    let margin = if mv.is_quiet() {
+        SEE_QUIET_MARGIN
+    } else {
+        SEE_CAPTURE_MARGIN
+    };
+    !node.board.see(mv, -margin * node.depth as i32)
 }
 
 /// How many quiet moves a node `depth` plies deep tries before skipping the rest
@@ -157,5 +189,28 @@ mod tests {
             Searcher::reverse_futility_pruning(node, eval, true),
             Some(eval)
         );
+    }
+
+    #[test]
+    fn moves_that_lose_too_much_material_get_skipped() {
+        let prunes = |fen: &str, uci: &str, depth: u32| {
+            let board = board(fen);
+            let mv = find_move(&board, uci);
+            let next = board.make_move(mv);
+            let node = NodeInfo::new(&board, depth, 3, Score::new(0), Score::new(1));
+            prunes_by_see(node, false, Score::new(0), mv, &next)
+        };
+
+        // Nf3 walks into exf3, Nh3 is safe
+        let fen = "4k3/8/8/8/4p3/8/8/4K1N1 w - - 0 1";
+        assert!(prunes(fen, "g1f3", 1));
+        assert!(!prunes(fen, "g1h3", 1));
+        // far from the horizon, the knight for nothing might still be worth it
+        assert!(!prunes(fen, "g1f3", 6));
+
+        // Qxd5 exd5: the queen for a pawn
+        let fen = "4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1";
+        assert!(prunes(fen, "d1d5", 4));
+        assert!(!prunes(fen, "d1d5", SEE_MAX_DEPTH + 1));
     }
 }

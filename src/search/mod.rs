@@ -185,7 +185,9 @@ impl<'search> Searcher<'search> {
             has_legal_move = true;
 
             let quiets = quiets_tried.len();
-            if futility::prunes_quiet(node, static_eval, improving, best, quiets, mv, &next) {
+            if futility::prunes_quiet(node, static_eval, improving, best, quiets, mv, &next)
+                || futility::prunes_by_see(node, in_check, best, mv, &next)
+            {
                 continue;
             }
 
