@@ -33,6 +33,8 @@ impl Searcher<'_> {
         self.root_index = history.len();
         self.push_hash(board.hash());
         self.accumulators.push(Accumulators::new(board));
+        // the root has no static eval of its own: its moves all get searched
+        self.static_evals[0] = None;
 
         let mut best_move = self
             .ordering
@@ -209,9 +211,9 @@ mod tests {
 
     #[test]
     fn an_interrupted_iteration_is_reported_as_a_lower_bound() {
-        // from the start, depth 1 takes 20 nodes and depth 2 ends at 88: 50 stops in the
+        // from the start, depth 1 takes 23 nodes and depth 2 ends at 49: 35 stops in the
         // middle of it, so its line can only say that the score is at least that much
-        let (_, out) = search_with_node_limit(Board::STARTPOS, 50);
+        let (_, out) = search_with_node_limit(Board::STARTPOS, 35);
         let lines: Vec<&str> = out.lines().collect();
 
         assert!(lines[0].starts_with("info depth 1 "), "{out}");
