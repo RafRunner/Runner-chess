@@ -34,6 +34,7 @@ impl<'board> NodeInfo<'board> {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn full_window(board: &'board Board, depth: u32, ply: u32) -> Self {
         Self::new(board, depth, ply, -Score::INF, Score::INF)
     }

@@ -13,6 +13,11 @@ use crate::{
     zobrist::ZobristHash,
 };
 
+/// Iterations from this depth on start from a window this wide on each side of the
+/// last score
+const ASPIRATION_DEPTH: u32 = 4;
+const ASPIRATION_DELTA: i16 = 25;
+
 impl Searcher<'_> {
     /// Searches within the budget and writes an `info` line about it to `out`.
     /// `history` has the positions of the game before `board`, oldest first, so the
@@ -36,28 +41,15 @@ impl Searcher<'_> {
             .map(|(mv, _)| mv);
 
         for depth in 1..=self.budget.depth {
-            let mut best_score = -Score::INF;
-            let mut root = NodeInfo::full_window(board, depth, 0);
-
-            for (idx, (mv, next)) in self.ordering.legal_ordered(board, 0, best_move).enumerate() {
-                let score = self.search_move(root, mv, idx, &next);
-
-                if self.stopped {
-                    break;
-                }
-
-                if root.update(&mut best_score, score) != Outcome::Worse {
-                    best_move = Some(mv);
-                }
-            }
-
-            self.print_info_line(out, depth, best_move, best_score)?;
+            let best_score = self.aspiration_search(board, depth, &mut best_move, out)?;
 
             if self.stopped {
                 break;
             }
             self.completed_depth = depth;
             self.completed_score = Some(best_score);
+            self.print_info_line(out, depth, best_move, best_score, "")?;
+
             if self.budget.soft.is_some_and(|soft| Instant::now() >= soft)
                 || self
                     .budget
@@ -66,10 +58,86 @@ impl Searcher<'_> {
             {
                 break;
             }
-            best_score = -Score::INF;
         }
 
         Ok(best_move)
+    }
+
+    /// The score of the root at `depth`, on a narrow window around the score of the last
+    /// iteration, which it rarely moves far from: much faster than the whole window when
+    /// it falls inside. When it doesn't, that side of the window opens wider and wider
+    /// until it does. A fail high already has a better move, `best_move` gets it
+    fn aspiration_search(
+        &mut self,
+        board: &Board,
+        depth: u32,
+        best_move: &mut Option<Move>,
+        out: &mut impl Write,
+    ) -> io::Result<Score> {
+        let mut delta = ASPIRATION_DELTA;
+        let (mut alpha, mut beta) = match self.completed_score {
+            Some(score) if depth >= ASPIRATION_DEPTH && !score.is_mate() => {
+                (score - delta, score + delta)
+            }
+            _ => (-Score::INF, Score::INF),
+        };
+
+        loop {
+            let score = self.search_window(board, depth, alpha, beta, best_move);
+
+            if self.stopped {
+                // only a move that beat alpha has a score to report, and it's at least that
+                if score > alpha {
+                    self.print_info_line(out, depth, *best_move, score, " lowerbound")?;
+                }
+                return Ok(score);
+            }
+            if score <= alpha && alpha > -Score::INF {
+                alpha = score - delta;
+            } else if score >= beta && beta < Score::INF {
+                beta = score + delta;
+                self.print_info_line(out, depth, *best_move, score, " lowerbound")?;
+            } else {
+                return Ok(score);
+            }
+            delta = delta.saturating_mul(2);
+        }
+    }
+
+    /// The score of the root at `depth` inside the window (alpha, beta), fail soft
+    fn search_window(
+        &mut self,
+        board: &Board,
+        depth: u32,
+        alpha: Score,
+        beta: Score,
+        best_move: &mut Option<Move>,
+    ) -> Score {
+        let mut best_score = -Score::INF;
+        let mut root = NodeInfo::new(board, depth, 0, alpha, beta);
+
+        for (idx, (mv, next)) in self
+            .ordering
+            .legal_ordered(board, 0, *best_move)
+            .enumerate()
+        {
+            let score = self.search_move(root, mv, idx, &next);
+
+            if self.stopped {
+                break;
+            }
+
+            match root.update(&mut best_score, score) {
+                Outcome::Worse => (),
+                Outcome::Raised => *best_move = Some(mv),
+                Outcome::Cut => {
+                    *best_move = Some(mv);
+                    break;
+                }
+            }
+        }
+
+        best_score
     }
 
     fn print_info_line(
@@ -78,6 +146,7 @@ impl Searcher<'_> {
         depth: u32,
         best_move: Option<Move>,
         best_score: Score,
+        bound: &str,
     ) -> io::Result<()> {
         if let Some(mv) = best_move
             && best_score > -Score::INF
@@ -85,9 +154,8 @@ impl Searcher<'_> {
             let elapsed = self.budget.start.elapsed();
             writeln!(
                 out,
-                "info depth {depth} score {}{} nodes {} seldepth {} nps {} time {} pv {mv}",
+                "info depth {depth} score {}{bound} nodes {} seldepth {} nps {} time {} pv {mv}",
                 best_score.to_uci(),
-                if self.stopped { " lowerbound" } else { "" },
                 self.nodes,
                 self.seldepth,
                 bench::nps(self.nodes, elapsed),
