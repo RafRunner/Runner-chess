@@ -17,7 +17,6 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
   score of the last one, and the side it falls out of opens wider each time.
 - Reverse futility pruning: up to depth 7 off the PV, a static eval 80 centipawns per
   ply above beta fails high without searching.
-- Check extension: a move that gives check gets a ply more.
 - Futility pruning and late move pruning of the quiet moves that don't give check,
   near the horizon.
 - Internal iterative reduction: from depth 4, a node without a move from the table
@@ -38,17 +37,19 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - Late move reductions reduce a ply more off the PV.
 
 ### Measured
-- Bench: 36356 (from 486750). At depth 10 the search visits 447867 nodes, against
+- Bench: 32662 (from 486750). At depth 10 the search visits 436636 nodes, against
   10089419 for 0.9.0.
 - Strength, with a match runner of the session instead of `scripts/match.sh`, from
-  balanced 8-ply random openings, each played with both colors:
+  balanced 8-ply random openings, each played with both colors, measured while the
+  search still had the check extension:
   - +338 ± 45 Elo against 0.9.0 at 2+0.02, in 400 games (325 wins, 25 losses,
     50 draws)
   - +390 ± 111 Elo against 0.9.0 at 10+0.1, in 120 games (102 wins, 5 losses,
     13 draws)
 - Each change against the one before, at 2+0.02, up to 600 games: PVS +54 ± 72
-  (only 52 games), RFP +70 ± 30 (SPRT passed), aspiration windows +20 ± 23, check
-  extension +16 ± 24, futility and late move pruning +40 ± 23, the refined static
+  (only 52 games), RFP +70 ± 30 (SPRT passed), aspiration windows +20 ± 23, a check
+  extension +16 ± 24 (taken out afterwards: it never measured better than neutral),
+  futility and late move pruning +40 ± 23, the refined static
   eval +24 ± 24, SEE in the quiescence +84 ± 33 (SPRT passed), the table +111 ± 40
   (SPRT passed), the order of losing captures +4 ± 24, SEE pruning +24 ± 23, null
   move pruning -3 ± 24. Internal iterative reduction lost 97 ± 39 with the old table,

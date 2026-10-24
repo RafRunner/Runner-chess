@@ -29,14 +29,6 @@ impl Searcher<'_> {
         move_idx: usize,
         next: &Board,
     ) -> Score {
-        // a check gets searched a ply deeper: it often hides a tactic, and the evasions
-        // are few
-        let extension = u32::from(next.is_in_check(next.side_to_move()));
-        let node = NodeInfo {
-            depth: node.depth + extension,
-            ..node
-        };
-
         if move_idx == 0 {
             return self.search_child(node.board, node.child(next), Some(mv));
         }

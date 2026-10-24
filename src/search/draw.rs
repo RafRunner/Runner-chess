@@ -74,10 +74,19 @@ mod tests {
 
     #[test]
     fn perpetual_check_saves_the_lost_side() {
-        // White is lost, but Qe8+ Kh7 Qh5+ Kg8 Qe8+ repeats, which depth 5 reaches
+        // White is lost, but Qe8+ Kh7 Qh5+ Kg8 Qe8+ repeats, which the iterations reach
+        // by depth 5. A single search of depth 5 doesn't: without moves from the table,
+        // every node of it gets a ply less
         for fen in both_colors("6k1/rr4p1/8/8/8/8/ppp1Q1PP/7K w - - 0 1") {
             assert!(static_eval(&board(&fen)) < Score::new(-100), "{fen}");
-            assert_eq!(score(&fen, 5), Score::DRAW, "{fen}");
+
+            let mut tt = TranspositionTable::new(1);
+            let mut ordering = MoveOrdering::new();
+            let mut searcher = Searcher::new(Budget::depth(Some(5)), &mut tt, &mut ordering);
+            searcher
+                .search_root(&board(&fen), &[], &mut std::io::sink())
+                .unwrap();
+            assert_eq!(searcher.score(), Some(Score::DRAW), "{fen}");
         }
     }
 
