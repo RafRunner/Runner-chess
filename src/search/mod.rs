@@ -1,4 +1,5 @@
 mod draw;
+mod futility;
 mod limits;
 mod lmr;
 mod node;
@@ -134,10 +135,20 @@ impl<'search> Searcher<'search> {
         }
         let tt_move = entry.and_then(|e| e.best_move);
 
+        // in check it says nothing: every evasion has to be searched
+        let in_check = node.board.is_in_check(node.board.side_to_move());
+        let static_eval = (!in_check).then(|| self.evaluate(node));
+
+        if let Some(eval) = static_eval
+            && let Some(score) = Self::reverse_futility_pruning(node, eval)
+        {
+            return score;
+        }
+
         // the table says the value is at most something below beta: passing won't get there
         let below_beta =
             entry.is_some_and(|e| e.bound == Bound::Upper && e.score.from_tt(node.ply) < node.beta);
-        if !below_beta && let Some(null_cut) = self.null_move_pruning(node) {
+        if !below_beta && let Some(null_cut) = self.null_move_pruning(node, static_eval) {
             return null_cut;
         }
 
@@ -177,7 +188,7 @@ impl<'search> Searcher<'search> {
         }
 
         if !has_legal_move {
-            best = if node.board.is_in_check(node.board.side_to_move()) {
+            best = if in_check {
                 Score::mated_in(node.ply)
             } else {
                 Score::DRAW

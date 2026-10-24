@@ -5,16 +5,20 @@ use crate::{
 
 impl Searcher<'_> {
     /// The side to move is so far ahead that even passing the turn
-    /// keeps it above beta: a shallower search confirms it
-    pub(super) fn null_move_pruning(&mut self, node: NodeInfo<'_>) -> Option<Score> {
+    /// keeps it above beta: a shallower search confirms it. `static_eval` is `None` in
+    /// check, where passing is illegal
+    pub(super) fn null_move_pruning(
+        &mut self,
+        node: NodeInfo<'_>,
+        static_eval: Option<Score>,
+    ) -> Option<Score> {
         let board = node.board;
 
         if node.ply > 0
             && node.depth >= 3
             && self.null_ply != Some(node.ply - 1)
-            && !board.is_in_check(board.side_to_move())
             && board.has_non_pawn_material(board.side_to_move()) // zugzwang protection
-            && self.evaluate(node) >= node.beta
+            && static_eval.is_some_and(|eval| eval >= node.beta)
         {
             let reduce = 2 + node.depth / 4;
             let null = board.make_null_move();

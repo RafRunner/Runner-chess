@@ -66,6 +66,12 @@ impl<'board> NodeInfo<'board> {
         }
     }
 
+    /// A node whose exact score matters, on the principal variation: the others only
+    /// have to tell whether they beat a null window (alpha, alpha + 1)
+    pub(super) fn is_pv(&self) -> bool {
+        self.beta > self.alpha + 1
+    }
+
     /// Takes the score of a move into the node: the best so far, and the window
     pub(super) fn update(&mut self, best: &mut Score, score: Score) -> Outcome {
         if score > *best {
