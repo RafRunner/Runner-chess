@@ -8,6 +8,29 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 0.9.2 - 2026-10-24
+
+### Changed
+- A new network of the same shape, `nets/net-003.bin`: trained on 30 million positions
+  of 0.9.1's games against itself, 30 passes. Its output is divided by 1.5, since it
+  gives about 1.5 times the scores it learned from.
+
+### Added
+- `datagen --book <epd>`: every game starts from a random position of the book and 1
+  or 2 random moves, instead of 8 or 9 random moves from the starting position.
+
+### Measured
+- Bench: 469750 (from 486750).
+- Validation: a loss of 0.0549 on 1 million positions of 0.9.1's games it didn't
+  train on, against 0.0617 for net-002.
+- Strength: +177 ± 45 Elo against 0.9.1 at 10+0.1, SPRT [0, 10] passed in 238 games
+  (155 wins, 43 losses, 40 draws).
+- Against Stockfish 19 with `UCI_Elo` 2600, at 60+0.6 on `8moves_v3.pgn`: +76 ± 46
+  Elo in 200 games (111 wins, 68 losses, 21 draws), about 2675 on Stockfish's scale,
+  which was calibrated at 120+1 on the same book.
+- Bishop and knight against a lone king evaluate at about +0.8, since 0.9.1 almost
+  never won them: 0.4% of the 75 thousand such positions in its games.
+
 ## 0.9.1 - 2026-10-23
 
 ### Changed
