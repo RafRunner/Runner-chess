@@ -1,6 +1,7 @@
 pub mod make_move;
 pub mod movegen;
 pub mod perft;
+mod see;
 use std::fmt::{Display, Formatter};
 
 use crate::{

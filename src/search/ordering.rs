@@ -80,31 +80,39 @@ impl MoveOrdering {
         ply: u32,
         first: Option<Move>,
     ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        let moves = board.generate_moves();
-        self.ordered_moves(moves, board, ply, first)
+        let moves = self.sorted(board.generate_moves(), board, ply, first);
+        Self::made(moves.into_iter(), board)
     }
 
-    pub(super) fn captures_ordered<'board>(
+    /// The captures that don't lose material in the exchange (see [`Board::see`]): the
+    /// others won't improve on standing pat. Checked only as they come, since a cutoff
+    /// often leaves the later ones unsearched
+    pub(super) fn winning_captures_ordered<'board>(
         &self,
         board: &'board Board,
     ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        let moves = board.generate_captures();
-        self.ordered_moves(moves, board, 0, None)
+        let moves = self.sorted(board.generate_captures(), board, 0, None);
+        Self::made(moves.into_iter().filter(|&mv| board.see(mv, 0)), board)
     }
 
     /// Possibly strong moves come first
-    fn ordered_moves<'board>(
+    fn sorted(
         &self,
         mut moves: Vec<Move>,
-        board: &'board Board,
+        board: &Board,
         ply: u32,
         first: Option<Move>,
-    ) -> impl Iterator<Item = (Move, Board)> + 'board {
+    ) -> Vec<Move> {
         moves.sort_by_cached_key(|&mv| Reverse(self.move_sort_key(board, ply, mv, first)));
-
         moves
-            .into_iter()
-            .filter_map(move |mv| board.make_legal_move(mv).map(|next| (mv, next)))
+    }
+
+    /// The legal ones of `moves`, made on `board`
+    fn made<'board>(
+        moves: impl Iterator<Item = Move> + 'board,
+        board: &'board Board,
+    ) -> impl Iterator<Item = (Move, Board)> + 'board {
+        moves.filter_map(move |mv| board.make_legal_move(mv).map(|next| (mv, next)))
     }
 
     fn update_history(&mut self, color: Color, mv: Move, bonus: i32) {
@@ -336,15 +344,16 @@ mod tests {
     }
 
     #[test]
-    fn quiescence_gets_only_the_captures_in_the_same_order() {
+    fn quiescence_gets_only_the_winning_captures_in_the_same_order() {
         for fen in PERFT_POSITIONS {
+            let board = board(fen);
             let captures: Vec<Move> = MoveOrdering::new()
-                .captures_ordered(&board(fen))
+                .winning_captures_ordered(&board)
                 .map(|(mv, _)| mv)
                 .collect();
             let expected: Vec<Move> = ordered(fen)
                 .into_iter()
-                .filter(|mv| mv.is_capture())
+                .filter(|&mv| mv.is_capture() && board.see(mv, 0))
                 .collect();
 
             assert_eq!(captures, expected, "{fen}");

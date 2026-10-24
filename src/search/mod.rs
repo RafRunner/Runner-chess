@@ -258,7 +258,7 @@ impl<'search> Searcher<'search> {
 
         let mut best = static_eval;
 
-        for (mv, next) in self.ordering.captures_ordered(node.board) {
+        for (mv, next) in self.ordering.winning_captures_ordered(node.board) {
             let score = self.quiescence_child(node.board, node.child(&next), mv);
 
             if self.stopped {

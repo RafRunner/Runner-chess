@@ -330,9 +330,9 @@ mod tests {
         let out = output(Board::STARTPOS, 1);
         assert_eq!(info_field(&out, "seldepth"), 1, "{out}");
 
-        // Nxd5 exd5 Rxd5 Nxd5: an exchange with no checks, so only the captures of
+        // Nxd5 Nxd5 Rxd5: an exchange with no checks, so only the captures of
         // quiescence can take the search past the depth
-        let out = output("7k/7p/4pn2/3p4/8/2N5/8/K2R4 w - - 0 1", 1);
+        let out = output("7k/7p/5n2/3p4/8/2N5/8/K2R4 w - - 0 1", 1);
         assert!(info_field(&out, "seldepth") >= 3, "{out}");
     }
 
