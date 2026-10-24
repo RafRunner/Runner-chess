@@ -137,7 +137,10 @@ impl<'search> Searcher<'search> {
 
         // in check it says nothing: every evasion has to be searched
         let in_check = node.board.is_in_check(node.board.side_to_move());
-        let static_eval = (!in_check).then(|| self.evaluate(node));
+        let static_eval = (!in_check).then(|| {
+            let eval = self.evaluate(node);
+            entry.map_or(eval, |entry| entry.refine(eval))
+        });
 
         if let Some(eval) = static_eval
             && let Some(score) = Self::reverse_futility_pruning(node, eval)

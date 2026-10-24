@@ -64,6 +64,23 @@ impl Entry {
     }
 }
 
+impl Entry {
+    /// The static eval of the position, made closer to its real value by the score of
+    /// the entry, a search of it, where the bound says which side it's on. A mate is
+    /// left out: it is counted from where it was stored, and nothing to prune on
+    pub fn refine(self, static_eval: Score) -> Score {
+        if self.score.is_mate() {
+            return static_eval;
+        }
+        let closer = match self.bound {
+            Bound::Exact => true,
+            Bound::Lower => self.score > static_eval,
+            Bound::Upper => self.score < static_eval,
+        };
+        if closer { self.score } else { static_eval }
+    }
+}
+
 pub struct TranspositionTable {
     entries: Vec<Option<Entry>>, // any length: the index scales the hash to it
 }
@@ -220,5 +237,30 @@ mod tests {
         assert_eq!(Bound::new(Score::new(10), alpha, beta), Bound::Exact);
         assert_eq!(Bound::new(alpha, alpha, beta), Bound::Upper);
         assert_eq!(Bound::new(Score::new(-80), alpha, beta), Bound::Upper);
+    }
+
+    #[test]
+    fn the_bound_says_when_the_score_refines_the_static_eval() {
+        let refine = |bound, score: i32, eval: i32| {
+            let entry = Entry::new(ZobristHash::empty(), 5, Score::new(score), bound, None);
+            entry.refine(Score::new(eval))
+        };
+
+        assert_eq!(refine(Bound::Exact, 50, 10), Score::new(50));
+        // at least 50: closer than an eval below it, not than one above
+        assert_eq!(refine(Bound::Lower, 50, 10), Score::new(50));
+        assert_eq!(refine(Bound::Lower, 50, 90), Score::new(90));
+        // at most 50: the other way around
+        assert_eq!(refine(Bound::Upper, 50, 10), Score::new(10));
+        assert_eq!(refine(Bound::Upper, 50, 90), Score::new(50));
+
+        let mate = Entry::new(
+            ZobristHash::empty(),
+            5,
+            Score::mate_in(3),
+            Bound::Exact,
+            None,
+        );
+        assert_eq!(mate.refine(Score::new(10)), Score::new(10));
     }
 }
