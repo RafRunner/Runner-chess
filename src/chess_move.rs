@@ -147,6 +147,10 @@ impl Move {
         Self(raw)
     }
 
+    pub const fn from_raw(raw: u16) -> Self {
+        Self(raw)
+    }
+
     pub const fn from(self) -> Square {
         Square::new((self.0 & Self::MOVE_MASK) as u8)
     }
@@ -189,6 +193,10 @@ impl Move {
 
     pub const fn is_quiet(self) -> bool {
         !self.is_capture() && !self.is_promotion()
+    }
+
+    pub const fn raw(self) -> u16 {
+        self.0
     }
 
     pub fn to_uci(self) -> String {
