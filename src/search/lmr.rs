@@ -16,42 +16,51 @@ pub(super) const FULL_DEPTH_MOVES: usize = 5;
 const TABLE_MOVES: usize = 256;
 
 impl Searcher<'_> {
-    pub(super) fn lmr_search(
+    /// The score of `mv`, the move at `move_idx` of `node`, with a principal variation
+    /// search: the first move is expected to be the best, so it gets the whole window,
+    /// and the others only have to show that they don't beat it, on a null window
+    /// (alpha, alpha + 1), which cuts much more. Late quiet moves are also expected to
+    /// be bad, so they try that on less depth first. Whatever beats alpha gets searched
+    /// again, on full depth and then on the whole window, for its real score.
+    pub(super) fn search_move(
         &mut self,
         node: NodeInfo,
         mv: Move,
         move_idx: usize,
         next: &Board,
     ) -> Score {
-        // most moves get the full depth, only late quiet ones get reduced
-        if node.ply == 0
-            || node.depth < MIN_DEPTH
-            || move_idx < FULL_DEPTH_MOVES
-            || !mv.is_quiet()
-            || self.ordering.is_killer(mv, node.ply)
-            || node.board.is_in_check(node.board.side_to_move())
-            || next.is_in_check(next.side_to_move())
-        {
-            self.search_child(node.board, node.child(next), Some(mv))
-        } else {
-            let history = self.ordering.history_bonus(mv, node.board.side_to_move());
-            let reduce = reduction(node.depth, move_idx, history);
-            // check if the move is promising on a smaller window and depth
-            let hypothesis = self.search_child(
-                node.board,
-                node.scout_child(next, reduce, -node.alpha - 1),
-                Some(mv),
-            );
-
-            if hypothesis > node.alpha {
-                // we need to search with a full window and depth
-                self.search_child(node.board, node.child(next), Some(mv))
-            } else {
-                // the reduced search says it doesn't beat alpha: we bet a full one wouldn't either.
-                // Only this side is trusted, a fail high always gets searched again
-                hypothesis
-            }
+        if move_idx == 0 {
+            return self.search_child(node.board, node.child(next), Some(mv));
         }
+
+        let reduce = if self.is_reducible(node, mv, move_idx, next) {
+            let history = self.ordering.history_bonus(mv, node.board.side_to_move());
+            reduction(node.depth, move_idx, history)
+        } else {
+            0
+        };
+        let null_window = |reduce| node.scout_child(next, reduce, -node.alpha - 1);
+
+        let mut score = self.search_child(node.board, null_window(reduce), Some(mv));
+        if score > node.alpha && reduce > 0 {
+            score = self.search_child(node.board, null_window(0), Some(mv));
+        }
+        // in a null window node beta is alpha + 1, and this is already the real score
+        if score > node.alpha && score < node.beta {
+            score = self.search_child(node.board, node.child(next), Some(mv));
+        }
+        score
+    }
+
+    /// Most moves get the full depth, only late quiet ones get reduced
+    fn is_reducible(&self, node: NodeInfo, mv: Move, move_idx: usize, next: &Board) -> bool {
+        node.ply > 0
+            && node.depth >= MIN_DEPTH
+            && move_idx >= FULL_DEPTH_MOVES
+            && mv.is_quiet()
+            && !self.ordering.is_killer(mv, node.ply)
+            && !node.board.is_in_check(node.board.side_to_move())
+            && !next.is_in_check(next.side_to_move())
     }
 }
 

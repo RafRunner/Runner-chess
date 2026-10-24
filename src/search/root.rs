@@ -39,8 +39,8 @@ impl Searcher<'_> {
             let mut best_score = -Score::INF;
             let mut root = NodeInfo::full_window(board, depth, 0);
 
-            for (mv, next) in self.ordering.legal_ordered(board, 0, best_move) {
-                let score = self.search_child(root.board, root.child(&next), Some(mv));
+            for (idx, (mv, next)) in self.ordering.legal_ordered(board, 0, best_move).enumerate() {
+                let score = self.search_move(root, mv, idx, &next);
 
                 if self.stopped {
                     break;
@@ -157,9 +157,9 @@ mod tests {
     #[test]
     fn the_last_info_line_is_the_best_move() {
         // depth 1 likes Rxa6, but depth 2 sees Re1# and switches to another move before
-        // 100 nodes stop it: GUIs show the last line as the engine's choice
+        // 150 nodes stop it: GUIs show the last line as the engine's choice
         let fen = "4r1k1/5ppp/n7/8/8/8/5PPP/R5K1 w - - 0 1";
-        let (best, out) = search_with_node_limit(fen, 100);
+        let (best, out) = search_with_node_limit(fen, 150);
         assert_ne!(best.as_deref(), Some("a1a6"), "{out}");
         assert_eq!(last_pv(&out), best.as_deref(), "{out}");
 

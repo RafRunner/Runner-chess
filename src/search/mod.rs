@@ -154,7 +154,7 @@ impl<'search> Searcher<'search> {
         {
             has_legal_move = true;
 
-            let score = self.lmr_search(node, mv, idx, &next);
+            let score = self.search_move(node, mv, idx, &next);
 
             if self.stopped {
                 break;
