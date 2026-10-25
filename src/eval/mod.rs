@@ -4,15 +4,15 @@ pub use nnue::Accumulators;
 
 use crate::{bitboard::BitBoard, board::Board, piece::PieceKind, score::Score};
 
-/// net-002 gives about twice the scores it learned from, as it mostly predicts results
-const NETWORK_INFLATION: i32 = 2;
+/// net-003 gives about 1.5x the scores it learned from, as it mostly predicts results
+const NETWORK_INFLATION: i32 = 150;
 
 /// For the side to move: the network, except in dead positions
 pub fn evaluate(board: &Board, accumulators: &Accumulators) -> Score {
     if is_dead_position(board) {
         return Score::DRAW;
     }
-    Score::new(accumulators.evaluate(board.side_to_move()) / NETWORK_INFLATION)
+    Score::new(accumulators.evaluate(board.side_to_move()) * 100 / NETWORK_INFLATION)
 }
 
 /// No sequence of legal moves can end in mate: besides the kings, at most one minor

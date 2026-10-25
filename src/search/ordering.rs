@@ -1,5 +1,3 @@
-use std::cmp::Reverse;
-
 use crate::{
     board::Board,
     chess_move::{Move, MoveKind, PromotionPiece},
@@ -12,6 +10,8 @@ pub struct MoveOrdering {
     killers: [[Option<Move>; 2]; Score::MAX_PLY as usize],
     // History is 34 KB. When moving this struct to UCI, wrap inside a box to avoid copying
     history: [[[i32; 64]; 64]; 2],
+    // helper vector to speed up ordering
+    keys: Vec<u64>,
 }
 
 impl MoveOrdering {
@@ -30,6 +30,7 @@ impl MoveOrdering {
         Self {
             killers: [[None; 2]; Score::MAX_PLY as usize],
             history: [[[0; 64]; 64]; 2],
+            keys: Vec::with_capacity(256),
         }
     }
 
@@ -77,7 +78,7 @@ impl MoveOrdering {
     }
 
     pub(super) fn legal_ordered<'board>(
-        &self,
+        &mut self,
         board: &'board Board,
         ply: u32,
         first: Option<Move>,
@@ -90,7 +91,7 @@ impl MoveOrdering {
     /// others won't improve on standing pat. Checked only as they come, since a cutoff
     /// often leaves the later ones unsearched
     pub(super) fn winning_captures_ordered<'board>(
-        &self,
+        &mut self,
         board: &'board Board,
     ) -> impl Iterator<Item = (Move, Board)> + 'board {
         let moves = self.sorted(board.generate_captures(), board, 0, None);
@@ -99,13 +100,27 @@ impl MoveOrdering {
 
     /// Possibly strong moves come first
     fn sorted(
-        &self,
+        &mut self,
         mut moves: Vec<Move>,
         board: &Board,
         ply: u32,
         first: Option<Move>,
     ) -> Vec<Move> {
-        moves.sort_by_cached_key(|&mv| Reverse(self.move_sort_key(board, ply, mv, first)));
+        self.keys.clear();
+
+        // sorting u64 is a lot faster and avoids allocations and swaps in a (Move, Board) vec
+        for (i, &mv) in moves.iter().enumerate() {
+            let key = self.move_sort_key(board, ply, mv, first);
+            // i32 -> u32 keeping the order
+            let inverted = !((key as u32) ^ 0x8000_0000);
+            self.keys
+                .push((u64::from(inverted) << 32) | ((i as u64) << 16) | u64::from(mv.raw()));
+        }
+        self.keys.sort_unstable();
+        for (mv, &key) in moves.iter_mut().zip(self.keys.iter()) {
+            *mv = Move::from_raw(key as u16); // the low 16 bits is the move
+        }
+
         moves
     }
 
@@ -188,7 +203,7 @@ mod tests {
     /// The legal moves of `fen` in the order the search tries them at `ply`, with `first`
     /// (the move from the TT) put before the others.
     fn ordered_with(
-        ordering: &MoveOrdering,
+        ordering: &mut MoveOrdering,
         fen: &str,
         ply: u32,
         first: Option<Move>,
@@ -206,7 +221,7 @@ mod tests {
 
     /// The same, with `first` put before the others.
     fn ordered_after(fen: &str, first: Option<Move>) -> Vec<Move> {
-        ordered_with(&MoveOrdering::new(), fen, 0, first)
+        ordered_with(&mut MoveOrdering::new(), fen, 0, first)
     }
 
     fn ordered_uci(fen: &str) -> Vec<String> {
@@ -381,7 +396,7 @@ mod tests {
         let mut ordering = MoveOrdering::new();
         cut(&mut ordering, KIWIPETE, &killer, 3, 1, &[]);
 
-        let moves = ordered_with(&ordering, KIWIPETE, 3, None);
+        let moves = ordered_with(&mut ordering, KIWIPETE, 3, None);
         assert_noisy_first(&board(KIWIPETE), &moves);
         assert_eq!(quiets(&moves)[0], killer, "{moves:?}");
     }
@@ -394,7 +409,7 @@ mod tests {
         let mut ordering = MoveOrdering::new();
         cut(&mut ordering, KIWIPETE, &killer, 3, 1, &[]);
 
-        let moves = ordered_with(&ordering, KIWIPETE, 3, Some(tt_move));
+        let moves = ordered_with(&mut ordering, KIWIPETE, 3, Some(tt_move));
         assert_eq!(moves[0], tt_move, "{moves:?}");
         assert_noisy_first(&board(KIWIPETE), &moves[1..]);
         assert_eq!(quiets(&moves[1..])[0], killer, "{moves:?}");
@@ -409,10 +424,10 @@ mod tests {
         cut(&mut ordering, KIWIPETE, &killer, 3, 1, &[]);
         cut(&mut ordering, KIWIPETE, &strong, 9, 10, &[]);
 
-        let at_3 = quiets(&ordered_with(&ordering, KIWIPETE, 3, None));
+        let at_3 = quiets(&ordered_with(&mut ordering, KIWIPETE, 3, None));
         assert_eq!(at_3[..2], [killer.as_str(), strong.as_str()], "{at_3:?}");
 
-        let at_4 = quiets(&ordered_with(&ordering, KIWIPETE, 4, None));
+        let at_4 = quiets(&ordered_with(&mut ordering, KIWIPETE, 4, None));
         assert_eq!(at_4[..2], [strong.as_str(), killer.as_str()], "{at_4:?}");
     }
 
@@ -432,7 +447,7 @@ mod tests {
             cut(&mut ordering, KIWIPETE, mv, 2, 1, &[]);
         }
 
-        let moves = quiets(&ordered_with(&ordering, KIWIPETE, 2, None));
+        let moves = quiets(&ordered_with(&mut ordering, KIWIPETE, 2, None));
         assert_eq!(
             moves[..4],
             [c.as_str(), b.as_str(), strong.as_str(), a.as_str()],
@@ -451,7 +466,7 @@ mod tests {
             cut(&mut ordering, KIWIPETE, mv, 2, 1, &[]);
         }
 
-        let moves = quiets(&ordered_with(&ordering, KIWIPETE, 2, None));
+        let moves = quiets(&ordered_with(&mut ordering, KIWIPETE, 2, None));
         assert_eq!(
             moves[..3],
             [b.as_str(), a.as_str(), strong.as_str()],
@@ -467,7 +482,7 @@ mod tests {
         let mut ordering = MoveOrdering::new();
         cut(&mut ordering, KIWIPETE, &killer, ply, 1, &[]);
 
-        let moves = quiets(&ordered_with(&ordering, KIWIPETE, ply, None));
+        let moves = quiets(&ordered_with(&mut ordering, KIWIPETE, ply, None));
         assert_eq!(moves[0], killer, "{moves:?}");
     }
 
@@ -477,12 +492,12 @@ mod tests {
         let promotion = "4k3/1P6/8/8/8/8/8/4K3 w - - 0 1";
         for (fen, noisy) in [(KIWIPETE, "e5f7"), (promotion, "b7b8n")] {
             let mut ordering = MoveOrdering::new();
-            let before = ordered_with(&ordering, fen, 3, None);
+            let before = ordered_with(&mut ordering, fen, 3, None);
             cut(&mut ordering, fen, noisy, 3, 10, &[]);
 
             for ply in [0, 3] {
                 assert_eq!(
-                    ordered_with(&ordering, fen, ply, None),
+                    ordered_with(&mut ordering, fen, ply, None),
                     before,
                     "{fen} {noisy}"
                 );
@@ -502,7 +517,7 @@ mod tests {
             cut(&mut ordering, KIWIPETE, noisy, 3, 1, &[]);
         }
 
-        let moves = quiets(&ordered_with(&ordering, KIWIPETE, 3, None));
+        let moves = quiets(&ordered_with(&mut ordering, KIWIPETE, 3, None));
         assert_eq!(moves[..2], [killer.as_str(), strong.as_str()], "{moves:?}");
     }
 
@@ -516,7 +531,7 @@ mod tests {
 
         // plies where it isn't a killer
         for ply in [0, 1, 8, 10] {
-            let moves = ordered_with(&ordering, KIWIPETE, ply, None);
+            let moves = ordered_with(&mut ordering, KIWIPETE, ply, None);
             assert_noisy_first(&board(KIWIPETE), &moves);
             assert_eq!(quiets(&moves)[0], late, "ply {ply}: {moves:?}");
         }
@@ -531,7 +546,7 @@ mod tests {
         cut(&mut ordering, KIWIPETE, shallow, 9, 2, &[]);
         cut(&mut ordering, KIWIPETE, deep, 9, 8, &[]);
 
-        let moves = quiets(&ordered_with(&ordering, KIWIPETE, 0, None));
+        let moves = quiets(&ordered_with(&mut ordering, KIWIPETE, 0, None));
         assert!(
             index_of(&moves, deep) < index_of(&moves, shallow),
             "{moves:?}"
@@ -545,7 +560,7 @@ mod tests {
         let mut ordering = MoveOrdering::new();
         cut(&mut ordering, KIWIPETE, cutter, 9, 4, &[tried.as_str()]);
 
-        let moves = quiets(&ordered_with(&ordering, KIWIPETE, 0, None));
+        let moves = quiets(&ordered_with(&mut ordering, KIWIPETE, 0, None));
         assert_eq!(moves.first(), Some(cutter), "{moves:?}");
         assert_eq!(moves.last(), Some(tried), "{moves:?}");
     }
@@ -570,13 +585,13 @@ mod tests {
             );
         }
 
-        let at_0 = ordered_with(&ordering, KIWIPETE, 0, None);
+        let at_0 = ordered_with(&mut ordering, KIWIPETE, 0, None);
         assert_noisy_first(&kiwipete, &at_0);
         let quiets_at_0 = quiets(&at_0);
         assert_eq!(quiets_at_0.first(), Some(&pushed), "{quiets_at_0:?}");
         assert_eq!(quiets_at_0.last(), Some(&pulled), "{quiets_at_0:?}");
 
-        let at_3 = ordered_with(&ordering, KIWIPETE, 3, None);
+        let at_3 = ordered_with(&mut ordering, KIWIPETE, 3, None);
         assert_noisy_first(&kiwipete, &at_3);
         assert_eq!(
             quiets(&at_3)[..2],
@@ -595,7 +610,10 @@ mod tests {
         let mut ordering = MoveOrdering::new();
         cut(&mut ordering, white, &late, 9, 10, &[]);
 
-        assert_eq!(quiets(&ordered_with(&ordering, white, 0, None))[0], late);
-        assert_eq!(ordered_with(&ordering, black, 0, None), before);
+        assert_eq!(
+            quiets(&ordered_with(&mut ordering, white, 0, None))[0],
+            late
+        );
+        assert_eq!(ordered_with(&mut ordering, black, 0, None), before);
     }
 }

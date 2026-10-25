@@ -154,6 +154,14 @@ impl Move {
         }
     }
 
+    /// The move `raw` holds, as [`Move::raw`] gives it
+    pub const fn from_raw(raw: u16) -> Self {
+        match NonZeroU16::new(raw) {
+            Some(raw) => Self(raw),
+            None => panic!("no move is 0"),
+        }
+    }
+
     pub const fn from(self) -> Square {
         Square::new((self.0.get() & Self::MOVE_MASK) as u8)
     }
@@ -196,6 +204,10 @@ impl Move {
 
     pub const fn is_quiet(self) -> bool {
         !self.is_capture() && !self.is_promotion()
+    }
+
+    pub const fn raw(self) -> u16 {
+        self.0.get()
     }
 
     pub fn to_uci(self) -> String {

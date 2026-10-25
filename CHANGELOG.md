@@ -37,17 +37,16 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - Late move reductions reduce a ply more off the PV.
 
 ### Measured
-- Bench: 32662 (from 486750). At depth 10 the search visits 436636 nodes, against
-  10089419 for 0.9.0.
+- Bench: 33554 (from 469750). At depth 10 the search visits 287457 nodes, against
+  10410916 for 0.9.2.
 - Strength, with a match runner of the session instead of `scripts/match.sh`, from
-  balanced 8-ply random openings, each played with both colors, measured while the
-  search still had the check extension:
-  - +338 ± 45 Elo against 0.9.0 at 2+0.02, in 400 games (325 wins, 25 losses,
-    50 draws)
-  - +390 ± 111 Elo against 0.9.0 at 10+0.1, in 120 games (102 wins, 5 losses,
-    13 draws)
-- Each change against the one before, at 2+0.02, up to 600 games: PVS +54 ± 72
-  (only 52 games), RFP +70 ± 30 (SPRT passed), aspiration windows +20 ± 23, a check
+  balanced 8-ply random openings, each played with both colors:
+  - +357 ± 49 Elo against 0.9.2 at 2+0.02, in 400 games (336 wins, 27 losses,
+    37 draws)
+  - before net-003, and while the search still had the check extension: +338 ± 45
+    Elo against 0.9.0 at 2+0.02, in 400 games, and +390 ± 111 at 10+0.1, in 120
+- Each change against the one before, with net-002, at 2+0.02, up to 600 games:
+  PVS +54 ± 72 (only 52 games), RFP +70 ± 30 (SPRT passed), aspiration windows +20 ± 23, a check
   extension +16 ± 24 (taken out afterwards: it never measured better than neutral),
   futility and late move pruning +40 ± 23, the refined static
   eval +24 ± 24, SEE in the quiescence +84 ± 33 (SPRT passed), the table +111 ± 40
@@ -57,6 +56,42 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
   search loses 37 ± 24. An `improving` flag (the static eval against two plies
   before) for RFP, LMP and LMR lost 58 ± 29, and was reverted. The extra reduction
   off the PV was only measured together with it.
+
+## 0.9.2 - 2026-10-24
+
+### Changed
+- A new network of the same shape, `nets/net-003.bin`: trained on 30 million positions
+  of 0.9.1's games against itself, 30 passes. Its output is divided by 1.5, since it
+  gives about 1.5 times the scores it learned from.
+
+### Added
+- `datagen --book <epd>`: every game starts from a random position of the book and 1
+  or 2 random moves, instead of 8 or 9 random moves from the starting position.
+
+### Measured
+- Bench: 469750 (from 486750).
+- Validation: a loss of 0.0549 on 1 million positions of 0.9.1's games it didn't
+  train on, against 0.0617 for net-002.
+- Strength: +177 ± 45 Elo against 0.9.1 at 10+0.1, SPRT [0, 10] passed in 238 games
+  (155 wins, 43 losses, 40 draws).
+- Against Stockfish 19 with `UCI_Elo` 2600, at 60+0.6 on `8moves_v3.pgn`: +76 ± 46
+  Elo in 200 games (111 wins, 68 losses, 21 draws), about 2675 on Stockfish's scale,
+  which was calibrated at 120+1 on the same book.
+- Bishop and knight against a lone king evaluate at about +0.8, since 0.9.1 almost
+  never won them: 0.4% of the 75 thousand such positions in its games.
+
+## 0.9.1 - 2026-10-23
+
+### Changed
+- Move ordering sorts plain integers: every move packed with its key and its index into
+  a `u64`, in a buffer the ordering keeps between nodes. `sort_by_cached_key` allocated
+  pairs of key and index at every node, then moved the moves around to match them. Ties
+  still keep the order of generation, so the search is the same.
+
+### Measured
+- Bench: 486750 (unchanged).
+- Speed: 27% more nodes per second, and 21% less time to depth 11 on the search bench
+  (2856 ms against 3628 ms). No match was played, since the search is the same.
 
 ## 0.9.0 - 2026-10-23
 

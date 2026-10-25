@@ -23,6 +23,7 @@ How the training data gets generated, and the format bullet expects.
 
 ```
 runner-chess datagen <dir> [--threads <n>] [--positions <n>] [--nodes <n>] [--seed <n>]
+                      [--book <epd>]
 ```
 
 | Option | Default |
@@ -31,6 +32,7 @@ runner-chess datagen <dir> [--threads <n>] [--positions <n>] [--nodes <n>] [--se
 | `--positions` | 1,000,000, between all threads; each one stops starting games once they get there |
 | `--nodes` | 5,000, the soft limit of every search, with a hard one 10 times higher |
 | `--seed` | from the clock, printed at the start |
+| `--book` | none: the games start from random openings |
 
 The games are played inside the process, without UCI, and written to
 `<dir>/<version>-<seed>-<thread>.txt`. The files of another run never get written over:
@@ -40,8 +42,10 @@ seed and number of threads play the same games again.
 - **Threads**: each with its own table (16 MB) and ordering, both cleared before every
   game, and its own random numbers (splitmix64), seeded from `--seed`.
 - **Openings**: 8 or 9 random legal moves from the starting position, so that either
-  side can be the first to move after them. A game whose first search finds
-  `|score| > 400` gets thrown away.
+  side can be the first to move after them. With `--book`, 1 or 2 random moves from a
+  random position of the book instead, since a game from a book position the book
+  also has a few moves later would play the same moves. A game whose first search
+  finds `|score| > 400` gets thrown away.
 - **Moves**: the best move of the search; the score of the last iteration that
   finished labels the position.
 - **Positions kept**, after the random moves:

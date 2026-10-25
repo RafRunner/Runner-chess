@@ -30,7 +30,7 @@ struct Network {
     output_bias: i16,
 }
 
-static NNUE: Network = unsafe { std::mem::transmute(*include_bytes!("../../nets/net-002.bin")) };
+static NNUE: Network = unsafe { std::mem::transmute(*include_bytes!("../../nets/net-003.bin")) };
 
 /// One view's hidden layer, before the activation
 #[repr(C, align(64))]
@@ -254,30 +254,30 @@ mod tests {
         assert_eq!(kinds.len(), 7, "not every kind of move got played");
     }
 
-    /// `trainer/checkpoints/net-002-evals.txt`, before quantising
+    /// `trainer/checkpoints/net-003-evals.txt`, before quantising
     const TRAINER_EVALS: [(&str, f32); 7] = [
-        (Board::STARTPOS, 29.2),
+        (Board::STARTPOS, 34.8),
         (
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
-            -16.3,
+            -2.6,
         ),
         (
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-            -142.4,
+            -150.3,
         ),
         (
             "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
-            17.3,
+            79.0,
         ),
         (
             "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR b KQkq - 2 3",
-            17.3,
+            79.0,
         ),
-        ("4k3/8/8/8/8/8/PPP5/4K2R w K - 0 1", 2372.3),
-        ("4k2r/ppp5/8/8/8/8/8/4K3 b k - 0 1", 2372.3),
+        ("4k3/8/8/8/8/8/PPP5/4K2R w K - 0 1", 2249.4),
+        ("4k2r/ppp5/8/8/8/8/8/4K3 b k - 0 1", 2249.4),
     ];
 
-    /// Rounding net-002's weights moves these positions by up to 7.3
+    /// Rounding net-003's weights moves these positions by up to 6.6
     const QUANTISATION_ERROR: f32 = 8.0;
 
     #[test]
