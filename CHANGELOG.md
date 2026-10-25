@@ -8,7 +8,7 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
-## Unreleased
+## 0.10.0 - 2026-10-25
 
 ### Added
 - Principal variation search: the first move of a node gets the whole window, the
@@ -35,11 +35,24 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - Null move pruning reduces `3 + depth / 3`, plus a ply for every 200 centipawns the
   eval is above beta, up to 3, and no longer runs on the PV.
 - Late move reductions reduce a ply more off the PV.
+- Moves come a stage at a time: the move of the table, the captures and promotions that
+  don't lose material, the quiet moves, then the captures that do. The exchange of a
+  capture only gets evaluated when its turn comes, and each stage only gets sorted
+  when it starts. The quiet moves still get their keys as the node starts: with the
+  history that the moves before them leave, the tree grew a third.
+- The pruning decides before the move gets made: whether it gives check and whether
+  it's legal come from the board as it is, so the moves that get pruned, two thirds of
+  them, are never made. Each move's check is found once, and passed to its node.
 
 ### Measured
 - Bench: 33554 (from 469750). At depth 10 the search visits 287457 nodes, against
   10410916 for 0.9.2.
-- Strength, with a match runner of the session instead of `scripts/match.sh`, from
+- Speed: the stages, the pruning before making the moves and the check found once
+  take 9% more nodes per second on the search bench at depth 16 (3.84 million against
+  3.51), with the same tree.
+- Strength: +470 ± 94 Elo against 0.9.2 at 10+0.1, SPRT [0, 10] passed in 160 games
+  (141 wins, 1 loss, 18 draws).
+- Before that, with a match runner of the session instead of `scripts/match.sh`, from
   balanced 8-ply random openings, each played with both colors:
   - +357 ± 49 Elo against 0.9.2 at 2+0.02, in 400 games (336 wins, 27 losses,
     37 draws)
