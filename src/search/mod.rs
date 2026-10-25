@@ -146,7 +146,7 @@ impl<'search> Searcher<'search> {
         }
 
         // in check it says nothing: every evasion has to be searched
-        let in_check = node.board.is_in_check(node.board.side_to_move());
+        let in_check = node.in_check;
         let static_eval = (!in_check).then(|| {
             let eval = self.evaluate(node);
             entry.map_or(eval, |entry| entry.refine(eval))
@@ -177,14 +177,15 @@ impl<'search> Searcher<'search> {
             .enumerate()
         {
             has_legal_move = true;
+            let gives_check = next.is_in_check(next.side_to_move());
 
-            if futility::prunes_quiet(node, static_eval, best, quiets_tried.len(), mv, &next)
-                || futility::prunes_by_see(node, in_check, best, mv, &next)
+            if futility::prunes_quiet(node, static_eval, best, quiets_tried.len(), mv, gives_check)
+                || futility::prunes_by_see(node, best, mv, gives_check)
             {
                 continue;
             }
 
-            let score = self.search_move(node, mv, idx, &next);
+            let score = self.search_move(node, mv, idx, &next, gives_check);
 
             if self.stopped {
                 break;
@@ -242,7 +243,7 @@ impl<'search> Searcher<'search> {
             self.nodes += 1;
             return self.evaluate(node);
         }
-        if node.board.is_in_check(node.board.side_to_move()) {
+        if node.in_check {
             // If we're in check, we need to check all possible responses, not just captures
             return self.negamax(NodeInfo { depth: 1, ..node });
         }
@@ -261,7 +262,8 @@ impl<'search> Searcher<'search> {
         let mut best = static_eval;
 
         for (mv, next) in self.ordering.winning_captures_ordered(node.board) {
-            let score = self.quiescence_child(node.board, node.child(&next), mv);
+            let gives_check = next.is_in_check(next.side_to_move());
+            let score = self.quiescence_child(node.board, node.child(&next, gives_check), mv);
 
             if self.stopped {
                 break;

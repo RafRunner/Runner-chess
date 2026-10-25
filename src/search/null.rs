@@ -33,7 +33,8 @@ impl Searcher<'_> {
             let previous = self.null_ply.replace(node.ply);
             let score = self.search_child(
                 node.board,
-                node.scout_child(&null, reduce, -node.beta),
+                // passing never gives check: the side to move here wasn't in check
+                node.scout_child(&null, reduce, -node.beta, false),
                 None,
             );
             self.null_ply = previous;

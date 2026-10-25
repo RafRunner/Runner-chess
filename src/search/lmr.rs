@@ -28,12 +28,13 @@ impl Searcher<'_> {
         mv: Move,
         move_idx: usize,
         next: &Board,
+        gives_check: bool,
     ) -> Score {
         if move_idx == 0 {
-            return self.search_child(node.board, node.child(next), Some(mv));
+            return self.search_child(node.board, node.child(next, gives_check), Some(mv));
         }
 
-        let reduce = if self.is_reducible(node, mv, move_idx, next) {
+        let reduce = if self.is_reducible(node, mv, move_idx, gives_check) {
             let history = self.ordering.history_bonus(mv, node.board.side_to_move());
             // a ply more off the principal variation, whose moves are expected to fail
             // low anyway
@@ -42,7 +43,7 @@ impl Searcher<'_> {
         } else {
             0
         };
-        let null_window = |reduce| node.scout_child(next, reduce, -node.alpha - 1);
+        let null_window = |reduce| node.scout_child(next, reduce, -node.alpha - 1, gives_check);
 
         let mut score = self.search_child(node.board, null_window(reduce), Some(mv));
         if score > node.alpha && reduce > 0 {
@@ -50,20 +51,20 @@ impl Searcher<'_> {
         }
         // in a null window node beta is alpha + 1, and this is already the real score
         if score > node.alpha && score < node.beta {
-            score = self.search_child(node.board, node.child(next), Some(mv));
+            score = self.search_child(node.board, node.child(next, gives_check), Some(mv));
         }
         score
     }
 
     /// Most moves get the full depth, only late quiet ones get reduced
-    fn is_reducible(&self, node: NodeInfo, mv: Move, move_idx: usize, next: &Board) -> bool {
+    fn is_reducible(&self, node: NodeInfo, mv: Move, move_idx: usize, gives_check: bool) -> bool {
         node.ply > 0
             && node.depth >= MIN_DEPTH
             && move_idx >= FULL_DEPTH_MOVES
             && mv.is_quiet()
             && !self.ordering.is_killer(mv, node.ply)
-            && !node.board.is_in_check(node.board.side_to_move())
-            && !next.is_in_check(next.side_to_move())
+            && !node.in_check
+            && !gives_check
     }
 }
 

@@ -8,6 +8,8 @@ pub(super) struct NodeInfo<'board> {
     pub(super) ply: u32,
     pub(super) alpha: Score,
     pub(super) beta: Score,
+    /// For the side to move: the parent knows it already, from testing the move
+    pub(super) in_check: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -31,6 +33,7 @@ impl<'board> NodeInfo<'board> {
             ply,
             alpha,
             beta,
+            in_check: board.is_in_check(board.side_to_move()),
         }
     }
 
@@ -41,13 +44,14 @@ impl<'board> NodeInfo<'board> {
 
     /// The node after a move to `board`: a ply further, one less to go, and the window
     /// seen from the other side
-    pub(super) fn child<'next>(&self, board: &'next Board) -> NodeInfo<'next> {
+    pub(super) fn child<'next>(&self, board: &'next Board, in_check: bool) -> NodeInfo<'next> {
         NodeInfo {
             board,
             depth: self.depth.saturating_sub(1),
             ply: self.ply + 1,
             alpha: -self.beta,
             beta: -self.alpha,
+            in_check,
         }
     }
 
@@ -57,6 +61,7 @@ impl<'board> NodeInfo<'board> {
         board: &'next Board,
         reduce: u32,
         threshold: Score,
+        in_check: bool,
     ) -> NodeInfo<'next> {
         NodeInfo {
             board,
@@ -64,6 +69,7 @@ impl<'board> NodeInfo<'board> {
             ply: self.ply + 1,
             alpha: threshold,
             beta: threshold + 1,
+            in_check,
         }
     }
 
@@ -107,7 +113,7 @@ mod tests {
     #[test]
     fn a_child_sees_the_window_from_the_other_side() {
         let board = Board::startpos();
-        let child = node_with_window(&board, -30, 50).child(&board);
+        let child = node_with_window(&board, -30, 50).child(&board, false);
 
         assert_eq!((child.depth, child.ply), (4, 3));
         assert_eq!((child.alpha, child.beta), (Score::new(-50), Score::new(30)));
@@ -117,7 +123,7 @@ mod tests {
     fn a_scout_child_has_a_null_window_and_less_depth() {
         let board = Board::startpos();
         let parent = node_with_window(&board, -30, 50);
-        let scout = parent.scout_child(&board, 2, Score::new(-50));
+        let scout = parent.scout_child(&board, 2, Score::new(-50), false);
 
         assert_eq!((scout.depth, scout.ply), (2, 3));
         assert_eq!(
@@ -125,7 +131,7 @@ mod tests {
             (Score::new(-50), Score::new(-49))
         );
         // never below 0, which is a quiescence search
-        assert_eq!(parent.scout_child(&board, 10, Score::DRAW).depth, 0);
+        assert_eq!(parent.scout_child(&board, 10, Score::DRAW, false).depth, 0);
     }
 
     #[test]

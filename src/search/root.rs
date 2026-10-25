@@ -122,7 +122,8 @@ impl Searcher<'_> {
             .legal_ordered(board, 0, *best_move)
             .enumerate()
         {
-            let score = self.search_move(root, mv, idx, &next);
+            let gives_check = next.is_in_check(next.side_to_move());
+            let score = self.search_move(root, mv, idx, &next, gives_check);
 
             if self.stopped {
                 break;

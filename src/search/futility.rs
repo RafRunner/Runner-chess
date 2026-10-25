@@ -1,5 +1,4 @@
 use crate::{
-    board::Board,
     chess_move::Move,
     score::Score,
     search::{NodeInfo, Searcher},
@@ -55,15 +54,12 @@ pub(super) fn prunes_quiet(
     best: Score,
     quiets_tried: usize,
     mv: Move,
-    next: &Board,
+    gives_check: bool,
 ) -> bool {
     let Some(static_eval) = static_eval else {
         return false;
     };
-    if node.ply == 0 || best <= -Score::MAX_EVAL || !mv.is_quiet() {
-        return false;
-    }
-    if next.is_in_check(next.side_to_move()) {
+    if node.ply == 0 || best <= -Score::MAX_EVAL || !mv.is_quiet() || gives_check {
         return false;
     }
 
@@ -78,17 +74,11 @@ pub(super) fn prunes_quiet(
 /// doesn't lose to a mate, which loses so much material in the exchange on its square
 /// (see [`Board::see`]) that the plies left are unlikely to win it back: a quiet move
 /// that leaves a piece where it can be taken, or a capture of something defended
-pub(super) fn prunes_by_see(
-    node: NodeInfo<'_>,
-    in_check: bool,
-    best: Score,
-    mv: Move,
-    next: &Board,
-) -> bool {
-    if node.ply == 0 || in_check || best <= -Score::MAX_EVAL || node.depth > SEE_MAX_DEPTH {
+pub(super) fn prunes_by_see(node: NodeInfo<'_>, best: Score, mv: Move, gives_check: bool) -> bool {
+    if node.ply == 0 || node.in_check || best <= -Score::MAX_EVAL || node.depth > SEE_MAX_DEPTH {
         return false;
     }
-    if mv.is_promotion() || next.is_in_check(next.side_to_move()) {
+    if mv.is_promotion() || gives_check {
         return false;
     }
 
@@ -108,18 +98,32 @@ fn lmp_threshold(depth: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{board, find_move};
+    use crate::{
+        board::Board,
+        test_utils::{board, find_move},
+    };
 
     const QUIET_FEN: &str = "4k3/pppp4/8/8/8/8/PPPP4/4K1N1 w - - 0 1";
+
+    fn gives_check(board: &Board, mv: Move) -> bool {
+        let next = board.make_move(mv);
+        next.is_in_check(next.side_to_move())
+    }
 
     /// What `prunes_quiet` says about Nf3 from `QUIET_FEN`, in a node `depth` plies deep
     /// at ply 3, with alpha at `alpha` and a static eval of `eval`
     fn prunes(depth: u32, eval: Option<i32>, alpha: i32, best: Score, quiets: usize) -> bool {
         let board = board(QUIET_FEN);
         let mv = find_move(&board, "g1f3");
-        let next = board.make_move(mv);
         let node = NodeInfo::new(&board, depth, 3, Score::new(alpha), Score::new(alpha + 1));
-        prunes_quiet(node, eval.map(Score::new), best, quiets, mv, &next)
+        prunes_quiet(
+            node,
+            eval.map(Score::new),
+            best,
+            quiets,
+            mv,
+            gives_check(&board, mv),
+        )
     }
 
     #[test]
@@ -158,9 +162,9 @@ mod tests {
         let eval = Some(Score::new(-1000));
         for uci in ["a1a8", "e1d2"] {
             let mv = find_move(&board, uci);
-            let next = board.make_move(mv);
+            let check = gives_check(&board, mv);
             assert!(
-                !prunes_quiet(node, eval, Score::new(0), 100, mv, &next),
+                !prunes_quiet(node, eval, Score::new(0), 100, mv, check),
                 "{uci}"
             );
         }
@@ -171,9 +175,8 @@ mod tests {
         let prunes = |fen: &str, uci: &str, depth: u32| {
             let board = board(fen);
             let mv = find_move(&board, uci);
-            let next = board.make_move(mv);
             let node = NodeInfo::new(&board, depth, 3, Score::new(0), Score::new(1));
-            prunes_by_see(node, false, Score::new(0), mv, &next)
+            prunes_by_see(node, Score::new(0), mv, gives_check(&board, mv))
         };
 
         // Nf3 walks into exf3, Nh3 is safe
