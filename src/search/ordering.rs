@@ -17,6 +17,8 @@ pub struct MoveOrdering {
 impl MoveOrdering {
     const NOISY_BASE: i32 = 2_000_000;
     const KILLER_BASE: i32 = 1_000_000;
+    /// Captures that lose material in the exchange come after every quiet move
+    const BAD_CAPTURE_BASE: i32 = -1_000_000;
     /// Rook and bishop promotions come after every quiet move: a queen does all they do,
     /// and the knight's moves are the only ones it lacks
     const UNDERPROMOTION_BASE: i32 = -2_000_000;
@@ -81,26 +83,29 @@ impl MoveOrdering {
         ply: u32,
         first: Option<Move>,
     ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        let moves = board.generate_moves();
-        self.ordered_moves(moves, board, ply, first)
+        let moves = self.sorted(board.generate_moves(), board, ply, first);
+        Self::made(moves.into_iter(), board)
     }
 
-    pub(super) fn captures_ordered<'board>(
+    /// The captures that don't lose material in the exchange (see [`Board::see`]): the
+    /// others won't improve on standing pat. Checked only as they come, since a cutoff
+    /// often leaves the later ones unsearched
+    pub(super) fn winning_captures_ordered<'board>(
         &mut self,
         board: &'board Board,
     ) -> impl Iterator<Item = (Move, Board)> + 'board {
-        let moves = board.generate_captures();
-        self.ordered_moves(moves, board, 0, None)
+        let moves = self.sorted(board.generate_captures(), board, 0, None);
+        Self::made(moves.into_iter().filter(|&mv| board.see(mv, 0)), board)
     }
 
     /// Possibly strong moves come first
-    fn ordered_moves<'board>(
+    fn sorted(
         &mut self,
         mut moves: Vec<Move>,
-        board: &'board Board,
+        board: &Board,
         ply: u32,
         first: Option<Move>,
-    ) -> impl Iterator<Item = (Move, Board)> + 'board {
+    ) -> Vec<Move> {
         self.keys.clear();
 
         // sorting u64 is a lot faster and avoids allocations and swaps in a (Move, Board) vec
@@ -117,8 +122,14 @@ impl MoveOrdering {
         }
 
         moves
-            .into_iter()
-            .filter_map(move |mv| board.make_legal_move(mv).map(|next| (mv, next)))
+    }
+
+    /// The legal ones of `moves`, made on `board`
+    fn made<'board>(
+        moves: impl Iterator<Item = Move> + 'board,
+        board: &'board Board,
+    ) -> impl Iterator<Item = (Move, Board)> + 'board {
+        moves.filter_map(move |mv| board.make_legal_move(mv).map(|next| (mv, next)))
     }
 
     fn update_history(&mut self, color: Color, mv: Move, bonus: i32) {
@@ -145,7 +156,8 @@ impl MoveOrdering {
     }
 
     /// Captures and promotions by the material they win, then by the cheaper piece
-    /// moving: a promotion wins the new piece, less the pawn
+    /// moving: a promotion wins the new piece, less the pawn. A capture that loses
+    /// material in the exchange (see [`Board::see`]) goes after the quiet moves
     fn noisy_key(board: &Board, mv: Move) -> i32 {
         let attacker = board
             .piece_at(mv.from())
@@ -168,6 +180,7 @@ impl MoveOrdering {
                     PromotionPiece::Queen | PromotionPiece::Knight => Self::NOISY_BASE,
                 }
             }
+            _ if !board.see(mv, 0) => Self::BAD_CAPTURE_BASE,
             _ => Self::NOISY_BASE,
         };
 
@@ -254,13 +267,14 @@ mod tests {
         );
     }
 
-    /// Captures and promotions come before the quiet moves, and rook and bishop
-    /// promotions after them.
-    fn assert_noisy_first(moves: &[Move]) {
+    /// Captures and promotions come before the quiet moves, and captures that lose
+    /// material, then rook and bishop promotions, after them.
+    fn assert_noisy_first(board: &Board, moves: &[Move]) {
         let band = |mv: &Move| match mv.kind() {
             MoveKind::Promotion(PromotionPiece::Rook | PromotionPiece::Bishop)
-            | MoveKind::PromotionCapture(PromotionPiece::Rook | PromotionPiece::Bishop) => 2,
+            | MoveKind::PromotionCapture(PromotionPiece::Rook | PromotionPiece::Bishop) => 3,
             _ if mv.is_quiet() => 1,
+            _ if !mv.is_promotion() && !board.see(*mv, 0) => 2,
             _ => 0,
         };
         assert!(moves.iter().map(band).is_sorted(), "{moves:?}");
@@ -299,7 +313,7 @@ mod tests {
     #[test]
     fn captures_come_before_quiet_moves() {
         for fen in PERFT_POSITIONS {
-            assert_noisy_first(&ordered(fen));
+            assert_noisy_first(&board(fen), &ordered(fen));
         }
     }
 
@@ -322,6 +336,13 @@ mod tests {
             index_of(&moves, "e4f5") < index_of(&moves, "h3f5"),
             "{moves:?}"
         );
+    }
+
+    #[test]
+    fn a_capture_that_loses_material_comes_after_the_quiet_moves() {
+        // Qxd5 exd5: the queen for a pawn
+        let moves = ordered_uci("4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1");
+        assert_eq!(moves.last().map(String::as_str), Some("d1d5"), "{moves:?}");
     }
 
     #[test]
@@ -350,15 +371,16 @@ mod tests {
     }
 
     #[test]
-    fn quiescence_gets_only_the_captures_in_the_same_order() {
+    fn quiescence_gets_only_the_winning_captures_in_the_same_order() {
         for fen in PERFT_POSITIONS {
+            let board = board(fen);
             let captures: Vec<Move> = MoveOrdering::new()
-                .captures_ordered(&board(fen))
+                .winning_captures_ordered(&board)
                 .map(|(mv, _)| mv)
                 .collect();
             let expected: Vec<Move> = ordered(fen)
                 .into_iter()
-                .filter(|mv| mv.is_capture())
+                .filter(|&mv| mv.is_capture() && board.see(mv, 0))
                 .collect();
 
             assert_eq!(captures, expected, "{fen}");
@@ -375,7 +397,7 @@ mod tests {
         cut(&mut ordering, KIWIPETE, &killer, 3, 1, &[]);
 
         let moves = ordered_with(&mut ordering, KIWIPETE, 3, None);
-        assert_noisy_first(&moves);
+        assert_noisy_first(&board(KIWIPETE), &moves);
         assert_eq!(quiets(&moves)[0], killer, "{moves:?}");
     }
 
@@ -389,7 +411,7 @@ mod tests {
 
         let moves = ordered_with(&mut ordering, KIWIPETE, 3, Some(tt_move));
         assert_eq!(moves[0], tt_move, "{moves:?}");
-        assert_noisy_first(&moves[1..]);
+        assert_noisy_first(&board(KIWIPETE), &moves[1..]);
         assert_eq!(quiets(&moves[1..])[0], killer, "{moves:?}");
     }
 
@@ -510,7 +532,7 @@ mod tests {
         // plies where it isn't a killer
         for ply in [0, 1, 8, 10] {
             let moves = ordered_with(&mut ordering, KIWIPETE, ply, None);
-            assert_noisy_first(&moves);
+            assert_noisy_first(&board(KIWIPETE), &moves);
             assert_eq!(quiets(&moves)[0], late, "ply {ply}: {moves:?}");
         }
     }
@@ -564,13 +586,13 @@ mod tests {
         }
 
         let at_0 = ordered_with(&mut ordering, KIWIPETE, 0, None);
-        assert_noisy_first(&at_0);
+        assert_noisy_first(&kiwipete, &at_0);
         let quiets_at_0 = quiets(&at_0);
         assert_eq!(quiets_at_0.first(), Some(&pushed), "{quiets_at_0:?}");
         assert_eq!(quiets_at_0.last(), Some(&pulled), "{quiets_at_0:?}");
 
         let at_3 = ordered_with(&mut ordering, KIWIPETE, 3, None);
-        assert_noisy_first(&at_3);
+        assert_noisy_first(&kiwipete, &at_3);
         assert_eq!(
             quiets(&at_3)[..2],
             [killer.as_str(), pushed.as_str()],

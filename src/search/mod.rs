@@ -1,4 +1,5 @@
 mod draw;
+mod futility;
 mod limits;
 mod lmr;
 mod node;
@@ -26,6 +27,9 @@ use crate::{
     score::Score,
     zobrist::ZobristHash,
 };
+
+/// Nodes without a move from the table get a ply less from this depth on
+const IIR_MIN_DEPTH: u32 = 4;
 
 /// A search of one position, from `go` to `bestmove`. `'search` is how long it can use
 /// what it borrows from the engine: the table and the `stop` flag.
@@ -134,10 +138,30 @@ impl<'search> Searcher<'search> {
         }
         let tt_move = entry.and_then(|e| e.best_move);
 
+        // internal iterative reduction: without a move from the table, the order is a
+        // guess, and the node probably wasn't important before. A shallower search is
+        // cheaper, and leaves a move for the next iteration
+        if tt_move.is_none() && node.depth >= IIR_MIN_DEPTH {
+            node.depth -= 1;
+        }
+
+        // in check it says nothing: every evasion has to be searched
+        let in_check = node.board.is_in_check(node.board.side_to_move());
+        let static_eval = (!in_check).then(|| {
+            let eval = self.evaluate(node);
+            entry.map_or(eval, |entry| entry.refine(eval))
+        });
+
+        if let Some(eval) = static_eval
+            && let Some(score) = Self::reverse_futility_pruning(node, eval)
+        {
+            return score;
+        }
+
         // the table says the value is at most something below beta: passing won't get there
         let below_beta =
             entry.is_some_and(|e| e.bound == Bound::Upper && e.score.from_tt(node.ply) < node.beta);
-        if !below_beta && let Some(null_cut) = self.null_move_pruning(node) {
+        if !below_beta && let Some(null_cut) = self.null_move_pruning(node, static_eval) {
             return null_cut;
         }
 
@@ -154,7 +178,13 @@ impl<'search> Searcher<'search> {
         {
             has_legal_move = true;
 
-            let score = self.lmr_search(node, mv, idx, &next);
+            if futility::prunes_quiet(node, static_eval, best, quiets_tried.len(), mv, &next)
+                || futility::prunes_by_see(node, in_check, best, mv, &next)
+            {
+                continue;
+            }
+
+            let score = self.search_move(node, mv, idx, &next);
 
             if self.stopped {
                 break;
@@ -177,7 +207,7 @@ impl<'search> Searcher<'search> {
         }
 
         if !has_legal_move {
-            best = if node.board.is_in_check(node.board.side_to_move()) {
+            best = if in_check {
                 Score::mated_in(node.ply)
             } else {
                 Score::DRAW
@@ -230,7 +260,7 @@ impl<'search> Searcher<'search> {
 
         let mut best = static_eval;
 
-        for (mv, next) in self.ordering.captures_ordered(node.board) {
+        for (mv, next) in self.ordering.winning_captures_ordered(node.board) {
             let score = self.quiescence_child(node.board, node.child(&next), mv);
 
             if self.stopped {
@@ -587,13 +617,13 @@ mod tests {
     fn an_interrupted_node_is_not_stored() {
         // the node limit stops the search in the middle of the moves of the root
         let board = board(KIWIPETE);
-        let budget = Budget::depth(Some(4)).with_nodes(1000);
+        let budget = Budget::depth(Some(6)).with_nodes(1000);
         let mut tt = TranspositionTable::new(1);
         let mut ordering = MoveOrdering::new();
         let mut searcher = Searcher::new(budget, &mut tt, &mut ordering);
         searcher.completed_depth = 1; // the first iteration is never stopped
         start_at(&mut searcher, &board);
-        let node = NodeInfo::new(&board, 4, 0, -Score::INF, Score::INF);
+        let node = NodeInfo::new(&board, 6, 0, -Score::INF, Score::INF);
         searcher.negamax(node);
 
         assert!(searcher.stopped);
@@ -604,8 +634,10 @@ mod tests {
     fn mirrored_positions_have_the_same_score() {
         for fen in PERFT_POSITIONS {
             let mirrored = mirror_fen(fen);
-            // deeper is slow in debug builds: quiescence follows every capture in these
-            for depth in 0..=2 {
+            // deeper, the children prune their late moves, and which moves come late
+            // depends on the order of generation when the ordering ties, which the
+            // mirror doesn't keep
+            for depth in 0..=1 {
                 assert_eq!(
                     score(fen, depth),
                     score(&mirrored, depth),

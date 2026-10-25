@@ -74,10 +74,19 @@ mod tests {
 
     #[test]
     fn perpetual_check_saves_the_lost_side() {
-        // White is lost, but Qe8+ Kh7 Qh5+ Kg8 Qe8+ repeats, which depth 5 reaches
+        // White is lost, but Qe8+ Kh7 Qh5+ Kg8 Qe8+ repeats, which the iterations reach
+        // by depth 5. A single search of depth 5 doesn't: without moves from the table,
+        // every node of it gets a ply less
         for fen in both_colors("6k1/rr4p1/8/8/8/8/ppp1Q1PP/7K w - - 0 1") {
             assert!(static_eval(&board(&fen)) < Score::new(-100), "{fen}");
-            assert_eq!(score(&fen, 5), Score::DRAW, "{fen}");
+
+            let mut tt = TranspositionTable::new(1);
+            let mut ordering = MoveOrdering::new();
+            let mut searcher = Searcher::new(Budget::depth(Some(5)), &mut tt, &mut ordering);
+            searcher
+                .search_root(&board(&fen), &[], &mut std::io::sink())
+                .unwrap();
+            assert_eq!(searcher.score(), Some(Score::DRAW), "{fen}");
         }
     }
 
@@ -99,13 +108,15 @@ mod tests {
 
     #[test]
     fn trades_into_a_dead_draw_when_lost() {
-        // a knight down, Black trades rooks with check: K+N vs K can't be won
+        // a knight down, Black trades rooks with check: K+N vs K can't be won. At depth 2
+        // the late moves of the replies to the other moves get pruned, which can leave
+        // one of them a score above the draw
         let fen = "3r3k/8/8/8/8/4N3/8/3R3K b - - 0 1";
-        for depth in 2..=3 {
+        for depth in 3..=4 {
             assert_best(fen, depth, "d8d1");
         }
         for fen in both_colors(fen) {
-            assert_eq!(score(&fen, 2), Score::DRAW, "{fen}");
+            assert_eq!(score(&fen, 3), Score::DRAW, "{fen}");
         }
     }
 

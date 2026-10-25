@@ -34,6 +34,7 @@ impl<'board> NodeInfo<'board> {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn full_window(board: &'board Board, depth: u32, ply: u32) -> Self {
         Self::new(board, depth, ply, -Score::INF, Score::INF)
     }
@@ -64,6 +65,12 @@ impl<'board> NodeInfo<'board> {
             alpha: threshold,
             beta: threshold + 1,
         }
+    }
+
+    /// A node whose exact score matters, on the principal variation: the others only
+    /// have to tell whether they beat a null window (alpha, alpha + 1)
+    pub(super) fn is_pv(&self) -> bool {
+        self.beta > self.alpha + 1
     }
 
     /// Takes the score of a move into the node: the best so far, and the window
