@@ -111,14 +111,11 @@ impl MoveOrdering {
         // sorting u64 is a lot faster and avoids allocations and swaps in a (Move, Board) vec
         for (i, &mv) in moves.iter().enumerate() {
             let key = self.move_sort_key(board, ply, mv, first);
-            // i32 -> u32 keeping the order
-            let inverted = !((key as u32) ^ 0x8000_0000);
-            self.keys
-                .push((u64::from(inverted) << 32) | ((i as u64) << 16) | u64::from(mv.raw()));
+            self.keys.push(pack(key, i, mv));
         }
         self.keys.sort_unstable();
-        for (mv, &key) in moves.iter_mut().zip(self.keys.iter()) {
-            *mv = Move::from_raw(key as u16); // the low 16 bits is the move
+        for (mv, &packed) in moves.iter_mut().zip(self.keys.iter()) {
+            *mv = unpack(packed);
         }
 
         moves
@@ -143,7 +140,7 @@ impl MoveOrdering {
             return i32::MAX;
         }
         if !mv.is_quiet() {
-            return Self::noisy_key(board, mv);
+            return Self::noisy_key(board, mv, true);
         }
 
         match self.killers[ply as usize]
@@ -156,9 +153,9 @@ impl MoveOrdering {
     }
 
     /// Captures and promotions by the material they win, then by the cheaper piece
-    /// moving: a promotion wins the new piece, less the pawn. A capture that loses
-    /// material in the exchange (see [`Board::see`]) goes after the quiet moves
-    fn noisy_key(board: &Board, mv: Move) -> i32 {
+    /// moving: a promotion wins the new piece, less the pawn. With `see`, a capture that
+    /// loses material in the exchange (see [`Board::see`]) goes after the quiet moves
+    fn noisy_key(board: &Board, mv: Move, see: bool) -> i32 {
         let attacker = board
             .piece_at(mv.from())
             .map_or(0, |p| p.kind().index() as i32);
@@ -180,7 +177,7 @@ impl MoveOrdering {
                     PromotionPiece::Queen | PromotionPiece::Knight => Self::NOISY_BASE,
                 }
             }
-            _ if !board.see(mv, 0) => Self::BAD_CAPTURE_BASE,
+            _ if see && !board.see(mv, 0) => Self::BAD_CAPTURE_BASE,
             _ => Self::NOISY_BASE,
         };
 
@@ -195,10 +192,163 @@ impl Default for MoveOrdering {
     }
 }
 
+/// A move with its key, so that sorting puts the highest keys first, and among equal
+/// ones the move that came first
+fn pack(key: i32, idx: usize, mv: Move) -> u64 {
+    // i32 -> u32 keeping the order, inverted for the highest first
+    let inverted = !((key as u32) ^ 0x8000_0000);
+    (u64::from(inverted) << 32) | ((idx as u64) << 16) | u64::from(mv.raw())
+}
+
+fn unpack(packed: u64) -> Move {
+    Move::from_raw(packed as u16) // the low 16 bits are the move
+}
+
+fn is_underpromotion(mv: Move) -> bool {
+    matches!(
+        mv.kind(),
+        MoveKind::Promotion(PromotionPiece::Rook | PromotionPiece::Bishop)
+            | MoveKind::PromotionCapture(PromotionPiece::Rook | PromotionPiece::Bishop)
+    )
+}
+
+/// The moves of a node in the order of [`MoveOrdering::legal_ordered`], but sorted a
+/// stage at a time, since the first ones often cut: the move of the table, the noisy
+/// moves that don't lose material, the quiet ones, the captures that do, and the rook and
+/// bishop promotions. A capture's exchange only gets evaluated when its turn comes. The
+/// quiet moves get their keys as the node starts: with the history that the moves before
+/// them leave, the tree grew a third. The moves aren't checked for legality
+pub(super) struct MovePicker {
+    stage: Stage,
+    /// Only if it's one of the moves here
+    tt_move: Option<Move>,
+    /// Packed with their keys by [`pack`]
+    noisy: Vec<u64>,
+    next_noisy: usize,
+    quiets: Vec<u64>,
+    next_quiet: usize,
+    /// In the order they came
+    losing_captures: Vec<Move>,
+    next_losing: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    TtMove,
+    SortNoisy,
+    GoodNoisy,
+    SortQuiets,
+    Quiets,
+    LosingCaptures,
+    Underpromotions,
+    Done,
+}
+
+impl MovePicker {
+    pub(super) fn new(
+        board: &Board,
+        tt_move: Option<Move>,
+        ordering: &MoveOrdering,
+        ply: u32,
+    ) -> Self {
+        let noisy = board.generate_noisy();
+        let quiets = board.generate_quiets();
+        let tt_move = tt_move.filter(|mv| noisy.contains(mv) || quiets.contains(mv));
+        let packed = |moves: Vec<Move>, key: &dyn Fn(Move) -> i32| -> Vec<u64> {
+            let indexed = moves.into_iter().enumerate();
+            indexed.map(|(i, mv)| pack(key(mv), i, mv)).collect()
+        };
+
+        Self {
+            stage: Stage::TtMove,
+            tt_move,
+            noisy: packed(noisy, &|mv| MoveOrdering::noisy_key(board, mv, false)),
+            next_noisy: 0,
+            quiets: packed(quiets, &|mv| {
+                ordering.move_sort_key(board, ply, mv, tt_move)
+            }),
+            next_quiet: 0,
+            losing_captures: Vec::new(),
+            next_losing: 0,
+        }
+    }
+
+    pub(super) fn next(&mut self, board: &Board) -> Option<Move> {
+        let tt_move = self.tt_move;
+        loop {
+            match self.stage {
+                Stage::TtMove => {
+                    self.stage = Stage::SortNoisy;
+                    if tt_move.is_some() {
+                        return tt_move;
+                    }
+                }
+                Stage::SortNoisy => {
+                    self.noisy.sort_unstable();
+                    self.stage = Stage::GoodNoisy;
+                }
+                Stage::GoodNoisy => {
+                    // the underpromotions, sorted last, wait for their own stage
+                    while let Some(&packed) = self.noisy.get(self.next_noisy)
+                        && !is_underpromotion(unpack(packed))
+                    {
+                        self.next_noisy += 1;
+                        let mv = unpack(packed);
+                        if Some(mv) == tt_move {
+                            continue;
+                        }
+                        if !mv.is_promotion() && !board.see(mv, 0) {
+                            self.losing_captures.push(mv);
+                            continue;
+                        }
+                        return Some(mv);
+                    }
+                    self.stage = Stage::SortQuiets;
+                }
+                Stage::SortQuiets => {
+                    self.quiets.sort_unstable();
+                    self.stage = Stage::Quiets;
+                }
+                Stage::Quiets => {
+                    while let Some(&packed) = self.quiets.get(self.next_quiet) {
+                        self.next_quiet += 1;
+                        if Some(unpack(packed)) != tt_move {
+                            return Some(unpack(packed));
+                        }
+                    }
+                    self.stage = Stage::LosingCaptures;
+                }
+                Stage::LosingCaptures => {
+                    if let Some(&mv) = self.losing_captures.get(self.next_losing) {
+                        self.next_losing += 1;
+                        return Some(mv);
+                    }
+                    self.stage = Stage::Underpromotions;
+                }
+                Stage::Underpromotions => {
+                    while let Some(&packed) = self.noisy.get(self.next_noisy) {
+                        self.next_noisy += 1;
+                        if Some(unpack(packed)) != tt_move {
+                            return Some(unpack(packed));
+                        }
+                    }
+                    self.stage = Stage::Done;
+                }
+                Stage::Done => return None,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use super::*;
-    use crate::test_utils::{KIWIPETE, PERFT_POSITIONS, board, find_move};
+    use crate::{
+        search::{Budget, Searcher, TranspositionTable},
+        test_utils::{KIWIPETE, PERFT_POSITIONS, board, find_move, mirror_fen},
+    };
 
     /// The legal moves of `fen` in the order the search tries them at `ply`, with `first`
     /// (the move from the TT) put before the others.
@@ -278,6 +428,54 @@ mod tests {
             _ => 0,
         };
         assert!(moves.iter().map(band).is_sorted(), "{moves:?}");
+    }
+
+    // the picker
+
+    /// Every move `MovePicker` gives, with `ordering` the same throughout
+    fn picked(
+        ordering: &MoveOrdering,
+        board: &Board,
+        ply: u32,
+        tt_move: Option<Move>,
+    ) -> Vec<Move> {
+        let mut picker = MovePicker::new(board, tt_move, ordering, ply);
+        std::iter::from_fn(|| picker.next(board)).collect()
+    }
+    #[test]
+    fn the_picker_gives_the_order_of_a_full_sort() {
+        // the search leaves killers and history for the ordering to use
+        let mut ordering = MoveOrdering::new();
+        let fens: Vec<String> = PERFT_POSITIONS
+            .into_iter()
+            .flat_map(|fen| [fen.to_string(), mirror_fen(fen)])
+            .collect();
+        for fen in &fens {
+            let mut tt = TranspositionTable::new(1);
+            Searcher::new(Budget::depth(Some(6)), &mut tt, &mut ordering)
+                .search_root(&board(fen), &[], &mut io::sink())
+                .unwrap();
+        }
+
+        // a move of another position, which the picker has to leave out
+        let elsewhere = find_move(&board(KIWIPETE), "e2a6");
+        for fen in &fens {
+            let position = board(fen);
+            let moves = position.generate_moves();
+            let tt_moves = moves
+                .iter()
+                .copied()
+                .map(Some)
+                .chain([None, Some(elsewhere)]);
+            for (tt_move, ply) in tt_moves.zip((0..4).cycle()) {
+                let expected = ordering.sorted(position.generate_moves(), &position, ply, tt_move);
+                assert_eq!(
+                    picked(&ordering, &position, ply, tt_move),
+                    expected,
+                    "{fen}, {tt_move:?} from the table, at ply {ply}"
+                );
+            }
+        }
     }
 
     // the order of a fresh ordering

@@ -11,6 +11,7 @@ mod tt;
 pub use limits::Budget;
 pub use limits::Limits;
 pub use ordering::MoveOrdering;
+use ordering::MovePicker;
 pub use tt::Bound;
 pub use tt::Entry;
 pub use tt::TranspositionTable;
@@ -171,11 +172,14 @@ impl<'search> Searcher<'search> {
         let mut best_move = None;
         let mut quiets_tried = Vec::with_capacity(64);
 
-        for (idx, (mv, next)) in self
-            .ordering
-            .legal_ordered(node.board, node.ply, tt_move)
-            .enumerate()
-        {
+        let mut moves = MovePicker::new(node.board, tt_move, self.ordering, node.ply);
+        let mut legal_moves = 0;
+        while let Some(mv) = moves.next(node.board) {
+            let Some(next) = node.board.make_legal_move(mv) else {
+                continue;
+            };
+            let idx = legal_moves;
+            legal_moves += 1;
             has_legal_move = true;
             let gives_check = next.is_in_check(next.side_to_move());
 

@@ -13,21 +13,56 @@ use crate::{
 #[derive(Debug)]
 pub struct IllegalMoveError;
 
+/// Which pawn pushes to generate: the ones that promote are noisy, the others quiet
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pushes {
+    All,
+    Quiet,
+    Promotions,
+}
+
 impl Board {
     pub fn generate_captures(&self) -> Vec<Move> {
         let mut moves = Vec::with_capacity(16);
-        self.generate_normal_moves(self.by_color(self.side_to_move().oposite()), &mut moves);
+        self.generate_piece_moves(self.by_color(self.side_to_move().oposite()), &mut moves);
+        self.generate_pawn_captures(&mut moves);
 
         moves
     }
 
-    fn generate_normal_moves(&self, allowed: BitBoard, moves: &mut Vec<Move>) {
-        let us = self.side_to_move();
-        let them = us.oposite();
+    /// The captures, then the promotions that don't capture
+    pub fn generate_noisy(&self) -> Vec<Move> {
+        let mut moves = self.generate_captures();
+        self.generate_pawn_pushes(Pushes::Promotions, &mut moves);
 
+        moves
+    }
+
+    /// The moves that neither capture nor promote, in the order `generate_moves` has them
+    pub fn generate_quiets(&self) -> Vec<Move> {
+        let mut moves = Vec::with_capacity(48);
+        self.generate_piece_moves(!self.all_pieces_bb(), &mut moves);
+        self.generate_castling(&mut moves);
+        self.generate_pawn_pushes(Pushes::Quiet, &mut moves);
+
+        moves
+    }
+
+    pub fn generate_moves(&self) -> Vec<Move> {
+        let mut moves = Vec::with_capacity(64);
+        self.generate_piece_moves(BitBoard::FULL, &mut moves);
+        self.generate_pawn_captures(&mut moves);
+        self.generate_castling(&mut moves);
+        self.generate_pawn_pushes(Pushes::All, &mut moves);
+
+        moves
+    }
+
+    /// The moves of every piece but the pawns, to the squares of `allowed`
+    fn generate_piece_moves(&self, allowed: BitBoard, moves: &mut Vec<Move>) {
+        let us = self.side_to_move();
         let our_pieces = self.by_color(us);
-        let their_pieces = self.by_color(them);
-        let occupied = our_pieces | their_pieces;
+        let occupied = self.all_pieces_bb();
 
         // Normal Pieces
         let kinds = [
@@ -54,11 +89,15 @@ impl Board {
                 }
             }
         }
+    }
 
+    fn generate_pawn_captures(&self, moves: &mut Vec<Move>) {
+        let us = self.side_to_move();
+        let them = us.oposite();
         let pawns = self.pieces(Piece::new(us, PieceKind::Pawn));
 
         for from in pawns {
-            for to in PAWN_ATTACKS[us][from] & their_pieces {
+            for to in PAWN_ATTACKS[us][from] & self.by_color(them) {
                 self.add_pawn_moves(from, to, moves);
             }
         }
@@ -70,17 +109,10 @@ impl Board {
         }
     }
 
-    pub fn generate_moves(&self) -> Vec<Move> {
-        let mut moves = Vec::with_capacity(64);
-        self.generate_normal_moves(BitBoard::FULL, &mut moves);
-
+    fn generate_castling(&self, moves: &mut Vec<Move>) {
         let us = self.side_to_move();
         let them = us.oposite();
-        let white_to_move = us == Color::White;
-
-        let our_pieces = self.by_color(us);
-        let their_pieces = self.by_color(them);
-        let occupied = our_pieces | their_pieces;
+        let occupied = self.all_pieces_bb();
 
         // Castling
         let castle_checks = [
@@ -127,8 +159,13 @@ impl Board {
                 moves.push(Move::new(king_sq, king_to, MoveKind::Castle));
             }
         }
+    }
 
-        // Pawns
+    fn generate_pawn_pushes(&self, pushes: Pushes, moves: &mut Vec<Move>) {
+        let us = self.side_to_move();
+        let white_to_move = us == Color::White;
+        let occupied = self.all_pieces_bb();
+
         let (starting_rank, delta, needs_empty) = if white_to_move {
             (
                 BitBoard::RANK_2,
@@ -143,14 +180,17 @@ impl Board {
             )
         };
         let pawns = self.pieces(Piece::new(us, PieceKind::Pawn));
-        let pawns_on_home = starting_rank & pawns;
-        for from in pawns_on_home {
-            if BitBoard::FILES[from.file() as usize] & needs_empty & occupied == BitBoard::EMPTY {
-                moves.push(Move::new(
-                    from,
-                    from.offset(delta * 2).unwrap(),
-                    MoveKind::DoublePush,
-                ));
+        if pushes != Pushes::Promotions {
+            let pawns_on_home = starting_rank & pawns;
+            for from in pawns_on_home {
+                if BitBoard::FILES[from.file() as usize] & needs_empty & occupied == BitBoard::EMPTY
+                {
+                    moves.push(Move::new(
+                        from,
+                        from.offset(delta * 2).unwrap(),
+                        MoveKind::DoublePush,
+                    ));
+                }
             }
         }
 
@@ -160,11 +200,17 @@ impl Board {
             pawns >> 8
         } & !occupied;
         for to in single_move {
-            let from = to.offset(-delta).unwrap();
-            self.add_pawn_moves(from, to, &mut moves);
+            let promotes = to.rank() == 0 || to.rank() == 7;
+            let wanted = match pushes {
+                Pushes::All => true,
+                Pushes::Quiet => !promotes,
+                Pushes::Promotions => promotes,
+            };
+            if wanted {
+                let from = to.offset(-delta).unwrap();
+                self.add_pawn_moves(from, to, moves);
+            }
         }
-
-        moves
     }
 
     pub fn legal_successors(&self) -> impl Iterator<Item = (Move, Board)> + '_ {
@@ -238,6 +284,19 @@ mod tests {
         let b = board(fen);
         let moves = moves_of(&b);
         (b, moves)
+    }
+
+    #[test]
+    fn noisy_and_quiet_moves_split_every_move_in_its_order() {
+        // the move ordering breaks ties by the order of generation
+        for fen in PERFT_POSITIONS.into_iter().chain([KIWIPETE_BLACK]) {
+            let position = board(fen);
+            let all = position.generate_moves();
+            let (quiet, noisy): (Vec<Move>, Vec<Move>) = all.iter().partition(|mv| mv.is_quiet());
+
+            assert_eq!(position.generate_noisy(), noisy, "{fen}");
+            assert_eq!(position.generate_quiets(), quiet, "{fen}");
+        }
     }
 
     /// sorted, so failures print in a predictable order
