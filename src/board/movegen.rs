@@ -1,7 +1,7 @@
 use std::iter;
 
 use crate::{
-    attacks::{PAWN_ATTACKS, attacks},
+    attacks::{PAWN_ATTACKS, attacks, bishop_attacks, rook_attacks},
     bitboard::BitBoard,
     board::Board,
     castling::CastlingRights,
@@ -224,6 +224,73 @@ impl Board {
         (!next.is_in_check(self.side_to_move())).then_some(next)
     }
 
+    /// Whether `mv`, a generated move, checks the opponent, without making it: from where
+    /// the piece lands, or by a slider of ours behind the square it leaves. Castling and en
+    /// passant, which move two pieces, still get made
+    pub fn gives_check(&self, mv: Move) -> bool {
+        if matches!(mv.kind(), MoveKind::Castle | MoveKind::EnPassant) {
+            let next = self.make_move(mv);
+            return next.is_in_check(next.side_to_move());
+        }
+
+        let us = self.side_to_move();
+        let (from, to) = (mv.from(), mv.to());
+        let king = self.king_square(us.oposite());
+        let occupied = (self.all_pieces_bb() ^ from.bb()) | to.bb();
+        let piece = match mv.kind() {
+            MoveKind::Promotion(promoted) | MoveKind::PromotionCapture(promoted) => {
+                Piece::new(us, promoted.to_piece_kind())
+            }
+            _ => self.piece_at(from).expect("a piece moves"),
+        };
+        if !(attacks(piece, to, occupied) & king.bb()).is_empty() {
+            return true;
+        }
+
+        let ours = self.by_color(us) & !from.bb();
+        let diagonal = (self.both(PieceKind::Bishop) | self.both(PieceKind::Queen)) & ours;
+        let straight = (self.both(PieceKind::Rook) | self.both(PieceKind::Queen)) & ours;
+        !((bishop_attacks(king, occupied) & diagonal) | (rook_attacks(king, occupied) & straight))
+            .is_empty()
+    }
+
+    /// Whether `mv`, a generated move, leaves the king of the side to move safe, without
+    /// making it. Out of check, a move can only open a line to the king, or take the king
+    /// where it's attacked. In check, and for en passant, which takes a pawn off another
+    /// square, the move still gets made
+    pub fn is_legal(&self, mv: Move, in_check: bool) -> bool {
+        match mv.kind() {
+            _ if in_check => return self.make_legal_move(mv).is_some(),
+            MoveKind::EnPassant => return self.make_legal_move(mv).is_some(),
+            // generated only when the king's way isn't attacked
+            MoveKind::Castle => return true,
+            _ => (),
+        }
+
+        let us = self.side_to_move();
+        let them = us.oposite();
+        let (from, to) = (mv.from(), mv.to());
+        let king = self.king_square(us);
+        if from == king {
+            // out of check no slider sees the king, so its own square hides nothing
+            return self.attackers_by(to, them).is_empty();
+        }
+
+        let occupied = (self.all_pieces_bb() ^ from.bb()) | to.bb();
+        // what gets taken can't attack anymore
+        let theirs = self.by_color(them) & !to.bb();
+        let diagonal = (self.both(PieceKind::Bishop) | self.both(PieceKind::Queen)) & theirs;
+        let straight = (self.both(PieceKind::Rook) | self.both(PieceKind::Queen)) & theirs;
+        ((bishop_attacks(king, occupied) & diagonal) | (rook_attacks(king, occupied) & straight))
+            .is_empty()
+    }
+
+    fn king_square(&self, color: Color) -> Square {
+        self.pieces(Piece::new(color, PieceKind::King))
+            .next()
+            .expect("a king on the board")
+    }
+
     pub fn resolve_move(&self, mv: AbstractMove) -> Result<(Move, Board), IllegalMoveError> {
         for (legal, next) in self.legal_successors() {
             if mv.is_move(legal) {
@@ -267,7 +334,9 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::test_utils::{KIWIPETE, PERFT_POSITIONS, POSITION_3, board, find_move, moves_of};
+    use crate::test_utils::{
+        KIWIPETE, PERFT_POSITIONS, POSITION_3, board, find_move, mirror_fen, moves_of,
+    };
     use Square as S;
 
     const KIWIPETE_BLACK: &str =
@@ -284,6 +353,48 @@ mod tests {
         let b = board(fen);
         let moves = moves_of(&b);
         (b, moves)
+    }
+
+    /// Along every line `depth` plies deep, checks and legality as making each move tells
+    fn assert_checks_and_legality_match(board: &Board, depth: u32) {
+        let in_check = board.is_in_check(board.side_to_move());
+        for mv in board.generate_moves() {
+            let next = board.make_move(mv);
+            let fen = board.to_fen();
+            let check = next.is_in_check(next.side_to_move());
+            assert_eq!(board.gives_check(mv), check, "{mv} gives check in {fen}");
+            let legal = !next.is_in_check(board.side_to_move());
+            assert_eq!(
+                board.is_legal(mv, in_check),
+                legal,
+                "{mv} is legal in {fen}"
+            );
+
+            if depth > 1 && legal {
+                assert_checks_and_legality_match(&next, depth - 1);
+            }
+        }
+    }
+
+    #[test]
+    fn checks_and_legality_without_making_the_move() {
+        #[rustfmt::skip]
+        let special = [
+            "4k3/8/8/8/4N3/8/8/4R1K1 w - - 0 1",      // the knight uncovers the rook
+            "7k/8/8/8/8/2P5/1B6/6K1 w - - 0 1",       // the pawn uncovers the bishop
+            "4k3/4r3/8/8/8/8/4N3/4K3 w - - 0 1",      // the knight is pinned
+            "8/8/8/K2pP2r/8/8/8/7k w - d6 0 1",       // en passant would expose the king
+            "6k1/4P3/8/8/8/8/8/4K3 w - - 0 1",        // promotions that check
+            "5k2/8/8/8/8/8/8/4K2R w K - 0 1",         // castling that checks
+            "4k3/8/8/8/8/8/r7/4K3 w - - 0 1",         // the king along the rook's rank
+        ];
+        for fen in PERFT_POSITIONS
+            .into_iter()
+            .chain(special)
+            .flat_map(|fen| [fen.to_string(), mirror_fen(fen)])
+        {
+            assert_checks_and_legality_match(&board(&fen), 2);
+        }
     }
 
     #[test]
