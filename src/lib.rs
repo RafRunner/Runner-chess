@@ -7,6 +7,7 @@ pub mod chess_move;
 pub mod datagen;
 pub mod eval;
 pub mod piece;
+mod rng;
 pub mod score;
 pub mod search;
 pub mod square;
