@@ -437,17 +437,15 @@ mod tests {
     use std::{env, fs, path::Path};
 
     use super::*;
-    use crate::test_utils::{board, find_move};
+    use crate::test_utils::{MATED, STALEMATED, board, play_with_history};
 
     // the end of a game
 
     #[test]
     fn mate_and_stalemate_end_the_game() {
         // Black to move in both
-        let mated = board("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1");
-        assert_eq!(game_over(&mated, &[]), Some(Outcome::WhiteWins));
-        let stalemate = board("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1");
-        assert_eq!(game_over(&stalemate, &[]), Some(Outcome::Draw));
+        assert_eq!(game_over(&board(MATED), &[]), Some(Outcome::WhiteWins));
+        assert_eq!(game_over(&board(STALEMATED), &[]), Some(Outcome::Draw));
     }
 
     #[test]
@@ -461,16 +459,12 @@ mod tests {
 
     #[test]
     fn the_third_repetition_ends_the_game() {
-        let mut position = Board::startpos();
-        let mut history = Vec::new();
-        for round in 1..=2 {
-            for uci in ["g1f3", "g8f6", "f3g1", "f6g8"] {
-                history.push(position.hash());
-                position = position.make_move(find_move(&position, uci));
-            }
-            // back at the start: the second time, then the third
-            let expected = (round == 2).then_some(Outcome::Draw);
-            assert_eq!(game_over(&position, &history), expected, "{round}");
+        // the knights go out and come back: the start position the second time, then the
+        // third
+        for (rounds, expected) in [(1, None), (2, Some(Outcome::Draw))] {
+            let moves = "g1f3 g8f6 f3g1 f6g8 ".repeat(rounds);
+            let (position, history) = play_with_history(Board::STARTPOS, &moves);
+            assert_eq!(game_over(&position, &history), expected, "{rounds}");
         }
     }
 

@@ -110,7 +110,7 @@ impl Board {
 
 #[cfg(test)]
 mod tests {
-    use crate::test_utils::{board, find_move, mirror_fen};
+    use crate::test_utils::{board, find_move, mirror_fen, mirror_uci};
 
     /// The material `uci` wins from `fen` by exchange, found as the highest threshold
     /// that `see` still accepts, the same for the mirrored position
@@ -123,16 +123,8 @@ mod tests {
                 .find(|&threshold| board.see(mv, threshold))
                 .unwrap()
         };
-        let mirrored_uci: String = uci
-            .chars()
-            .map(|c| match c {
-                '1'..='8' => (b'1' + b'8' - c as u8) as char,
-                _ => c,
-            })
-            .collect();
-
         let result = value(fen, uci);
-        assert_eq!(result, value(&mirror_fen(fen), &mirrored_uci), "{fen}");
+        assert_eq!(result, value(&mirror_fen(fen), &mirror_uci(uci)), "{fen}");
         result
     }
 

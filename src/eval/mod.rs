@@ -34,7 +34,7 @@ pub fn is_dead_position(board: &Board) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{PERFT_POSITIONS, board, mirror_fen, static_eval};
+    use crate::test_utils::{PERFT_POSITIONS, board, both_colors, mirror_fen, static_eval};
 
     /// The same position with the other side to move.
     fn flip_side(fen: &str) -> String {
@@ -47,12 +47,10 @@ mod tests {
     /// `better` must evaluate higher than `worse` for the side to move, and so
     /// must their mirrors, so every rule is checked for both colors.
     fn assert_better(better: &str, worse: &str) {
-        let (b, w) = (static_eval(&board(better)), static_eval(&board(worse)));
-        assert!(b > w, "expected {better} ({b:?}) > {worse} ({w:?})");
-
-        let (better, worse) = (mirror_fen(better), mirror_fen(worse));
-        let (b, w) = (static_eval(&board(&better)), static_eval(&board(&worse)));
-        assert!(b > w, "expected {better} ({b:?}) > {worse} ({w:?})");
+        for (better, worse) in both_colors(better).iter().zip(&both_colors(worse)) {
+            let (b, w) = (static_eval(&board(better)), static_eval(&board(worse)));
+            assert!(b > w, "expected {better} ({b:?}) > {worse} ({w:?})");
+        }
     }
 
     // properties

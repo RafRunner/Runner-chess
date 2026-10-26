@@ -98,17 +98,9 @@ fn lmp_threshold(depth: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        board::Board,
-        test_utils::{board, find_move},
-    };
+    use crate::test_utils::{board, find_move};
 
     const QUIET_FEN: &str = "4k3/pppp4/8/8/8/8/PPPP4/4K1N1 w - - 0 1";
-
-    fn gives_check(board: &Board, mv: Move) -> bool {
-        let next = board.make_move(mv);
-        next.is_in_check(next.side_to_move())
-    }
 
     /// What `prunes_quiet` says about Nf3 from `QUIET_FEN`, in a node `depth` plies deep
     /// at ply 3, with alpha at `alpha` and a static eval of `eval`
@@ -116,14 +108,8 @@ mod tests {
         let board = board(QUIET_FEN);
         let mv = find_move(&board, "g1f3");
         let node = NodeInfo::new(&board, depth, 3, Score::new(alpha), Score::new(alpha + 1));
-        prunes_quiet(
-            node,
-            eval.map(Score::new),
-            best,
-            quiets,
-            mv,
-            gives_check(&board, mv),
-        )
+        let check = board.gives_check(mv);
+        prunes_quiet(node, eval.map(Score::new), best, quiets, mv, check)
     }
 
     #[test]
@@ -162,7 +148,7 @@ mod tests {
         let eval = Some(Score::new(-1000));
         for uci in ["a1a8", "e1d2"] {
             let mv = find_move(&board, uci);
-            let check = gives_check(&board, mv);
+            let check = board.gives_check(mv);
             assert!(
                 !prunes_quiet(node, eval, Score::new(0), 100, mv, check),
                 "{uci}"
@@ -176,7 +162,7 @@ mod tests {
             let board = board(fen);
             let mv = find_move(&board, uci);
             let node = NodeInfo::new(&board, depth, 3, Score::new(0), Score::new(1));
-            prunes_by_see(node, Score::new(0), mv, gives_check(&board, mv))
+            prunes_by_see(node, Score::new(0), mv, board.gives_check(mv))
         };
 
         // Nf3 walks into exf3, Nh3 is safe

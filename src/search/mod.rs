@@ -371,26 +371,50 @@ impl<'search> Searcher<'search> {
 
 #[cfg(test)]
 mod tests {
-    use std::io;
-
     use super::*;
     use crate::{
         board::Board,
         chess_move::Move,
-        test_utils::{KIWIPETE, PERFT_POSITIONS, board, mirror_fen, static_eval},
+        test_utils::{
+            KIWIPETE, MATE_IN_ONE, MATED, PERFT_POSITIONS, STALEMATED, board, both_colors,
+            mirror_fen, mirror_uci, static_eval,
+        },
     };
 
     // search
 
+    /// What a search leaves behind
+    pub(super) struct Searched {
+        pub(super) best: Option<String>,
+        /// The `info` lines it wrote
+        pub(super) out: String,
+        pub(super) nodes: u64,
+        pub(super) score: Option<Score>,
+    }
+
+    /// Searches `board`, the game `history` behind it, within `budget`
+    pub(super) fn search(board: &Board, history: &[ZobristHash], budget: Budget) -> Searched {
+        with_searcher(budget, |searcher| {
+            let mut out = Vec::new();
+            let best = searcher.search_root(board, history, &mut out).unwrap();
+            Searched {
+                best: best.map(Move::to_uci),
+                out: String::from_utf8(out).unwrap(),
+                nodes: searcher.nodes(),
+                score: searcher.score(),
+            }
+        })
+    }
+
+    /// Runs `f` on a searcher with a fresh table and ordering
+    pub(super) fn with_searcher<R>(budget: Budget, f: impl FnOnce(&mut Searcher) -> R) -> R {
+        let mut tt = TranspositionTable::new(1);
+        let mut ordering = MoveOrdering::new();
+        f(&mut Searcher::new(budget, &mut tt, &mut ordering))
+    }
+
     pub(super) fn best_move(fen: &str, depth: u32) -> Option<String> {
-        Searcher::new(
-            Budget::depth(Some(depth)),
-            &mut TranspositionTable::new(1),
-            &mut MoveOrdering::new(),
-        )
-        .search_root(&board(fen), &[], &mut io::sink())
-        .unwrap()
-        .map(Move::to_uci)
+        search(&board(fen), &[], Budget::depth(Some(depth))).best
     }
 
     /// The stacks of `board` as `search_root` sets them up
@@ -412,16 +436,6 @@ mod tests {
         start_at(&mut searcher, &board);
         let node = NodeInfo::new(&board, depth, 0, -Score::INF, Score::INF);
         searcher.negamax(node)
-    }
-
-    /// The same move seen from the other side of the board: e2e4 becomes e7e5.
-    fn mirror_uci(mv: &str) -> String {
-        mv.chars()
-            .map(|c| match c {
-                '1'..='8' => (b'1' + b'8' - c as u8) as char,
-                _ => c,
-            })
-            .collect()
     }
 
     /// `expected` must be the best move of `fen`, and its mirror the best move of
@@ -468,7 +482,7 @@ mod tests {
     fn finds_mate_in_one() {
         // at depth 1 the mated side is already in quiescence, in check without evasions
         for depth in 1..=3 {
-            assert_best("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", depth, "a1a8");
+            assert_best(MATE_IN_ONE, depth, "a1a8");
         }
     }
 
@@ -496,18 +510,14 @@ mod tests {
 
     #[test]
     fn mate_and_stalemate_scores() {
-        let mated = "5Q1k/8/6K1/8/8/8/8/8 b - - 0 1";
-        let stalemated = "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1";
-        let mate_in_one = "6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1";
-
-        for fen in [mated.to_string(), mirror_fen(mated)] {
+        for fen in both_colors(MATED) {
             assert_eq!(score(&fen, 1), Score::mated_in(0), "{fen}");
         }
-        for fen in [stalemated.to_string(), mirror_fen(stalemated)] {
+        for fen in both_colors(STALEMATED) {
             assert_eq!(score(&fen, 1), Score::DRAW, "{fen}");
         }
         // one ply until the mate
-        for fen in [mate_in_one.to_string(), mirror_fen(mate_in_one)] {
+        for fen in both_colors(MATE_IN_ONE) {
             assert_eq!(score(&fen, 2), Score::mate_in(1), "{fen}");
         }
     }
@@ -519,7 +529,7 @@ mod tests {
         // the second search finds the mates of the first one in the table, stored
         // plies away from the root
         for (fen, depth, mate) in [
-            ("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", 2, Score::mate_in(1)),
+            (MATE_IN_ONE, 2, Score::mate_in(1)),
             ("7k/8/5K2/8/8/8/8/6R1 w - - 0 1", 4, Score::mate_in(3)), // Kf7 Kh7 Rh1#
         ] {
             for fen in both_colors(fen) {
@@ -535,31 +545,29 @@ mod tests {
         // at ply 3 the mate in 1 is 4 plies from the root, short of an alpha of mate in 3
         // plies: a fail low, even though the stored score, counted from the node, is a
         // mate in 1 ply
-        let board = board("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1");
-        let mut tt = TranspositionTable::new(1);
-        let mut ordering = MoveOrdering::new();
-        let mut searcher = Searcher::new(Budget::depth(None), &mut tt, &mut ordering);
-        start_at(&mut searcher, &board);
-
-        let node = NodeInfo::new(&board, 2, 3, Score::mate_in(3), Score::INF);
-        let score = searcher.negamax(node);
-        assert_eq!(score, Score::mate_in(4));
-        assert_eq!(tt.probe(board.hash()).unwrap().bound, Bound::Upper);
+        let board = board(MATE_IN_ONE);
+        with_searcher(Budget::depth(None), |searcher| {
+            start_at(searcher, &board);
+            let node = NodeInfo::new(&board, 2, 3, Score::mate_in(3), Score::INF);
+            assert_eq!(searcher.negamax(node), Score::mate_in(4));
+            assert_eq!(searcher.tt.probe(board.hash()).unwrap().bound, Bound::Upper);
+        });
     }
 
     /// What `tt_cut` makes of an entry with `bound` at depth 5, for a node at ply 1
     /// and depth 5 inside the window (alpha, beta).
     fn tt_cutoff(bound: Bound, score: i32, alpha: i32, beta: i32) -> Option<Score> {
         let board = board(Board::STARTPOS);
-        let mut tt = TranspositionTable::new(1);
-        let mut ordering = MoveOrdering::new();
-        tt.store(board.hash(), 5, Score::new(score), bound, None);
-        let mut searcher = Searcher::new(Budget::depth(None), &mut tt, &mut ordering);
-        // as in the search, the node is on the stack of hashes when it's probed
-        searcher.push_hash(board.hash());
-        let entry = searcher.tt.probe(board.hash());
-        let node = NodeInfo::new(&board, 5, 1, Score::new(alpha), Score::new(beta));
-        searcher.tt_cut(entry, node)
+        with_searcher(Budget::depth(None), |searcher| {
+            searcher
+                .tt
+                .store(board.hash(), 5, Score::new(score), bound, None);
+            // as in the search, the node is on the stack of hashes when it's probed
+            searcher.push_hash(board.hash());
+            let entry = searcher.tt.probe(board.hash());
+            let node = NodeInfo::new(&board, 5, 1, Score::new(alpha), Score::new(beta));
+            searcher.tt_cut(entry, node)
+        })
     }
 
     /// The score `tt_cut` cuts with for `board` at `depth` and `ply`, with the whole
@@ -592,54 +600,53 @@ mod tests {
     #[test]
     fn only_a_deep_enough_entry_cuts() {
         let board = board(Board::STARTPOS);
-        let mut tt = TranspositionTable::new(1);
-        let mut ordering = MoveOrdering::new();
-        tt.store(board.hash(), 2, Score::new(30), Bound::Exact, None);
-        let mut searcher = Searcher::new(Budget::depth(None), &mut tt, &mut ordering);
-        searcher.push_hash(board.hash());
+        with_searcher(Budget::depth(None), |searcher| {
+            searcher
+                .tt
+                .store(board.hash(), 2, Score::new(30), Bound::Exact, None);
+            searcher.push_hash(board.hash());
 
-        assert_eq!(tt_cut_at(&searcher, &board, 2, 1), Some(Score::new(30)));
-        // too shallow to stand for a search of depth 3, though its move still goes first
-        assert_eq!(tt_cut_at(&searcher, &board, 3, 1), None);
-        // and the root never cuts, it has to return a move
-        assert_eq!(tt_cut_at(&searcher, &board, 2, 0), None);
+            assert_eq!(tt_cut_at(searcher, &board, 2, 1), Some(Score::new(30)));
+            // too shallow to stand for a search of depth 3, though its move still goes first
+            assert_eq!(tt_cut_at(searcher, &board, 3, 1), None);
+            // and the root never cuts, it has to return a move
+            assert_eq!(tt_cut_at(searcher, &board, 2, 0), None);
+        });
     }
 
     #[test]
     fn a_position_seen_before_does_not_trust_the_table() {
         // the entry may come from a time when a repetition through it wasn't possible
         let board = board("4k3/8/8/8/8/8/8/R3K3 w - - 10 30");
-        let mut tt = TranspositionTable::new(1);
-        let mut ordering = MoveOrdering::new();
-        tt.store(board.hash(), 5, Score::new(500), Bound::Exact, None);
-        let mut searcher = Searcher::new(Budget::depth(None), &mut tt, &mut ordering);
+        with_searcher(Budget::depth(None), |searcher| {
+            searcher
+                .tt
+                .store(board.hash(), 5, Score::new(500), Bound::Exact, None);
 
-        searcher.push_hash(board.hash());
-        assert_eq!(tt_cut_at(&searcher, &board, 5, 1), Some(Score::new(500)));
+            searcher.push_hash(board.hash());
+            assert_eq!(tt_cut_at(searcher, &board, 5, 1), Some(Score::new(500)));
 
-        // two moves of each side later, the same position
-        for _ in 0..3 {
-            searcher.push_hash(ZobristHash::empty());
-        }
-        searcher.push_hash(board.hash());
-        assert_eq!(tt_cut_at(&searcher, &board, 5, 1), None);
+            // two moves of each side later, the same position
+            for _ in 0..3 {
+                searcher.push_hash(ZobristHash::empty());
+            }
+            searcher.push_hash(board.hash());
+            assert_eq!(tt_cut_at(searcher, &board, 5, 1), None);
+        });
     }
 
     #[test]
     fn an_interrupted_node_is_not_stored() {
         // the node limit stops the search in the middle of the moves of the root
         let board = board(KIWIPETE);
-        let budget = Budget::depth(Some(6)).with_nodes(1000);
-        let mut tt = TranspositionTable::new(1);
-        let mut ordering = MoveOrdering::new();
-        let mut searcher = Searcher::new(budget, &mut tt, &mut ordering);
-        searcher.completed_depth = 1; // the first iteration is never stopped
-        start_at(&mut searcher, &board);
-        let node = NodeInfo::new(&board, 6, 0, -Score::INF, Score::INF);
-        searcher.negamax(node);
+        with_searcher(Budget::depth(Some(6)).with_nodes(1000), |searcher| {
+            searcher.completed_depth = 1; // the first iteration is never stopped
+            start_at(searcher, &board);
+            searcher.negamax(NodeInfo::new(&board, 6, 0, -Score::INF, Score::INF));
 
-        assert!(searcher.stopped);
-        assert!(tt.probe(board.hash()).is_none());
+            assert!(searcher.stopped);
+            assert!(searcher.tt.probe(board.hash()).is_none());
+        });
     }
 
     #[test]
@@ -660,11 +667,6 @@ mod tests {
     }
 
     // quiescence, which is all a depth 0 search does
-
-    /// `fen` and its mirror, so every rule is checked for both colors.
-    pub(super) fn both_colors(fen: &str) -> [String; 2] {
-        [fen.to_string(), mirror_fen(fen)]
-    }
 
     #[test]
     fn quiescence_sees_the_recapture() {
@@ -697,7 +699,7 @@ mod tests {
     #[test]
     fn quiescence_sees_mate() {
         // checkmated right at the horizon
-        for fen in both_colors("5Q1k/8/6K1/8/8/8/8/8 b - - 0 1") {
+        for fen in both_colors(MATED) {
             assert_eq!(score(&fen, 0), Score::mated_in(0), "{fen}");
         }
     }

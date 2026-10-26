@@ -130,11 +130,8 @@ impl Board {
 mod tests {
     use crate::{
         board::Board,
-        test_utils::{board, find_move},
+        test_utils::{CASTLING_BLACK, CASTLING_WHITE, board, find_move},
     };
-
-    const CASTLING_WHITE: &str = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
-    const CASTLING_BLACK: &str = "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1";
 
     /// plays `uci` on `fen` and compares the whole resulting FEN, clocks included
     fn check(fen: &str, uci: &str, expected: &str) {

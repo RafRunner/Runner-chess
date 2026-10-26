@@ -450,7 +450,7 @@ mod tests {
     use super::*;
     use crate::{
         attacks::attacks,
-        test_utils::{PERFT_POSITIONS, board},
+        test_utils::{PERFT_POSITIONS, board, squares},
     };
 
     fn p(color: Color, kind: PieceKind) -> Option<Piece> {
@@ -919,11 +919,6 @@ mod tests {
         }
     }
 
-    /// squares in index order, so failures print as a readable list
-    fn squares_of(bb: BitBoard) -> Vec<Square> {
-        bb.collect()
-    }
-
     #[test]
     fn attackers_by_known_squares() {
         use Color::{Black, White};
@@ -964,8 +959,8 @@ mod tests {
             let b = board(fen);
             let expected = expected.iter().fold(BitBoard::EMPTY, |acc, s| acc | s.bb());
             assert_eq!(
-                squares_of(b.attackers_by(sq, by)),
-                squares_of(expected),
+                squares(b.attackers_by(sq, by)),
+                squares(expected),
                 "{fen} {sq} by {by:?}"
             );
             assert_eq!(
@@ -994,8 +989,8 @@ mod tests {
             for sq in (0..64).map(Square::new) {
                 for by in Color::ALL {
                     assert_eq!(
-                        squares_of(b.attackers_by(sq, by)),
-                        squares_of(attackers_by_definition(&b, sq, by)),
+                        squares(b.attackers_by(sq, by)),
+                        squares(attackers_by_definition(&b, sq, by)),
                         "{fen} {sq} by {by:?}"
                     );
                 }

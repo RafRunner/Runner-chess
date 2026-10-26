@@ -173,34 +173,23 @@ impl Searcher<'_> {
 mod tests {
     use super::*;
     use crate::{
-        search::{Budget, MoveOrdering, TranspositionTable, tests::best_move},
-        test_utils::{KIWIPETE, board},
+        search::{
+            Budget,
+            tests::{Searched, best_move, search},
+        },
+        test_utils::{KIWIPETE, MATE_IN_ONE, MATED, board},
     };
 
     /// What a search of `fen` to `depth` writes.
     fn output(fen: &str, depth: u32) -> String {
-        let mut out = Vec::new();
-        Searcher::new(
-            Budget::depth(Some(depth)),
-            &mut TranspositionTable::new(1),
-            &mut MoveOrdering::new(),
-        )
-        .search_root(&board(fen), &[], &mut out)
-        .unwrap();
-        String::from_utf8(out).unwrap()
+        search(&board(fen), &[], Budget::depth(Some(depth))).out
     }
 
     // budget
 
-    /// The best move and the output of a search of `fen` stopped after `nodes` nodes.
-    fn search_with_node_limit(fen: &str, nodes: u64) -> (Option<String>, String) {
-        let budget = Budget::depth(Some(10)).with_nodes(nodes);
-        let mut out = Vec::new();
-        let mut tt = TranspositionTable::new(1);
-        let best = Searcher::new(budget, &mut tt, &mut MoveOrdering::new())
-            .search_root(&board(fen), &[], &mut out)
-            .unwrap();
-        (best.map(Move::to_uci), String::from_utf8(out).unwrap())
+    /// A search of `fen` stopped after `nodes` nodes.
+    fn search_with_node_limit(fen: &str, nodes: u64) -> Searched {
+        search(&board(fen), &[], Budget::depth(Some(10)).with_nodes(nodes))
     }
 
     /// The first move of the `pv` in the last line of `out`.
@@ -213,7 +202,7 @@ mod tests {
     fn an_interrupted_iteration_is_reported_as_a_lower_bound() {
         // from the start, depth 1 takes 23 nodes and depth 2 ends at 80: 50 stops in the
         // middle of it, so its line can only say that the score is at least that much
-        let (_, out) = search_with_node_limit(Board::STARTPOS, 50);
+        let out = search_with_node_limit(Board::STARTPOS, 50).out;
         let lines: Vec<&str> = out.lines().collect();
 
         assert!(lines[0].starts_with("info depth 1 "), "{out}");
@@ -229,14 +218,14 @@ mod tests {
         // depth 1 likes Rxa6, but depth 2 sees Re1# and switches to another move before
         // 150 nodes stop it: GUIs show the last line as the engine's choice
         let fen = "4r1k1/5ppp/n7/8/8/8/5PPP/R5K1 w - - 0 1";
-        let (best, out) = search_with_node_limit(fen, 150);
+        let Searched { best, out, .. } = search_with_node_limit(fen, 150);
         assert_ne!(best.as_deref(), Some("a1a6"), "{out}");
         assert_eq!(last_pv(&out), best.as_deref(), "{out}");
 
         // and wherever else the limit falls
         for fen in [Board::STARTPOS, KIWIPETE, fen] {
             for nodes in [30, 100, 300, 1_000, 3_000, 10_000] {
-                let (best, out) = search_with_node_limit(fen, nodes);
+                let Searched { best, out, .. } = search_with_node_limit(fen, nodes);
                 assert_eq!(last_pv(&out), best.as_deref(), "{fen} {nodes}\n{out}");
             }
         }
@@ -245,7 +234,7 @@ mod tests {
     #[test]
     fn the_first_iteration_always_finishes() {
         // a limit below what depth 1 needs still gets a searched move
-        let (best, out) = search_with_node_limit(Board::STARTPOS, 1);
+        let Searched { best, out, .. } = search_with_node_limit(Board::STARTPOS, 1);
         assert!(out.starts_with("info depth 1 "), "{out}");
         assert_eq!(best, best_move(Board::STARTPOS, 1));
     }
@@ -253,53 +242,41 @@ mod tests {
     #[test]
     fn a_soft_node_limit_lets_the_iteration_finish() {
         let budget = Budget::depth(Some(Score::MAX_PLY)).with_soft_nodes(2_000);
-        let mut tt = TranspositionTable::new(1);
-        let mut ordering = MoveOrdering::new();
-        let mut searcher = Searcher::new(budget, &mut tt, &mut ordering);
-        let mut out = Vec::new();
-        searcher
-            .search_root(&board(KIWIPETE), &[], &mut out)
-            .unwrap();
-        let out = String::from_utf8(out).unwrap();
+        let searched = search(&board(KIWIPETE), &[], budget);
+        let out = &searched.out;
 
         // the iteration that passed the limit still finished, and was the last
-        assert!(searcher.nodes() >= 2_000);
+        assert!(searched.nodes >= 2_000);
         assert!(!out.contains("lowerbound"), "{out}");
         let last = out.lines().last().unwrap();
-        let score = searcher.score().unwrap().to_uci();
+        let score = searched.score.unwrap().to_uci();
         assert!(last.contains(&format!("score {score} ")), "{score} {last}");
     }
 
     #[test]
     fn stops_at_the_node_limit() {
         let budget = Budget::depth(Some(7)).with_nodes(1000);
-        let mut tt = TranspositionTable::new(1);
-        let mut ordering = MoveOrdering::new();
-        let mut searcher = Searcher::new(budget, &mut tt, &mut ordering);
-        let best = searcher
-            .search_root(&board(Board::STARTPOS), &[], &mut io::sink())
-            .unwrap();
+        let Searched { best, nodes, .. } = search(&board(Board::STARTPOS), &[], budget);
 
         // the limit is checked at every node, so the search stops right at it
-        assert!(
-            (1000..1010).contains(&searcher.nodes()),
-            "{}",
-            searcher.nodes()
-        );
+        assert!((1000..1010).contains(&nodes), "{nodes}");
         assert!(best.is_some());
     }
 
     #[test]
-    fn no_legal_moves_means_no_best_move() {
-        assert_eq!(best_move("5Q1k/8/6K1/8/8/8/8/8 b - - 0 1", 3), None);
+    fn no_legal_moves_means_no_best_move_and_no_info() {
+        let Searched { best, out, .. } = search(&board(MATED), &[], Budget::depth(Some(3)));
+        assert_eq!(best, None);
+        assert_eq!(out, "");
     }
 
     // info
 
     #[test]
     fn writes_an_info_line_per_depth() {
-        let out = output(Board::STARTPOS, 3);
-        let best = best_move(Board::STARTPOS, 3).unwrap();
+        let Searched { best, out, .. } =
+            search(&board(Board::STARTPOS), &[], Budget::depth(Some(3)));
+        let best = best.unwrap();
         let lines: Vec<&str> = out.lines().collect();
 
         assert_eq!(lines.len(), 3, "{out}");
@@ -341,15 +318,10 @@ mod tests {
     #[test]
     fn info_reports_mates_in_moves() {
         // giving mate in 1, and getting mated in 1 (Ka7 Ra1#)
-        let out = output("6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1", 2);
+        let out = output(MATE_IN_ONE, 2);
         assert!(out.contains(" score mate 1 "), "{out}");
 
         let out = output("k7/2K5/8/8/8/8/8/7R b - - 0 1", 3);
         assert!(out.contains(" score mate -1 "), "{out}");
-    }
-
-    #[test]
-    fn no_info_without_legal_moves() {
-        assert_eq!(output("5Q1k/8/6K1/8/8/8/8/8 b - - 0 1", 3), "");
     }
 }

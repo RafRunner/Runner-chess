@@ -126,15 +126,6 @@ mod tests {
     }
 
     #[test]
-    fn a_reduced_move_still_gets_searched_a_ply_deep() {
-        for (depth, idx) in reduced() {
-            // the move itself is one ply, the reduction comes on top of it
-            let child_depth = depth - 1 - reduction(depth, idx, 0, 0);
-            assert!(child_depth >= 1, "depth {depth}, move {idx}: {child_depth}");
-        }
-    }
-
-    #[test]
     fn later_moves_are_reduced_at_least_as_much() {
         for (depth, idx) in reduced() {
             assert!(
@@ -240,6 +231,7 @@ mod tests {
     #[test]
     fn any_history_still_leaves_a_ply_to_search() {
         for (depth, idx) in reduced() {
+            // the move itself is one ply, the reduction comes on top of it
             for history in HISTORIES {
                 let child_depth = depth - 1 - reduction(depth, idx, history, 0);
                 assert!(

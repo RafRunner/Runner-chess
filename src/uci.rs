@@ -481,7 +481,10 @@ fn parse_go(args: &[&str]) -> Result<Limits, UciError> {
 mod tests {
     use std::{assert_matches, sync::Mutex};
 
-    use crate::search::Limits;
+    use crate::{
+        search::Limits,
+        test_utils::{CASTLING_WHITE, KIWIPETE, LOST_KING, MATED},
+    };
 
     use super::*;
 
@@ -582,14 +585,16 @@ mod tests {
 
     #[test]
     fn position_fen() {
-        let fen = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1";
-        assert_eq!(fen_after(&format!("position fen {fen}")), fen);
+        assert_eq!(
+            fen_after(&format!("position fen {CASTLING_WHITE}")),
+            CASTLING_WHITE
+        );
     }
 
     #[test]
     fn position_fen_with_moves() {
         assert_eq!(
-            fen_after("position fen r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1 moves e1g1 e8c8"),
+            fen_after(&format!("position fen {CASTLING_WHITE} moves e1g1 e8c8")),
             "2kr3r/8/8/8/8/8/8/R4RK1 w - - 2 2"
         );
     }
@@ -715,12 +720,8 @@ mod tests {
     fn go_sees_repetitions_of_the_game() {
         // Black is lost, but Kh8 brings back a position the game already had twice
         let mut uci = uci();
-        run(
-            &mut uci,
-            "position fen 6k1/8/8/8/8/8/8/KQ6 b - - 0 1 \
-             moves g8h8 b1c1 h8g7 c1b1 g7h8 b1c1 h8g8 c1b1",
-        )
-        .unwrap();
+        let moves = "g8h8 b1c1 h8g7 c1b1 g7h8 b1c1 h8g8 c1b1";
+        run(&mut uci, &format!("position fen {LOST_KING} moves {moves}")).unwrap();
         let (_, out) = run(&mut uci, "go depth 3").unwrap();
 
         assert_eq!(bestmove(&out), "g8h8", "{out}");
@@ -884,7 +885,6 @@ mod tests {
     }
 
     /// Black to move and mated, so the search has nothing to do
-    const MATED: &str = "7k/6Q1/6K1/8/8/8/8/8 b - - 0 1";
 
     #[test]
     fn an_infinite_search_writes_its_bestmove_only_after_stop() {
@@ -991,11 +991,7 @@ mod tests {
     #[test]
     fn go_perft_uses_current_position() {
         let mut uci = uci();
-        run(
-            &mut uci,
-            "position fen r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-        )
-        .unwrap();
+        run(&mut uci, &format!("position fen {KIWIPETE}")).unwrap();
         assert_eq!(
             perft_lines(&mut uci, 2).last().unwrap(),
             "Nodes searched: 2039"

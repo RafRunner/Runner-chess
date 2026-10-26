@@ -347,7 +347,7 @@ mod tests {
     use super::*;
     use crate::{
         search::{Budget, Searcher, TranspositionTable},
-        test_utils::{KIWIPETE, PERFT_POSITIONS, board, find_move, mirror_fen},
+        test_utils::{KIWIPETE, PERFT_POSITIONS, board, both_colors, find_move, legal_uci, sorted},
     };
 
     /// The legal moves of `fen` in the order the search tries them at `ply`, with `first`
@@ -446,10 +446,7 @@ mod tests {
     fn the_picker_gives_the_order_of_a_full_sort() {
         // the search leaves killers and history for the ordering to use
         let mut ordering = MoveOrdering::new();
-        let fens: Vec<String> = PERFT_POSITIONS
-            .into_iter()
-            .flat_map(|fen| [fen.to_string(), mirror_fen(fen)])
-            .collect();
+        let fens: Vec<String> = PERFT_POSITIONS.into_iter().flat_map(both_colors).collect();
         for fen in &fens {
             let mut tt = TranspositionTable::new(1);
             Searcher::new(Budget::depth(Some(6)), &mut tt, &mut ordering)
@@ -483,15 +480,7 @@ mod tests {
     #[test]
     fn ordering_keeps_every_legal_move() {
         for fen in PERFT_POSITIONS {
-            let mut ordered = ordered_uci(fen);
-            let mut legal: Vec<String> = board(fen)
-                .legal_successors()
-                .map(|(mv, _)| mv.to_uci())
-                .collect();
-
-            ordered.sort();
-            legal.sort();
-            assert_eq!(ordered, legal, "{fen}");
+            assert_eq!(sorted(ordered_uci(fen)), legal_uci(fen), "{fen}");
         }
     }
 

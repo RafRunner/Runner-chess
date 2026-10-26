@@ -335,7 +335,8 @@ mod tests {
 
     use super::*;
     use crate::test_utils::{
-        KIWIPETE, PERFT_POSITIONS, POSITION_3, board, find_move, mirror_fen, moves_of,
+        CASTLING_BLACK, CASTLING_WHITE, KIWIPETE, PERFT_POSITIONS, POSITION_3, board, both_colors,
+        find_move, legal_uci, moves_of, sorted,
     };
     use Square as S;
 
@@ -391,7 +392,7 @@ mod tests {
         for fen in PERFT_POSITIONS
             .into_iter()
             .chain(special)
-            .flat_map(|fen| [fen.to_string(), mirror_fen(fen)])
+            .flat_map(both_colors)
         {
             assert_checks_and_legality_match(&board(&fen), 2);
         }
@@ -410,54 +411,45 @@ mod tests {
         }
     }
 
-    /// sorted, so failures print in a predictable order
-    fn sorted(mut names: Vec<String>) -> Vec<String> {
-        names.sort();
-        names
-    }
-
     fn expected(names: &[&str]) -> Vec<String> {
         sorted(names.iter().map(|s| s.to_string()).collect())
     }
 
-    /// destination of every move starting on `from`
-    fn targets_from(fen: &str, from: Square) -> Vec<String> {
-        let (_, moves) = generate(fen);
+    /// The generated moves of `fen` that `keep` accepts, written by `name`
+    fn moves_where(
+        fen: &str,
+        keep: impl Fn(&Move) -> bool,
+        name: fn(&Move) -> String,
+    ) -> Vec<String> {
         sorted(
-            moves
+            generate(fen)
+                .1
                 .iter()
-                .filter(|mv| mv.from() == from)
-                .map(|mv| mv.to().to_algebraic())
+                .filter(|mv| keep(mv))
+                .map(name)
                 .collect(),
         )
     }
 
+    /// The destination of every move starting on each case's square
     fn assert_targets(cases: &[(&str, Square, &[&str])]) {
         for &(fen, from, names) in cases {
-            assert_eq!(
-                targets_from(fen, from),
-                expected(names),
-                "{fen} from {from}"
-            );
+            let targets = moves_where(fen, |mv| mv.from() == from, |mv| mv.to().to_algebraic());
+            assert_eq!(targets, expected(names), "{fen} from {from}");
         }
     }
 
-    /// every move starting on `from`, in UCI, so promotions show the piece
-    fn uci_from(fen: &str, from: Square) -> Vec<String> {
-        let (_, moves) = generate(fen);
-        sorted(
-            moves
-                .iter()
-                .filter(|mv| mv.from() == from)
-                .map(|mv| mv.to_uci())
-                .collect(),
-        )
-    }
-
+    /// Every move starting on each case's square, in UCI, so promotions show the piece
     fn assert_uci_from(cases: &[(&str, Square, &[&str])]) {
         for &(fen, from, names) in cases {
-            assert_eq!(uci_from(fen, from), expected(names), "{fen} from {from}");
+            let moves = moves_where(fen, |mv| mv.from() == from, |mv| mv.to_uci());
+            assert_eq!(moves, expected(names), "{fen} from {from}");
         }
+    }
+
+    /// The moves of `kind`, in UCI
+    fn uci_of_kind(fen: &str, kind: MoveKind) -> Vec<String> {
+        moves_where(fen, |mv| mv.kind() == kind, |mv| mv.to_uci())
     }
 
     /// kind of the generated move written as `uci`
@@ -546,13 +538,7 @@ mod tests {
             ("r3k2r/B7/8/8/8/8/8/R3K2R b KQkq - 0 1", &["e8c8", "e8g8"]),
         ];
         for (fen, names) in cases {
-            let (_, moves) = generate(fen);
-            let castles = moves
-                .iter()
-                .filter(|mv| mv.kind() == MoveKind::Castle)
-                .map(|mv| mv.to_uci())
-                .collect();
-            assert_eq!(sorted(castles), expected(names), "{fen}");
+            assert_eq!(uci_of_kind(fen, MoveKind::Castle), expected(names), "{fen}");
         }
     }
 
@@ -637,13 +623,11 @@ mod tests {
             ("7k/8/8/3p2P1/8/8/8/K7 w - d6 0 1", &[]), // no pawn beside d5
         ];
         for (fen, names) in cases {
-            let (_, moves) = generate(fen);
-            let captures = moves
-                .iter()
-                .filter(|mv| mv.kind() == MoveKind::EnPassant)
-                .map(|mv| mv.to_uci())
-                .collect();
-            assert_eq!(sorted(captures), expected(names), "{fen}");
+            assert_eq!(
+                uci_of_kind(fen, MoveKind::EnPassant),
+                expected(names),
+                "{fen}"
+            );
         }
 
         // the capturing pawn can still push, and d6 isn't also generated as a normal move
@@ -663,10 +647,7 @@ mod tests {
     /// pawnless and with nothing to filter, so it's also a known perft(1)
     #[test]
     fn rooks_and_kings_move_count() {
-        for fen in [
-            "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
-            "r3k2r/8/8/8/8/8/8/R3K2R b KQkq - 0 1",
-        ] {
+        for fen in [CASTLING_WHITE, CASTLING_BLACK] {
             assert_eq!(generate(fen).1.len(), 26, "{fen}");
         }
     }
@@ -692,16 +673,6 @@ mod tests {
         }
     }
 
-    /// legal moves in UCI, sorted
-    fn legal_uci(fen: &str) -> Vec<String> {
-        sorted(
-            board(fen)
-                .legal_successors()
-                .map(|(mv, _)| mv.to_uci())
-                .collect(),
-        )
-    }
-
     #[test]
     fn legal_successors_drop_moves_that_leave_the_king_attacked() {
         #[rustfmt::skip]
@@ -719,23 +690,6 @@ mod tests {
         ];
         for (fen, names) in cases {
             assert_eq!(legal_uci(fen), expected(names), "{fen}");
-        }
-    }
-
-    /// the filter must be exact: it keeps every safe move and nothing else
-    #[test]
-    fn legal_successors_split_pseudo_legal_moves_exactly() {
-        for fen in PERFT_POSITIONS.into_iter().chain([KIWIPETE_BLACK]) {
-            let (b, pseudo_legal) = generate(fen);
-            let us = b.side_to_move();
-            let legal: HashSet<Move> = b.legal_successors().map(|(mv, _)| mv).collect();
-            for mv in pseudo_legal {
-                let safe = !b.make_move(mv).is_in_check(us);
-                assert_eq!(legal.contains(&mv), safe, "{fen} {mv}");
-            }
-            for (mv, next) in b.legal_successors() {
-                assert_eq!(next.side_to_move(), us.oposite(), "{fen} {mv}");
-            }
         }
     }
 

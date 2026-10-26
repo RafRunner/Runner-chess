@@ -154,7 +154,7 @@ mod tests {
     use super::*;
     use crate::{
         bitboard::BitBoard,
-        test_utils::{PERFT_POSITIONS, board, mirror_fen},
+        test_utils::{KIWIPETE, PERFT_POSITIONS, board, both_colors, mirror_fen},
     };
 
     /// The 768 inputs
@@ -244,10 +244,7 @@ mod tests {
     fn updates_match_a_refresh_along_perft_trees() {
         let mut kinds = HashSet::new();
         // two plies already play every kind of move, and the mirrors with the other color
-        for fen in PERFT_POSITIONS
-            .into_iter()
-            .flat_map(|fen| [fen.to_string(), mirror_fen(fen)])
-        {
+        for fen in PERFT_POSITIONS.into_iter().flat_map(both_colors) {
             let board = board(&fen);
             assert_updates_match(&board, Accumulators::new(&board), 2, &mut kinds);
         }
@@ -261,10 +258,7 @@ mod tests {
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
             -2.6,
         ),
-        (
-            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-            -150.3,
-        ),
+        (KIWIPETE, -150.3),
         (
             "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
             79.0,

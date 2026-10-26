@@ -91,7 +91,7 @@ mod tests {
     use super::*;
     use crate::{
         square::Square,
-        test_utils::{PERFT_POSITIONS, board, find_move},
+        test_utils::{CASTLING_WHITE, PERFT_POSITIONS, board, play},
     };
 
     // The offsets below are written as the book format page gives them, instead of
@@ -117,13 +117,6 @@ mod tests {
 
     fn hash(fen: &str) -> u64 {
         ZobristHash::hash(&board(fen)).0
-    }
-
-    /// The board after playing the space separated `moves` from `fen`.
-    fn play(fen: &str, moves: &str) -> Board {
-        moves
-            .split_whitespace()
-            .fold(board(fen), |b, uci| b.make_move(find_move(&b, uci)))
     }
 
     /// The kings on e1 and e8, plus `piece` on `at`, white to move.
@@ -230,7 +223,7 @@ mod tests {
             // taking en passant or normally ends with the same pawn on d6
             ("4k3/3p4/8/4P3/8/8/8/4K3 b - - 0 1", "d7d5 e5d6 e8d8", "d7d6 e5d6 e8d8"),
             // castling or walking the king and the rook to the same squares
-            ("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "e1g1 e8d8", "e1e2 a8b8 h1f1 b8a8 e2f2 e8e7 f2g1 e7d8"),
+            (CASTLING_WHITE, "e1g1 e8d8", "e1e2 a8b8 h1f1 b8a8 e2f2 e8e7 f2g1 e7d8"),
         ];
         for (fen, a, b) in cases {
             let (a_board, b_board) = (play(fen, a), play(fen, b));

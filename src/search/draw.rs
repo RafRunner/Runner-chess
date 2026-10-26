@@ -64,12 +64,11 @@ impl Searcher<'_> {
 mod tests {
     use super::*;
     use crate::{
-        chess_move::Move,
         search::{
-            Budget, MoveOrdering, TranspositionTable,
-            tests::{assert_best, both_colors, score},
+            Budget,
+            tests::{Searched, assert_best, score, search},
         },
-        test_utils::{board, find_move, static_eval},
+        test_utils::{LOST_KING, board, both_colors, play_with_history, static_eval},
     };
 
     #[test]
@@ -80,13 +79,8 @@ mod tests {
         for fen in both_colors("6k1/rr4p1/8/8/8/8/ppp1Q1PP/7K w - - 0 1") {
             assert!(static_eval(&board(&fen)) < Score::new(-100), "{fen}");
 
-            let mut tt = TranspositionTable::new(1);
-            let mut ordering = MoveOrdering::new();
-            let mut searcher = Searcher::new(Budget::depth(Some(5)), &mut tt, &mut ordering);
-            searcher
-                .search_root(&board(&fen), &[], &mut std::io::sink())
-                .unwrap();
-            assert_eq!(searcher.score(), Some(Score::DRAW), "{fen}");
+            let searched = search(&board(&fen), &[], Budget::depth(Some(5)));
+            assert_eq!(searched.score, Some(Score::DRAW), "{fen}");
         }
     }
 
@@ -120,47 +114,26 @@ mod tests {
         }
     }
 
-    /// Plays `moves` from `fen` as the game so far, then searches the position they
-    /// reach: the best move and what the search wrote.
-    fn search_after(fen: &str, moves: &[&str], depth: u32) -> (Option<String>, String) {
-        let mut b = board(fen);
-        let mut history = Vec::new();
-        for &uci in moves {
-            history.push(b.hash());
-            b = b.make_move(find_move(&b, uci));
-        }
-
-        let mut out = Vec::new();
-        let mut tt = TranspositionTable::new(1);
-        let best = Searcher::new(
-            Budget::depth(Some(depth)),
-            &mut tt,
-            &mut MoveOrdering::new(),
-        )
-        .search_root(&b, &history, &mut out)
-        .unwrap();
-        (best.map(Move::to_uci), String::from_utf8(out).unwrap())
+    /// Plays `moves` from `fen` as the game so far, then searches the position they reach
+    fn search_after(fen: &str, moves: &str, depth: u32) -> Searched {
+        let (board, history) = play_with_history(fen, moves);
+        search(&board, &history, Budget::depth(Some(depth)))
     }
-
-    /// Black is lost, with the king shuffling around h8 against a queen.
-    const LOST_KING: &str = "6k1/8/8/8/8/8/8/KQ6 b - - 0 1";
 
     #[test]
     fn repetitions_come_from_the_game_too() {
         // Kh8 brings back a position the game already had twice
-        let moves = [
-            "g8h8", "b1c1", "h8g7", "c1b1", "g7h8", "b1c1", "h8g8", "c1b1",
-        ];
+        let moves = "g8h8 b1c1 h8g7 c1b1 g7h8 b1c1 h8g8 c1b1";
 
         // at depth 1 the repetition is right at the horizon, so it has to be checked
         // before quiescence
         for depth in 1..=3 {
-            let (best, out) = search_after(LOST_KING, &moves, depth);
+            let Searched { best, out, .. } = search_after(LOST_KING, moves, depth);
             assert_eq!(best.as_deref(), Some("g8h8"), "{out}");
             assert!(out.contains(" score cp 0 "), "{out}");
 
             // the same position without the game behind it is just lost
-            let (_, out) = search_after(LOST_KING, &[], depth);
+            let out = search_after(LOST_KING, "", depth).out;
             assert!(!out.contains(" score cp 0 "), "{out}");
         }
     }
@@ -169,9 +142,8 @@ mod tests {
     fn a_single_repetition_of_the_game_is_not_a_draw_yet() {
         // the game had the position after Kh8 only once: playing it again makes it the
         // second time, and White doesn't have to repeat it a third
-        let moves = ["g8h8", "b1c1", "h8g8", "c1b1"];
         for depth in 1..=3 {
-            let (_, out) = search_after(LOST_KING, &moves, depth);
+            let out = search_after(LOST_KING, "g8h8 b1c1 h8g8 c1b1", depth).out;
             assert!(!out.contains(" score cp 0 "), "{out}");
         }
     }
@@ -182,7 +154,7 @@ mod tests {
         // the halfmove clock reaches back into the game, but the repetition itself is
         // all inside the search, where once is enough
         let fen = "6k1/r5p1/1r6/8/8/8/ppp1Q1PP/6K1 w - - 0 1";
-        let (best, out) = search_after(fen, &["g1h1", "b6b7"], 5);
+        let Searched { best, out, .. } = search_after(fen, "g1h1 b6b7", 5);
         assert_eq!(best.as_deref(), Some("e2e8"), "{out}");
         assert!(out.contains(" score cp 0 "), "{out}");
     }

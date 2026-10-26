@@ -207,12 +207,8 @@ const fn leaper_table(deltas: &[Delta]) -> [BitBoard; 64] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::squares;
     use Square as S;
-
-    /// the squares of a bitboard, in index order (a1, b1, ..., h8)
-    fn squares(bb: BitBoard) -> Vec<Square> {
-        bb.collect()
-    }
 
     /// each square's attacks must be exactly the expected targets, in any order
     fn assert_attacks(table: &[BitBoard; 64], cases: &[(Square, &[Square])]) {
