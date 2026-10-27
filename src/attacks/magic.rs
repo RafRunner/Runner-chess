@@ -1,5 +1,10 @@
+use std::sync::LazyLock;
+
 use super::rays::{self, Direction, negative_ray, positive_ray};
 use crate::{bitboard::BitBoard, rng::Rng, square::Square};
+
+pub(super) static MAGIC_BISHOPS: LazyLock<MagicBBs> = LazyLock::new(|| MagicBBs::new_bishops(1337));
+pub(super) static MAGIC_ROOKS: LazyLock<MagicBBs> = LazyLock::new(|| MagicBBs::new_rooks(1337));
 
 fn bishop_mask_and_bits() -> ([BitBoard; 64], [u8; 64]) {
     let border = BitBoard::RANK_1 | BitBoard::FILE_A | BitBoard::RANK_8 | BitBoard::FILE_H;
@@ -36,6 +41,7 @@ struct Magic {
     mask: BitBoard,
     bits: u8,
     magic: u64,
+    offset: usize,
 }
 
 impl Magic {
@@ -44,33 +50,41 @@ impl Magic {
             mask: BitBoard::EMPTY,
             bits: 0,
             magic: 0,
+            offset: 0,
         }
     }
 }
 
 pub(super) struct MagicBBs {
     magics: [Magic; 64],
-    tables: Vec<Vec<BitBoard>>,
+    tables: Vec<BitBoard>,
 }
 
 impl MagicBBs {
     pub(super) fn new_bishops(seed: u64) -> Self {
         let (masks, bits) = bishop_mask_and_bits();
-        let (magics, tables) = find_magic(Rng(seed), masks, bits, rays::bishop_attacks);
+        let mut tables = Vec::with_capacity(5_248);
+        let magics = find_magic(Rng(seed), masks, bits, rays::bishop_attacks, &mut tables);
         Self { magics, tables }
     }
 
     pub(super) fn new_rooks(seed: u64) -> Self {
         let (masks, bits) = rook_mask_and_bits();
-        let (magics, tables) = find_magic(Rng(seed), masks, bits, rays::rook_attacks);
+        let mut tables = Vec::with_capacity(102_400);
+        let magics = find_magic(Rng(seed), masks, bits, rays::rook_attacks, &mut tables);
         Self { magics, tables }
     }
 
     pub(super) fn attacks(&self, sq: Square, occupied: BitBoard) -> BitBoard {
-        let Magic { mask, bits, magic } = self.magics[sq];
+        let Magic {
+            mask,
+            bits,
+            magic,
+            offset,
+        } = self.magics[sq];
         let blockers = (occupied & mask).raw();
         let index = blockers.wrapping_mul(magic) >> (64 - bits);
-        self.tables[sq.index()][index as usize]
+        self.tables[offset + index as usize]
     }
 }
 
@@ -79,9 +93,9 @@ fn find_magic(
     masks: [BitBoard; 64],
     bits: [u8; 64],
     attack_fn: fn(Square, BitBoard) -> BitBoard,
-) -> ([Magic; 64], Vec<Vec<BitBoard>>) {
+    tables: &mut Vec<BitBoard>,
+) -> [Magic; 64] {
     let mut magics = [Magic::empty(); 64];
-    let mut tables = Vec::with_capacity(512);
 
     for sq in BitBoard::FULL {
         let mask = masks[sq];
@@ -123,24 +137,24 @@ fn find_magic(
             }
 
             if ok {
+                let offset = tables.len();
                 magics[sq] = Magic {
                     mask,
                     bits: this_bits,
                     magic,
+                    offset,
                 };
-                tables.push(table);
+                tables.extend_from_slice(&table);
                 break;
             }
         }
     }
 
-    (magics, tables)
+    magics
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::LazyLock;
-
     use super::*;
     use crate::square::Square;
     use Square as S;
@@ -199,11 +213,6 @@ mod tests {
         assert_eq!(bishop_bits[S::A4], 5);
     }
 
-    const SEEDS: [u64; 3] = [1, 2, 0x5eed];
-
-    /// Found once for every test, since the rooks take a while
-    static ROOKS: LazyLock<MagicBBs> = LazyLock::new(|| MagicBBs::new_rooks(SEEDS[0]));
-
     type Slow = fn(Square, BitBoard) -> BitBoard;
 
     /// The `n`th of the 2^bits ways to put pieces on `mask`: bit `i` of `n` says whether
@@ -234,11 +243,8 @@ mod tests {
 
     #[test]
     fn every_filling_of_the_mask_finds_its_attacks() {
-        for seed in SEEDS {
-            let bishops = MagicBBs::new_bishops(seed);
-            assert_every_filling(&bishops, bishop_mask_and_bits(), rays::bishop_attacks);
-        }
-        assert_every_filling(&ROOKS, rook_mask_and_bits(), rays::rook_attacks);
+        assert_every_filling(&MAGIC_BISHOPS, bishop_mask_and_bits(), rays::bishop_attacks);
+        assert_every_filling(&MAGIC_ROOKS, rook_mask_and_bits(), rays::rook_attacks);
     }
 
     /// Whole boards, with pieces on the edges, on the slider's own square and off its
@@ -259,19 +265,32 @@ mod tests {
 
     #[test]
     fn pieces_off_the_mask_change_nothing() {
-        assert_whole_boards(&MagicBBs::new_bishops(SEEDS[0]), rays::bishop_attacks);
-        assert_whole_boards(&ROOKS, rays::rook_attacks);
+        assert_whole_boards(&MAGIC_BISHOPS, rays::bishop_attacks);
+        assert_whole_boards(&MAGIC_ROOKS, rays::rook_attacks);
     }
 
     #[test]
     fn each_square_gets_a_slot_for_each_filling() {
-        let bishops = MagicBBs::new_bishops(SEEDS[0]);
-        for magics in [&bishops, &*ROOKS] {
-            assert_eq!(magics.tables.len(), 64);
+        for magics in [&*MAGIC_BISHOPS, &*MAGIC_ROOKS] {
+            let mut next = 0;
             for sq in BitBoard::FULL {
-                let slots = magics.tables[sq.index()].len();
-                assert_eq!(slots, 1 << magics.magics[sq].bits, "{sq}");
+                assert_eq!(magics.magics[sq].offset, next, "{sq}");
+                next += 1 << magics.magics[sq].bits;
             }
+            assert_eq!(magics.tables.len(), next);
+        }
+    }
+
+    // the search for the magics
+
+    const SEEDS: [u64; 3] = [1, 2, 0x5eed];
+
+    #[test]
+    fn any_seed_finds_magics_that_work() {
+        // the bishops only, as the rooks take a while
+        for seed in SEEDS {
+            let bishops = MagicBBs::new_bishops(seed);
+            assert_every_filling(&bishops, bishop_mask_and_bits(), rays::bishop_attacks);
         }
     }
 

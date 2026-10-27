@@ -1,10 +1,7 @@
 mod magic;
 mod rays;
 
-use std::sync::LazyLock;
-
 use crate::{
-    attacks::magic::MagicBBs,
     bitboard::BitBoard,
     piece::{Color, Piece, PieceKind},
     square::{Delta, Square},
@@ -14,15 +11,12 @@ pub static KNIGHT_ATTACKS: [BitBoard; 64] = knight_table();
 pub static KING_ATTACKS: [BitBoard; 64] = king_table();
 pub static PAWN_ATTACKS: [[BitBoard; 64]; 2] = [pawn_table(Color::White), pawn_table(Color::Black)];
 
-static MAGIC_BISHOPS: LazyLock<MagicBBs> = LazyLock::new(|| MagicBBs::new_bishops(1337));
-static MAGIC_ROOKS: LazyLock<MagicBBs> = LazyLock::new(|| MagicBBs::new_rooks(1337));
-
 pub fn bishop_attacks(sq: Square, occupied: BitBoard) -> BitBoard {
-    MAGIC_BISHOPS.attacks(sq, occupied)
+    magic::MAGIC_BISHOPS.attacks(sq, occupied)
 }
 
 pub fn rook_attacks(sq: Square, occupied: BitBoard) -> BitBoard {
-    MAGIC_ROOKS.attacks(sq, occupied)
+    magic::MAGIC_ROOKS.attacks(sq, occupied)
 }
 
 pub fn attacks(piece: Piece, sq: Square, occupied: BitBoard) -> BitBoard {
