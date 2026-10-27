@@ -156,9 +156,32 @@ cd trainer && cargo r -r -- ../data/<name>.data <net id> [superbatches] [wdl]
   engine's inference to be compared with.
 - **Backend**: Metal by default, `--no-default-features --features cuda` on NVIDIA.
 - bullet doesn't implement a validation set yet: it prints a warning when given one.
+  `cargo r -r --bin validate -- checkpoints/<net id>-30 ../data/<name>.data` gives the
+  loss of a network on any data, and how many times bigger its scores are than the
+  data's. On the network's own training data, that's the inflation the engine divides
+  its output by (`NETWORK_INFLATION`).
 
 On an M4 Pro, training goes at about 4.6 million positions a second: 30 passes over 10
 million positions take 70 seconds.
+
+### Which data
+
+Every network trains on the games of the current version and of the two before it,
+each generation half from random openings and half from `popularpos_lichess_v3.epd`,
+in `data/<version>-random/` and `data/<version>-book/`. For net-005:
+
+```
+scripts/prepare-data.sh all-90m data/0.10.0-random data/0.10.0-book \
+    data/0.9.2-random data/0.9.2-book data/0.9.1
+```
+
+The labels of the older generations come from shallower searches of weaker versions,
+but more positions still helped: 60 million positions of 0.10.0 and 0.9.2 beat 30
+million of 0.10.0 alone by 83 Elo, and adding the 30 million of 0.9.1 was better still.
+Older games, like those of 0.8.2 with its hand-written evaluation, stay out. Neither
+the book nor the Syzygy tables go further than that: half the games from the book
+gained 28 Elo over random openings only, while endgames relabelled with the tables
+lost 10, the network learning wins of perfect play that the engine can't convert.
 
 ### `net-001`
 

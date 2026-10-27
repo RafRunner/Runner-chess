@@ -1,6 +1,7 @@
 //! `cargo r -r --bin validate -- <checkpoint dir> <data> [wdl]`: the training loss of
 //! `raw.bin` on other data, since bullet has no validation yet, and the loss against the
-//! result and the score alone.
+//! result and the score alone. Also how many times bigger the network's scores are than
+//! those of the data, a factor the engine divides its output by.
 
 use std::{fs, path::Path, thread};
 
@@ -99,9 +100,10 @@ fn main() {
             .map(|share| {
                 let network = &network;
                 scope.spawn(move || {
-                    let mut sums = [0f64; 3];
+                    let mut sums = [0f64; 5];
                     for &board in share {
-                        let predicted = sigmoid(network.output(board));
+                        let output = network.output(board);
+                        let predicted = sigmoid(output);
                         // the scale goes in as a factor: sigmoid(score * k)
                         let targets = [
                             board.blended_result(wdl, 1.0 / SCALE),
@@ -111,12 +113,16 @@ fn main() {
                         for (sum, target) in sums.iter_mut().zip(targets) {
                             *sum += f64::from((predicted - target).powi(2));
                         }
+                        // for the least squares slope of the network's scores on the data's
+                        let (score, net) = (f64::from(board.score()), f64::from(output * SCALE));
+                        sums[3] += score * net;
+                        sums[4] += score * score;
                     }
                     sums
                 })
             })
             .collect();
-        workers.into_iter().fold([0f64; 3], |mut total, worker| {
+        workers.into_iter().fold([0f64; 5], |mut total, worker| {
             for (t, s) in total.iter_mut().zip(worker.join().unwrap()) {
                 *t += s;
             }
@@ -133,4 +139,5 @@ fn main() {
         sums[1] / n,
         sums[2] / n,
     );
+    println!("scores {:.2} times those of the data", sums[3] / sums[4]);
 }
