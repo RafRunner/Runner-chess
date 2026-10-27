@@ -38,7 +38,7 @@ impl Searcher<'_> {
             let history = self.ordering.history_bonus(mv, node.board.side_to_move());
             // a ply more off the principal variation, whose moves are expected to fail
             // low anyway
-            let extra = i32::from(!node.is_pv());
+            let extra = if node.is_pv() { 0 } else { 1 };
             reduction(node.depth, move_idx, history, extra)
         } else {
             0

@@ -1,5 +1,5 @@
 use super::rays::{self, Direction, negative_ray, positive_ray};
-use crate::{bitboard::BitBoard, rng::Rng};
+use crate::{bitboard::BitBoard, rng::Rng, square::Square};
 
 fn bishop_mask_and_bits() -> ([BitBoard; 64], [u8; 64]) {
     let border = BitBoard::RANK_1 | BitBoard::FILE_A | BitBoard::RANK_8 | BitBoard::FILE_H;
@@ -14,10 +14,74 @@ fn bishop_mask_and_bits() -> ([BitBoard; 64], [u8; 64]) {
     (mask, bits)
 }
 
-fn bishop_magic(mut rng: Rng) -> ([u64; 64], Vec<Vec<BitBoard>>) {
-    let mut magics = [0; 64];
+fn rook_mask_and_bits() -> ([BitBoard; 64], [u8; 64]) {
+    let mut mask = [BitBoard::EMPTY; 64];
+    let mut bits = [0u8; 64];
+
+    for sq in BitBoard::FULL {
+        let file_atk = (positive_ray(sq, BitBoard::EMPTY, Direction::North) & !BitBoard::RANK_8)
+            | (negative_ray(sq, BitBoard::EMPTY, Direction::South) & !BitBoard::RANK_1);
+        let rank_atk = (positive_ray(sq, BitBoard::EMPTY, Direction::East) & !BitBoard::FILE_H)
+            | (negative_ray(sq, BitBoard::EMPTY, Direction::West) & !BitBoard::FILE_A);
+
+        mask[sq] = file_atk | rank_atk;
+        bits[sq] = mask[sq].count_ones() as u8 // Safe, mask never has more than 12 ones
+    }
+
+    (mask, bits)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Magic {
+    mask: BitBoard,
+    bits: u8,
+    magic: u64,
+}
+
+impl Magic {
+    pub fn empty() -> Self {
+        Self {
+            mask: BitBoard::EMPTY,
+            bits: 0,
+            magic: 0,
+        }
+    }
+}
+
+pub(super) struct MagicBBs {
+    magics: [Magic; 64],
+    tables: Vec<Vec<BitBoard>>,
+}
+
+impl MagicBBs {
+    pub(super) fn new_bishops(seed: u64) -> Self {
+        let (masks, bits) = bishop_mask_and_bits();
+        let (magics, tables) = find_magic(Rng(seed), masks, bits, rays::bishop_attacks);
+        Self { magics, tables }
+    }
+
+    pub(super) fn new_rooks(seed: u64) -> Self {
+        let (masks, bits) = rook_mask_and_bits();
+        let (magics, tables) = find_magic(Rng(seed), masks, bits, rays::rook_attacks);
+        Self { magics, tables }
+    }
+
+    pub(super) fn attacks(&self, sq: Square, occupied: BitBoard) -> BitBoard {
+        let Magic { mask, bits, magic } = self.magics[sq];
+        let blockers = (occupied & mask).raw();
+        let index = blockers.wrapping_mul(magic) >> (64 - bits);
+        self.tables[sq.index()][index as usize]
+    }
+}
+
+fn find_magic(
+    mut rng: Rng,
+    masks: [BitBoard; 64],
+    bits: [u8; 64],
+    attack_fn: fn(Square, BitBoard) -> BitBoard,
+) -> ([Magic; 64], Vec<Vec<BitBoard>>) {
+    let mut magics = [Magic::empty(); 64];
     let mut tables = Vec::with_capacity(512);
-    let (masks, bits) = bishop_mask_and_bits();
 
     for sq in BitBoard::FULL {
         let mask = masks[sq];
@@ -28,7 +92,7 @@ fn bishop_magic(mut rng: Rng) -> ([u64; 64], Vec<Vec<BitBoard>>) {
 
         loop {
             occupied.push(subset);
-            attacks.push(rays::bishop_attacks(sq, subset));
+            attacks.push(attack_fn(sq, subset));
             subset = BitBoard::new(subset.raw().wrapping_sub(mask.raw())) & mask;
 
             if subset == BitBoard::EMPTY {
@@ -59,7 +123,11 @@ fn bishop_magic(mut rng: Rng) -> ([u64; 64], Vec<Vec<BitBoard>>) {
             }
 
             if ok {
-                magics[sq] = magic;
+                magics[sq] = Magic {
+                    mask,
+                    bits: this_bits,
+                    magic,
+                };
                 tables.push(table);
                 break;
             }
@@ -69,25 +137,10 @@ fn bishop_magic(mut rng: Rng) -> ([u64; 64], Vec<Vec<BitBoard>>) {
     (magics, tables)
 }
 
-fn rook_mask_and_bits() -> ([BitBoard; 64], [u8; 64]) {
-    let mut mask = [BitBoard::EMPTY; 64];
-    let mut bits = [0u8; 64];
-
-    for sq in BitBoard::FULL {
-        let file_atk = (positive_ray(sq, BitBoard::EMPTY, Direction::North) & !BitBoard::RANK_8)
-            | (negative_ray(sq, BitBoard::EMPTY, Direction::South) & !BitBoard::RANK_1);
-        let rank_atk = (positive_ray(sq, BitBoard::EMPTY, Direction::East) & !BitBoard::FILE_H)
-            | (negative_ray(sq, BitBoard::EMPTY, Direction::West) & !BitBoard::FILE_A);
-
-        mask[sq] = file_atk | rank_atk;
-        bits[sq] = mask[sq].count_ones() as u8 // Safe, mask never has more than 12 ones
-    }
-
-    (mask, bits)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::LazyLock;
+
     use super::*;
     use crate::square::Square;
     use Square as S;
@@ -146,37 +199,12 @@ mod tests {
         assert_eq!(bishop_bits[S::A4], 5);
     }
 
-    // the bishop's magics
-
-    /// The bishop's magics found from `seed`, with what a lookup needs, looked up the
-    /// way the engine will
-    struct Bishops {
-        masks: [BitBoard; 64],
-        bits: [u8; 64],
-        magics: [u64; 64],
-        tables: Vec<Vec<BitBoard>>,
-    }
-
-    impl Bishops {
-        fn new(seed: u64) -> Self {
-            let (masks, bits) = bishop_mask_and_bits();
-            let (magics, tables) = bishop_magic(Rng(seed));
-            Self {
-                masks,
-                bits,
-                magics,
-                tables,
-            }
-        }
-
-        fn attacks(&self, sq: Square, occupied: BitBoard) -> BitBoard {
-            let blockers = (occupied & self.masks[sq]).raw();
-            let index = blockers.wrapping_mul(self.magics[sq]) >> (64 - self.bits[sq]);
-            self.tables[sq.index()][index as usize]
-        }
-    }
-
     const SEEDS: [u64; 3] = [1, 2, 0x5eed];
+
+    /// Found once for every test, since the rooks take a while
+    static ROOKS: LazyLock<MagicBBs> = LazyLock::new(|| MagicBBs::new_rooks(SEEDS[0]));
+
+    type Slow = fn(Square, BitBoard) -> BitBoard;
 
     /// The `n`th of the 2^bits ways to put pieces on `mask`: bit `i` of `n` says whether
     /// its `i`th square has one. Counted apart from the generator's own enumeration
@@ -186,36 +214,18 @@ mod tests {
             .fold(BitBoard::EMPTY, |filled, (_, sq)| filled | sq.bb())
     }
 
-    #[test]
-    fn every_filling_of_the_mask_finds_its_attacks() {
-        for seed in SEEDS {
-            let bishops = Bishops::new(seed);
-            for sq in BitBoard::FULL {
-                let mask = bishops.masks[sq];
-                for n in 0..1 << bishops.bits[sq] {
-                    let occupied = filling(mask, n);
-                    assert_eq!(
-                        bishops.attacks(sq, occupied),
-                        rays::bishop_attacks(sq, occupied),
-                        "seed {seed}, {sq}, occupied {occupied:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn pieces_off_the_mask_change_nothing() {
-        // whole boards, with pieces on the edges, on the bishop's own square and off
-        // its diagonals, as the engine will pass them
-        let bishops = Bishops::new(SEEDS[0]);
-        let mut rng = Rng(7);
+    /// The masks and bits come from where the magics got them, not from the magics
+    fn assert_every_filling(
+        magics: &MagicBBs,
+        (masks, bits): ([BitBoard; 64], [u8; 64]),
+        slow: Slow,
+    ) {
         for sq in BitBoard::FULL {
-            for _ in 0..1000 {
-                let occupied = BitBoard::new(rng.next_u64() & rng.next_u64()) | sq.bb();
+            for n in 0..1 << bits[sq] {
+                let occupied = filling(masks[sq], n);
                 assert_eq!(
-                    bishops.attacks(sq, occupied),
-                    rays::bishop_attacks(sq, occupied),
+                    magics.attacks(sq, occupied),
+                    slow(sq, occupied),
                     "{sq}, occupied {occupied:?}"
                 );
             }
@@ -223,18 +233,58 @@ mod tests {
     }
 
     #[test]
-    fn each_square_gets_a_slot_for_each_filling() {
-        let bishops = Bishops::new(SEEDS[0]);
-        assert_eq!(bishops.tables.len(), 64);
+    fn every_filling_of_the_mask_finds_its_attacks() {
+        for seed in SEEDS {
+            let bishops = MagicBBs::new_bishops(seed);
+            assert_every_filling(&bishops, bishop_mask_and_bits(), rays::bishop_attacks);
+        }
+        assert_every_filling(&ROOKS, rook_mask_and_bits(), rays::rook_attacks);
+    }
+
+    /// Whole boards, with pieces on the edges, on the slider's own square and off its
+    /// lines, as the engine passes them
+    fn assert_whole_boards(magics: &MagicBBs, slow: Slow) {
+        let mut rng = Rng(7);
         for sq in BitBoard::FULL {
-            let slots = bishops.tables[sq.index()].len();
-            assert_eq!(slots, 1 << bishops.bits[sq], "{sq}");
+            for _ in 0..1000 {
+                let occupied = BitBoard::new(rng.next_u64() & rng.next_u64()) | sq.bb();
+                assert_eq!(
+                    magics.attacks(sq, occupied),
+                    slow(sq, occupied),
+                    "{sq}, occupied {occupied:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pieces_off_the_mask_change_nothing() {
+        assert_whole_boards(&MagicBBs::new_bishops(SEEDS[0]), rays::bishop_attacks);
+        assert_whole_boards(&ROOKS, rays::rook_attacks);
+    }
+
+    #[test]
+    fn each_square_gets_a_slot_for_each_filling() {
+        let bishops = MagicBBs::new_bishops(SEEDS[0]);
+        for magics in [&bishops, &*ROOKS] {
+            assert_eq!(magics.tables.len(), 64);
+            for sq in BitBoard::FULL {
+                let slots = magics.tables[sq.index()].len();
+                assert_eq!(slots, 1 << magics.magics[sq].bits, "{sq}");
+            }
         }
     }
 
     #[test]
     fn the_same_seed_finds_the_same_magics() {
         // so the tables built at startup are the same in every run
-        assert_eq!(Bishops::new(SEEDS[0]).magics, Bishops::new(SEEDS[0]).magics);
+        assert_eq!(
+            MagicBBs::new_bishops(SEEDS[0]).magics,
+            MagicBBs::new_bishops(SEEDS[0]).magics
+        );
+        assert_ne!(
+            MagicBBs::new_bishops(SEEDS[0]).magics,
+            MagicBBs::new_bishops(SEEDS[1]).magics
+        );
     }
 }
