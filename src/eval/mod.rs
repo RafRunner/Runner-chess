@@ -4,7 +4,7 @@ pub use nnue::Accumulators;
 
 use crate::{bitboard::BitBoard, board::Board, piece::PieceKind, score::Score};
 
-/// net-003 gives about 1.5x the scores it learned from, as it mostly predicts results
+/// net-005 gives about 1.5x the scores it learned from, as it mostly predicts results
 const NETWORK_INFLATION: i32 = 150;
 
 /// For the side to move: the network, except in dead positions

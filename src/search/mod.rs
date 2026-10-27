@@ -528,9 +528,11 @@ mod tests {
     fn mates_from_the_tt_keep_their_distance() {
         // the second search finds the mates of the first one in the table, stored
         // plies away from the root
+        // deep enough for both colors, whose moves come in another order, and so get
+        // pruned differently near the horizon
         for (fen, depth, mate) in [
             (MATE_IN_ONE, 2, Score::mate_in(1)),
-            ("7k/8/5K2/8/8/8/8/6R1 w - - 0 1", 4, Score::mate_in(3)), // Kf7 Kh7 Rh1#
+            ("7k/8/5K2/8/8/8/8/6R1 w - - 0 1", 8, Score::mate_in(3)), // Kf7 Kh7 Rh1#
         ] {
             for fen in both_colors(fen) {
                 let mut tt = TranspositionTable::new(1);
