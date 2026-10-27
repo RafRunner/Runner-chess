@@ -3,8 +3,9 @@ use std::sync::LazyLock;
 use super::rays::{self, Direction, negative_ray, positive_ray};
 use crate::{bitboard::BitBoard, rng::Rng, square::Square};
 
-pub(super) static MAGIC_BISHOPS: LazyLock<MagicBBs> = LazyLock::new(|| MagicBBs::new_bishops(1337));
-pub(super) static MAGIC_ROOKS: LazyLock<MagicBBs> = LazyLock::new(|| MagicBBs::new_rooks(1337));
+pub(super) static MAGIC_BISHOPS: LazyLock<MagicTable> =
+    LazyLock::new(|| MagicTable::new_bishops(1337));
+pub(super) static MAGIC_ROOKS: LazyLock<MagicTable> = LazyLock::new(|| MagicTable::new_rooks(1337));
 
 fn bishop_mask_and_bits() -> ([BitBoard; 64], [u8; 64]) {
     let border = BitBoard::RANK_1 | BitBoard::FILE_A | BitBoard::RANK_8 | BitBoard::FILE_H;
@@ -55,24 +56,24 @@ impl Magic {
     }
 }
 
-pub(super) struct MagicBBs {
+pub(super) struct MagicTable {
     magics: [Magic; 64],
-    tables: Vec<BitBoard>,
+    attacks: Vec<BitBoard>,
 }
 
-impl MagicBBs {
+impl MagicTable {
     pub(super) fn new_bishops(seed: u64) -> Self {
         let (masks, bits) = bishop_mask_and_bits();
-        let mut tables = Vec::with_capacity(5_248);
-        let magics = find_magic(Rng(seed), masks, bits, rays::bishop_attacks, &mut tables);
-        Self { magics, tables }
+        let mut attacks = Vec::with_capacity(5_248);
+        let magics = find_magic(Rng(seed), masks, bits, rays::bishop_attacks, &mut attacks);
+        Self { magics, attacks }
     }
 
     pub(super) fn new_rooks(seed: u64) -> Self {
         let (masks, bits) = rook_mask_and_bits();
-        let mut tables = Vec::with_capacity(102_400);
-        let magics = find_magic(Rng(seed), masks, bits, rays::rook_attacks, &mut tables);
-        Self { magics, tables }
+        let mut attacks = Vec::with_capacity(102_400);
+        let magics = find_magic(Rng(seed), masks, bits, rays::rook_attacks, &mut attacks);
+        Self { magics, attacks }
     }
 
     pub(super) fn attacks(&self, sq: Square, occupied: BitBoard) -> BitBoard {
@@ -84,7 +85,7 @@ impl MagicBBs {
         } = self.magics[sq];
         let blockers = (occupied & mask).raw();
         let index = blockers.wrapping_mul(magic) >> (64 - bits);
-        self.tables[offset + index as usize]
+        self.attacks[offset + index as usize]
     }
 }
 
@@ -225,7 +226,7 @@ mod tests {
 
     /// The masks and bits come from where the magics got them, not from the magics
     fn assert_every_filling(
-        magics: &MagicBBs,
+        magics: &MagicTable,
         (masks, bits): ([BitBoard; 64], [u8; 64]),
         slow: Slow,
     ) {
@@ -249,7 +250,7 @@ mod tests {
 
     /// Whole boards, with pieces on the edges, on the slider's own square and off its
     /// lines, as the engine passes them
-    fn assert_whole_boards(magics: &MagicBBs, slow: Slow) {
+    fn assert_whole_boards(magics: &MagicTable, slow: Slow) {
         let mut rng = Rng(7);
         for sq in BitBoard::FULL {
             for _ in 0..1000 {
@@ -277,7 +278,7 @@ mod tests {
                 assert_eq!(magics.magics[sq].offset, next, "{sq}");
                 next += 1 << magics.magics[sq].bits;
             }
-            assert_eq!(magics.tables.len(), next);
+            assert_eq!(magics.attacks.len(), next);
         }
     }
 
@@ -289,7 +290,7 @@ mod tests {
     fn any_seed_finds_magics_that_work() {
         // the bishops only, as the rooks take a while
         for seed in SEEDS {
-            let bishops = MagicBBs::new_bishops(seed);
+            let bishops = MagicTable::new_bishops(seed);
             assert_every_filling(&bishops, bishop_mask_and_bits(), rays::bishop_attacks);
         }
     }
@@ -298,12 +299,12 @@ mod tests {
     fn the_same_seed_finds_the_same_magics() {
         // so the tables built at startup are the same in every run
         assert_eq!(
-            MagicBBs::new_bishops(SEEDS[0]).magics,
-            MagicBBs::new_bishops(SEEDS[0]).magics
+            MagicTable::new_bishops(SEEDS[0]).magics,
+            MagicTable::new_bishops(SEEDS[0]).magics
         );
         assert_ne!(
-            MagicBBs::new_bishops(SEEDS[0]).magics,
-            MagicBBs::new_bishops(SEEDS[1]).magics
+            MagicTable::new_bishops(SEEDS[0]).magics,
+            MagicTable::new_bishops(SEEDS[1]).magics
         );
     }
 }
