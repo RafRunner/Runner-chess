@@ -8,6 +8,37 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 0.10.1 - 2026-10-27
+
+### Changed
+- A new network of the same shape, `nets/net-005.bin`: trained on 90 million positions,
+  30 million each of the games of 0.10.0, 0.9.2 and 0.9.1 against themselves, half of
+  those of 0.10.0 and 0.9.2 starting from `popularpos_lichess_v3.epd`. Its output is
+  still divided by 1.5.
+- The attacks of bishops and rooks come from magic bitboards, one flat table for each,
+  instead of ray by ray. The rays only build and check the tables.
+- Internal: the tests share one search harness.
+
+### Added
+- The trainer's `validate` also tells how many times bigger a network's scores are
+  than those of the data it gets.
+
+### Measured
+- Bench: 32168 (from 33554).
+- Strength: +333 ± 59 Elo against 0.10.0 at 10+0.1, SPRT [0, 10] passed in 172 games
+  (136 wins, 8 losses, 28 draws).
+- The data, each network against the one before at 10+0.1, with the search of 0.10.0:
+  30 million positions of 0.10.0 against net-003, +181 ± 43 in 226 games; 60 million,
+  with those of 0.9.2, against 30, +83 ± 28 in 380; 90 million, with those of 0.9.1,
+  against 60, +38 ± 18 in 756. Half the games from the book had gained +28.5 ± 16.6
+  over random openings alone, while relabelling the endgames with the Syzygy tables
+  lost 10.3 ± 12.8.
+- Speed: the magic bitboards are about as fast as the rays on an M4: perft 1% slower,
+  the search 2% faster, within the noise.
+- Quantisation: rounding the weights moves net-005's output by up to 25 centipawns on
+  the reference positions, against 7 for net-003: the steps of 1/64 of the output layer
+  nearly all fall the same way for this network.
+
 ## 0.10.0 - 2026-10-25
 
 ### Added
