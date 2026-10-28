@@ -124,6 +124,7 @@ impl<'search> Searcher<'search> {
         }
 
         if let Some(score) = self.check_draw(node.board, node.ply) {
+            self.nodes += 1;
             return score;
         }
         if node.depth == 0 {
