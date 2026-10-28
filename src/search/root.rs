@@ -35,11 +35,8 @@ impl Searcher<'_> {
         self.push_hash(board.hash());
         self.accumulators.push(Accumulators::new(board));
 
-        let mut best_move = self
-            .ordering
-            .legal_ordered(board, 0, None)
-            .next()
-            .map(|(mv, _)| mv);
+        // Depth 1 should always finish (unless no legal moves)
+        let mut best_move = None;
 
         for depth in 1..=self.budget.depth {
             let best_score = self.aspiration_search(board, depth, &mut best_move, out)?;

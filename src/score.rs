@@ -21,12 +21,10 @@ impl Score {
         Self(centipawns.clamp(-max, max) as i16)
     }
 
-    /// Giving mate `ply` plies from the root.
     pub fn mate_in(ply: u32) -> Self {
         Self(Self::MATE.0 - ply as i16)
     }
 
-    /// Getting mated `ply` plies from the root.
     pub fn mated_in(ply: u32) -> Self {
         -Self::mate_in(ply)
     }

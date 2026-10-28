@@ -49,7 +49,8 @@ pub struct Searcher<'search> {
     ordering: &'search mut MoveOrdering,
     /// The index of the hash of the root position on the hashes vec
     root_index: usize,
-    null_ply: Option<u32>, // the ply that passed, in the line being searched
+    /// the ply that passed, in the line being searched
+    null_ply: Option<u32>,
     /// The search ran out of budget or got stopped, and is on its way back to the root
     stopped: bool,
     /// Set from another thread when the GUI sends `stop`
