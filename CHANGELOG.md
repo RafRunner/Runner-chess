@@ -8,6 +8,29 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.1.0 - 2026-10-28
+
+### Added
+- The time of a move depends on how sure the search is of it: from depth 8 on, the
+  soft limit is multiplied by `(1.5 - share) * 1.35`, where share is the part of the
+  nodes of the search that went to the best move. A best move that took most of them
+  stops the search earlier, down to 0.675 of the limit, and one that took few lets it
+  go on, up to 2.025.
+
+### Fixed
+- A draw found by the search, by repetition or by the fifty-move rule, counts as a
+  node. When every move of the root was one, the search counted no node at all, which
+  the time of a move divided by.
+
+### Measured
+- Bench: 32169. The search is the same as in 1.0.1: the one node more is the draws
+  now counted.
+- Strength: +51.6 ± 18.3 Elo against 1.0.1 at 10+0.1, an SPRT [0, 10] accepted after
+  468 games (128 wins, 59 losses, 281 draws).
+- Ordering the moves of the root by the nodes each took, tried before this, was
+  neutral against 1.0.1 at 10+0.1: +4.4 ± 14.3 Elo in 1022 games counting only the
+  last search of each move, and -4.7 ± 12.7 in 1340 adding them up. Neither was kept.
+
 ## 1.0.1 - 2026-10-28
 
 ### Added
