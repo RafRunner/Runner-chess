@@ -8,6 +8,32 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.0.0 - 2026-10-27
+
+### Added
+- The mate with bishop and knight against a lone king, which the network alone often
+  missed: the side with them gets a bonus of 30 centipawns for each square the lone
+  king is closer to a corner of the bishop's color, counting files plus ranks, and 15
+  for each king move less between the two kings.
+
+### Fixed
+- A FEN without the halfmove clock and the move number, as En Croissant sends the
+  positions of its books, starts them at 0 and 1. It used to be rejected, which left
+  the engine on the position before, where it could answer with a move illegal in the
+  GUI's.
+- Promotions in uppercase, like `a7a8Q`, are read too.
+- A command the engine ignores, as for an invalid FEN or an illegal move, gets an
+  `info string` telling why, which the GUI keeps in its log. It used to go only to
+  stderr.
+
+### Measured
+- Bench: 32168 (unchanged). No position of the bench has bishop and knight against a
+  lone king, so no match was played.
+- The mate: from 50 random positions of king, bishop and knight against king, the
+  engine at 0.5 s a move mated Stockfish, defending at 0.1 s, in 49, in 29 moves on
+  average and 43 at most. The other, `8/3K4/8/8/B7/8/N7/7k w`, ran into the 50-move
+  rule, counted from the start. Without the bonus, 0.10.1 mated in 6 of the first 10.
+
 ## 0.10.1 - 2026-10-27
 
 ### Changed
