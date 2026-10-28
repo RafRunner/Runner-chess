@@ -8,6 +8,22 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.0.1 - 2026-10-28
+
+### Added
+- The `uci` command writes the name of the network before `uciok`, as an
+  `info string` that GUIs show.
+
+### Changed
+- The root and quiescence get their moves from the same move picker as the other
+  nodes, the only way left to order them. Quiescence takes from it only the captures
+  that don't lose material in the exchange, as before.
+- The history of the move ordering lives on the heap, so handing the ordering to the
+  search thread copies a pointer instead of its 32 KB.
+
+### Measured
+- Bench: 32168 (unchanged).
+
 ## 1.0.0 - 2026-10-27
 
 ### Added
