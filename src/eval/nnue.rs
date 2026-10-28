@@ -18,6 +18,13 @@ const MAX_OUTPUT_WEIGHT: i64 = 127;
 const _: () =
     assert!(2 * HIDDEN_SIZE as i64 * (QA * QA) as i64 * MAX_OUTPUT_WEIGHT <= i32::MAX as i64);
 
+macro_rules! network_name {
+    () => {
+        "net-005"
+    };
+}
+pub const NETWORK_NAME: &str = network_name!();
+
 /// bullet's layout, padded to a multiple of 64 bytes, as `align(64)` pads the struct
 #[repr(C)]
 struct Network {
@@ -30,7 +37,13 @@ struct Network {
     output_bias: i16,
 }
 
-static NNUE: Network = unsafe { std::mem::transmute(*include_bytes!("../../nets/net-005.bin")) };
+static NNUE: Network = unsafe {
+    std::mem::transmute(*include_bytes!(concat!(
+        "../../nets/",
+        network_name!(),
+        ".bin"
+    )))
+};
 
 /// One view's hidden layer, before the activation
 #[repr(C, align(64))]
@@ -158,6 +171,33 @@ mod tests {
     };
 
     /// The 768 inputs
+    #[test]
+    fn the_network_is_the_file_its_name_says() {
+        // `include_bytes!` only takes a literal, so the name is written there again
+        let path = format!("{}/nets/{NETWORK_NAME}.bin", env!("CARGO_MANIFEST_DIR"));
+        let file = std::fs::read(&path).unwrap_or_else(|err| panic!("{path}: {err}"));
+        let in_file: Vec<i16> = file
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| i16::from_le_bytes(pair))
+            .collect();
+
+        // in the order of the file, which ends in the padding
+        let embedded: Vec<i16> = NNUE
+            .feature_weights
+            .iter()
+            .chain([&NNUE.feature_bias])
+            .flat_map(|accumulator| accumulator.0)
+            .chain(NNUE.output_weights)
+            .chain([NNUE.output_bias])
+            .collect();
+        assert!(
+            in_file[..embedded.len()] == embedded[..],
+            "the network embedded isn't {path}"
+        );
+    }
+
     fn every_input() -> impl Iterator<Item = (Piece, Square)> {
         Piece::ALL
             .into_iter()

@@ -13,6 +13,7 @@ use crate::{
     bench::{self, BENCH, BenchError, SEARCH_BENCH, SEARCH_BENCH_DEPTH},
     board::{Board, FenParseError, movegen::IllegalMoveError},
     chess_move::{AbstractMove, MoveParseError},
+    eval::NETWORK_NAME,
     piece::Color,
     search::{Budget, Limits, MoveOrdering, Searcher, TranspositionTable},
     zobrist::ZobristHash,
@@ -170,6 +171,7 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                     self.out,
                     "option name Hash type spin default {HASH_MB} min 1 max {MAX_HASH_MB}"
                 )?;
+                writeln!(self.out, "info string {NETWORK_NAME}")?;
                 writeln!(self.out, "uciok")?;
             }
             // even while searching, without waiting for it
@@ -575,7 +577,11 @@ mod tests {
             out.contains("option name Hash type spin default 64 min 1 max 65536\n"),
             "{out}"
         );
-        assert!(out.ends_with("uciok\n"));
+        // which network plays, as GUIs show the info strings to the user
+        assert!(
+            out.ends_with(&format!("info string {NETWORK_NAME}\nuciok\n")),
+            "{out}"
+        );
 
         let (_, out) = run(&mut uci, "isready").unwrap();
         assert_eq!(out, "readyok\n");
