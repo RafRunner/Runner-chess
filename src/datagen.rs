@@ -17,7 +17,7 @@ use std::{
 
 use crate::{
     board::Board,
-    eval::is_dead_position,
+    eval::{BoardState, board_state},
     piece::Color,
     rng::Rng,
     score::Score,
@@ -398,7 +398,7 @@ fn game_over(board: &Board, history: &[ZobristHash]) -> Option<Outcome> {
         .filter(|&&hash| hash == board.hash())
         .count();
 
-    (board.halfmove_clock() >= 100 || repetitions >= 2 || is_dead_position(board))
+    (board.halfmove_clock() >= 100 || repetitions >= 2 || board_state(board) == BoardState::Dead)
         .then_some(Outcome::Draw)
 }
 

@@ -192,6 +192,18 @@ impl Square {
     pub fn is_light(self) -> bool {
         (self.rank() + self.file()) % 2 == 1
     }
+
+    /// King moves from one square to the other on an empty board
+    pub fn distance(self, other: Square) -> u8 {
+        let files = self.file().abs_diff(other.file());
+        let ranks = self.rank().abs_diff(other.rank());
+        files.max(ranks)
+    }
+
+    /// Files plus ranks between the squares
+    pub fn manhattan_distance(self, other: Square) -> u8 {
+        self.file().abs_diff(other.file()) + self.rank().abs_diff(other.rank())
+    }
 }
 
 impl<T> ops::Index<Square> for [T; 64] {
@@ -329,6 +341,56 @@ mod tests {
             assert_eq!(mirrored.rank(), 7 - sq.rank(), "{sq}");
             // mirroring twice gets back to the start
             assert_eq!(mirrored.mirror(), sq, "{sq}");
+        }
+    }
+
+    #[test]
+    fn distance_counts_the_moves_of_a_king() {
+        use crate::attacks::KING_ATTACKS;
+
+        // a breadth-first walk of king moves from every square
+        for from in (0..64).map(Square::new) {
+            let mut moves = [u8::MAX; 64];
+            moves[from] = 0;
+            let mut frontier = vec![from];
+            for step in 1.. {
+                let next: Vec<Square> = frontier
+                    .iter()
+                    .flat_map(|&sq| KING_ATTACKS[sq])
+                    .filter(|&sq| moves[sq] == u8::MAX)
+                    .collect();
+                if next.is_empty() {
+                    break;
+                }
+                for &sq in &next {
+                    moves[sq] = step;
+                }
+                frontier = next;
+            }
+            for to in (0..64).map(Square::new) {
+                assert_eq!(from.distance(to), moves[to], "{from} to {to}");
+            }
+        }
+    }
+
+    #[test]
+    fn manhattan_distance_adds_files_and_ranks() {
+        use Square as S;
+        let cases = [
+            (S::A1, S::H8, 14),
+            (S::A1, S::B2, 2),
+            (S::E4, S::E4, 0),
+            (S::C6, S::F2, 7),
+        ];
+        for (a, b, expected) in cases {
+            assert_eq!(a.manhattan_distance(b), expected, "{a} to {b}");
+            assert_eq!(b.manhattan_distance(a), expected, "{b} to {a}");
+        }
+
+        // a king move changes it by up to 2, so it's between one and two king distances
+        for (a, b) in (0..64).flat_map(|a| (0..64).map(move |b| (Square::new(a), Square::new(b)))) {
+            let (king, manhattan) = (a.distance(b), a.manhattan_distance(b));
+            assert!(king <= manhattan && manhattan <= 2 * king, "{a} to {b}");
         }
     }
 }

@@ -262,9 +262,14 @@ impl Board {
         !self.attackers_by(sq, by).is_empty()
     }
 
-    pub fn is_in_check(&self, color: Color) -> bool {
+    pub fn king(&self, color: Color) -> Square {
         let mut king = self.pieces[Piece::new(color, PieceKind::King)];
-        self.is_square_attacked(king.next().unwrap(), color.oposite())
+        king.next().unwrap()
+    }
+
+    pub fn is_in_check(&self, color: Color) -> bool {
+        let king = self.king(color);
+        self.is_square_attacked(king, color.oposite())
     }
 
     /// Passes the turn. Does not check if the returned position is legal
@@ -865,6 +870,17 @@ mod tests {
 
         // a missing rook only matters for its own right
         assert!(Board::from_fen("r3k2r/8/8/8/8/8/8/R3K3 w Qkq - 0 1").is_ok());
+    }
+
+    #[test]
+    fn king_finds_the_square_of_each_king() {
+        let start = Board::startpos();
+        assert_eq!(start.king(Color::White), Square::E1);
+        assert_eq!(start.king(Color::Black), Square::E8);
+
+        let moved = board("8/8/3k4/8/8/8/6K1/8 w - - 0 1");
+        assert_eq!(moved.king(Color::White), Square::G2);
+        assert_eq!(moved.king(Color::Black), Square::D6);
     }
 
     #[test]
