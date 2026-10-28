@@ -9,7 +9,7 @@ use crate::{
     chess_move::Move,
     eval::Accumulators,
     score::Score,
-    search::{NodeInfo, Outcome, Searcher},
+    search::{MovePicker, NodeInfo, Outcome, Searcher},
     zobrist::ZobristHash,
 };
 
@@ -113,10 +113,14 @@ impl Searcher<'_> {
     ) -> Score {
         let mut best_score = -Score::INF;
         let mut root = NodeInfo::new(board, depth, 0, alpha, beta);
+        let moves = MovePicker::new(board, *best_move, self.ordering, 0);
 
-        for (idx, (mv, next)) in self
-            .ordering
-            .legal_ordered(board, 0, *best_move)
+        for (idx, (mv, next)) in moves
+            .into_iterator(board)
+            .filter_map(|mv| {
+                let next = board.make_move(mv);
+                (!next.is_in_check(board.side_to_move())).then_some((mv, next))
+            })
             .enumerate()
         {
             let gives_check = next.is_in_check(next.side_to_move());

@@ -172,9 +172,9 @@ impl<'search> Searcher<'search> {
         let mut best_move = None;
         let mut quiets_tried = Vec::with_capacity(64);
 
-        let mut moves = MovePicker::new(node.board, tt_move, self.ordering, node.ply);
+        let moves = MovePicker::new(node.board, tt_move, self.ordering, node.ply);
         let mut legal_moves = 0;
-        while let Some(mv) = moves.next(node.board) {
+        for mv in moves.into_iterator(node.board) {
             // decided before making the move, since most moves that get here are pruned
             let gives_check = node.board.gives_check(mv);
             if futility::prunes_quiet(node, static_eval, best, quiets_tried.len(), mv, gives_check)
@@ -268,8 +268,15 @@ impl<'search> Searcher<'search> {
         }
 
         let mut best = static_eval;
+        let moves = MovePicker::new_captures(node.board);
 
-        for (mv, next) in self.ordering.winning_captures_ordered(node.board) {
+        for mv in moves
+            .into_iterator(node.board)
+            .filter(|&mv| node.board.is_legal(mv, false))
+        {
+            // We verified above we're not in check rn
+            let next = node.board.make_move(mv);
+
             let gives_check = next.is_in_check(next.side_to_move());
             let score = self.quiescence_child(node.board, node.child(&next, gives_check), mv);
 
