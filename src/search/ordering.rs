@@ -8,8 +8,8 @@ use crate::{
 
 pub struct MoveOrdering {
     killers: [[Option<Move>; 2]; Score::MAX_PLY as usize],
-    // History is 34 KB. When moving this struct to UCI, wrap inside a box to avoid copying
-    history: [[[i32; 64]; 64]; 2],
+    // history is 32 KB. We store it in a box to avoid copying all values on move
+    history: Box<[[[i32; 64]; 64]; 2]>,
     // helper vector to speed up ordering
     keys: Vec<u64>,
 }
@@ -29,7 +29,7 @@ impl MoveOrdering {
     pub fn new() -> Self {
         Self {
             killers: [[None; 2]; Score::MAX_PLY as usize],
-            history: [[[0; 64]; 64]; 2],
+            history: Box::new([[[0; 64]; 64]; 2]),
             keys: Vec::with_capacity(256),
         }
     }
@@ -48,7 +48,7 @@ impl MoveOrdering {
 
     pub fn clear(&mut self) {
         self.killers = [[None; 2]; Score::MAX_PLY as usize];
-        self.history = [[[0; 64]; 64]; 2];
+        *self.history = [[[0; 64]; 64]; 2];
     }
 
     pub(super) fn on_beta_cutoff(&mut self, node: NodeInfo, mv: Move, quiets_tried: &[Move]) {
