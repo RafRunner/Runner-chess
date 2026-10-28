@@ -168,7 +168,6 @@ impl<'search> Searcher<'search> {
         }
 
         let mut best = -Score::INF;
-        let mut has_legal_move = false;
         let original_alpha = node.alpha;
         let mut best_move = None;
         let mut quiets_tried = Vec::with_capacity(64);
@@ -184,7 +183,6 @@ impl<'search> Searcher<'search> {
                 // the index of the moves after it counts every legal move
                 if node.board.is_legal(mv, in_check) {
                     legal_moves += 1;
-                    has_legal_move = true;
                 }
                 continue;
             }
@@ -194,7 +192,6 @@ impl<'search> Searcher<'search> {
             };
             let idx = legal_moves;
             legal_moves += 1;
-            has_legal_move = true;
 
             let score = self.search_move(node, mv, idx, &next, gives_check);
 
@@ -218,7 +215,7 @@ impl<'search> Searcher<'search> {
             }
         }
 
-        if !has_legal_move {
+        if legal_moves == 0 {
             best = if in_check {
                 Score::mated_in(node.ply)
             } else {
