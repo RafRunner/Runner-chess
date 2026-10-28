@@ -190,16 +190,12 @@ impl Board {
             }
         };
 
-        let halfmove_clock = parts
-            .next()
-            .ok_or(FenParseError::MissingField("halfmove clock"))?;
+        let halfmove_clock = parts.next().unwrap_or("0");
         board.halfmove_clock = halfmove_clock
             .parse()
             .map_err(|_| FenParseError::InvalidHalfmove)?;
 
-        let fullmove_number = parts
-            .next()
-            .ok_or(FenParseError::MissingField("fullmove counter"))?;
+        let fullmove_number = parts.next().unwrap_or("1");
         board.fullmove_counter = fullmove_number
             .parse()
             .ok()
@@ -1022,8 +1018,6 @@ mod tests {
             ("", "side to move"),
             (" w", "castling"),
             (" w KQkq", "en passant"),
-            (" w KQkq -", "halfmove clock"),
-            (" w KQkq - 0", "fullmove counter"),
         ];
         for (rest, field) in cases {
             let fen = format!("{placement}{rest}");
@@ -1031,6 +1025,19 @@ mod tests {
                 Board::from_fen(&fen).unwrap_err(),
                 FenParseError::MissingField(field),
                 "{fen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_clocks_start_over() {
+        // as books and EPD files leave them out
+        let placement = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3";
+        for (fen, clocks) in [(placement, "0 1"), (&format!("{placement} 5"), "5 1")] {
+            assert_eq!(
+                Board::from_fen(fen).unwrap().to_fen(),
+                format!("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - {clocks}"),
+                "{fen}"
             );
         }
     }

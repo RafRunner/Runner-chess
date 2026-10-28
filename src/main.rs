@@ -44,7 +44,11 @@ fn main() -> ExitCode {
         match uci.handle(&line) {
             Ok(Control::Quit) => return ExitCode::SUCCESS,
             Ok(Control::Continue) => (),
-            Err(e) => eprintln!("{e:?}"),
+            Err(e) => {
+                if let Err(io) = uci.report(&e) {
+                    eprintln!("{io}");
+                }
+            }
         }
     }
 

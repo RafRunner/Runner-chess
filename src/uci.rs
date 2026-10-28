@@ -31,6 +31,22 @@ pub enum UciError {
     SearchPanicked,
 }
 
+impl fmt::Display for UciError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyInput => write!(f, "empty input"),
+            Self::UnknownCommand(command) => write!(f, "unknown command {command}"),
+            Self::UnexpectedArgs(message) => write!(f, "{message}"),
+            Self::FenError(e) => write!(f, "invalid FEN: {e:?}"),
+            Self::MoveParseError(mv) => write!(f, "can't read the move {mv}"),
+            Self::IllegalMove(mv) => write!(f, "illegal move {mv}"),
+            Self::Bench(e) => write!(f, "bench: {e:?}"),
+            Self::Io(e) => write!(f, "{e}"),
+            Self::SearchPanicked => write!(f, "the search panicked"),
+        }
+    }
+}
+
 impl From<io::Error> for UciError {
     fn from(e: io::Error) -> Self {
         UciError::Io(e)
@@ -123,6 +139,17 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
 
     pub fn board(&self) -> &Board {
         &self.board
+    }
+
+    /// Tells the GUI why a command got ignored, where its log shows it: a position that
+    /// didn't take leaves the engine on the last one, and its moves illegal
+    pub fn report(&mut self, error: &UciError) -> io::Result<()> {
+        // some GUIs send empty lines
+        if matches!(error, UciError::EmptyInput) {
+            return Ok(());
+        }
+        writeln!(self.out, "info string ignored, {error}")?;
+        self.out.flush()
     }
 
     /// Runs `line`. A `go` that searches returns right away, and the search writes its
@@ -605,6 +632,45 @@ mod tests {
             fen_after("position fen 8/P7/8/8/8/8/8/k6K w - - 0 1 moves a7a8n"),
             "N7/8/8/8/8/8/8/k6K b - - 0 1"
         );
+    }
+
+    #[test]
+    fn position_fen_without_the_clocks() {
+        // as En Croissant sends the positions of its books
+        assert_eq!(
+            fen_after(
+                "position fen rnbqk1nr/pp2bppp/4p3/2pp4/8/5NP1/PPPPPPBP/RNBQ1RK1 w kq - \
+                 moves e2e4 d5e4"
+            ),
+            "rnbqk1nr/pp2bppp/4p3/2p5/4p3/5NP1/PPPP1PBP/RNBQ1RK1 w kq - 0 2"
+        );
+    }
+
+    #[test]
+    fn position_with_an_uppercase_promotion() {
+        assert_eq!(
+            fen_after("position fen 8/P7/8/8/8/8/8/k6K w - - 0 1 moves a7a8N"),
+            "N7/8/8/8/8/8/8/k6K b - - 0 1"
+        );
+    }
+
+    #[test]
+    fn errors_get_reported_to_the_gui() {
+        let mut uci = uci();
+        let error = run(&mut uci, "position fen nonsense").unwrap_err();
+        uci.report(&error).unwrap();
+        let out = uci.out.take();
+        assert!(out.starts_with("info string ignored, invalid FEN"), "{out}");
+        assert_eq!(uci.board().to_fen(), Board::startpos().to_fen());
+
+        let error = run(&mut uci, "position startpos moves e2e5").unwrap_err();
+        uci.report(&error).unwrap();
+        assert_eq!(uci.out.take(), "info string ignored, illegal move e2e5\n");
+
+        // not worth a line in the GUI's log
+        let error = run(&mut uci, "   ").unwrap_err();
+        uci.report(&error).unwrap();
+        assert_eq!(uci.out.take(), "");
     }
 
     #[test]

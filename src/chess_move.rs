@@ -34,7 +34,7 @@ impl PromotionPiece {
     }
 
     pub fn from_char(ch: char) -> Option<Self> {
-        match ch {
+        match ch.to_ascii_lowercase() {
             'n' => Some(Self::Knight),
             'b' => Some(Self::Bishop),
             'r' => Some(Self::Rook),
@@ -405,12 +405,15 @@ mod tests {
     #[test]
     fn abstract_every_promotion_piece() {
         for piece in PromotionPiece::ALL {
-            let uci = format!("b7b8{}", piece.to_char());
-            assert_eq!(
-                AbstractMove::from_uci(&uci).unwrap(),
-                AbstractMove::new(S::B7, S::B8, Some(piece)),
-                "{uci}"
-            );
+            // UCI's are lowercase, but some GUIs send them uppercase
+            let letter = piece.to_char();
+            for uci in [letter, letter.to_ascii_uppercase()].map(|l| format!("b7b8{l}")) {
+                assert_eq!(
+                    AbstractMove::from_uci(&uci).unwrap(),
+                    AbstractMove::new(S::B7, S::B8, Some(piece)),
+                    "{uci}"
+                );
+            }
         }
     }
 
@@ -431,8 +434,6 @@ mod tests {
             "e7e8k",
             "e7e8p",
             "e7e8x",
-            // UCI promotions are always lowercase
-            "e7e8Q",
             // trailing garbage takes the promotion slot
             "e2e4 ",
             // 5 bytes but only 4 chars, the last one multibyte
