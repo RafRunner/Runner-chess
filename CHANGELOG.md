@@ -8,6 +8,16 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.1.1 - 2026-10-28
+
+### Fixed
+- A search on the clock of a position without legal moves, mated or stalemated,
+  panicked from depth 8 on, looking for the share of the nodes of a best move it
+  doesn't have, instead of answering `bestmove 0000`.
+
+### Measured
+- Bench: 32169 (unchanged).
+
 ## 1.1.0 - 2026-10-28
 
 ### Added
