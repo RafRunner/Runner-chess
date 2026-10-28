@@ -13,15 +13,10 @@ use crate::{
     zobrist::ZobristHash,
 };
 
+/// A move of the root, with the nodes its searches took in every iteration so far
 struct RootMove {
     mv: Move,
     nodes: u64,
-}
-
-impl RootMove {
-    fn new(mv: Move, nodes: u64) -> Self {
-        Self { mv, nodes }
-    }
 }
 
 /// Iterations from this depth on start from a window this wide on each side of the
@@ -61,29 +56,16 @@ impl Searcher<'_> {
             self.completed_score = Some(best_score);
             self.print_info_line(out, depth, best_move, best_score, "")?;
 
-            if self.budget.soft.is_some_and(|soft| {
-                if depth > 7 {
-                    // the share of the nodes that the best move took tells how sure the
-                    // search is of it: most of them, an easy move that gets less time; few,
-                    // a hard one that gets more. The first iterations are too noisy for it
-                    let best_nodes = root_moves
-                        .iter()
-                        .find(|r| Some(r.mv) == best_move)
-                        .expect("best move should be in root_moves")
-                        .nodes;
-                    let fraction = best_nodes as f64 / self.nodes.max(1) as f64;
-
-                    let soft_time = soft - self.budget.start;
-                    let scale = (1.5 - fraction) * 1.35;
-
-                    self.budget.start.elapsed() >= soft_time.mul_f64(scale)
-                } else {
-                    Instant::now() >= soft
-                }
-            }) || self
+            // the share of the nodes that the best move took tells how sure the search is
+            // of it. Without legal moves there's none, and nothing to be sure of
+            let best_nodes = root_moves
+                .iter()
+                .find(|r| Some(r.mv) == best_move)
+                .map_or(0, |r| r.nodes);
+            let best_share = best_nodes as f64 / self.nodes.max(1) as f64;
+            if self
                 .budget
-                .soft_nodes
-                .is_some_and(|nodes| self.nodes >= nodes)
+                .soft_reached(depth, self.nodes, best_share, Instant::now())
             {
                 break;
             }
@@ -163,7 +145,7 @@ impl Searcher<'_> {
             let spent = self.nodes - before;
             match root_nodes.iter_mut().find(|r| r.mv == mv) {
                 Some(r) => r.nodes += spent,
-                None => root_nodes.push(RootMove::new(mv, spent)),
+                None => root_nodes.push(RootMove { mv, nodes: spent }),
             }
 
             if self.stopped {
@@ -212,13 +194,10 @@ impl Searcher<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use crate::{
-        piece::Color,
         search::{
-            Budget, Limits,
+            Budget,
             tests::{Searched, best_move, search},
         },
         test_utils::{KIWIPETE, MATE_IN_ONE, MATED, board},
@@ -295,24 +274,6 @@ mod tests {
         let last = out.lines().last().unwrap();
         let score = searched.score.unwrap().to_uci();
         assert!(last.contains(&format!("score {score} ")), "{score} {last}");
-    }
-
-    #[test]
-    fn the_clock_works_however_the_nodes_split_among_the_moves() {
-        let limits = Limits {
-            time: [Some(Duration::from_secs(10)); 2],
-            ..Limits::default()
-        };
-        for fen in [
-            // Qxg4 takes nearly every node, as the other moves lose
-            "rnb1kbnr/pppp1ppp/8/4p3/4P1q1/8/PPPPQPPP/RNB1KBNR w KQkq - 0 1",
-            // every move completes the fifty moves: draws, found before any search
-            "k7/8/8/8/8/8/8/1K5R w - - 99 150",
-        ] {
-            let budget = Budget::new(&limits, Color::White, Instant::now());
-            let Searched { best, out, .. } = search(&board(fen), &[], budget);
-            assert!(best.is_some(), "{fen}\n{out}");
-        }
     }
 
     #[test]

@@ -35,6 +35,13 @@ pub struct Budget {
 
 impl Budget {
     const SOFT_FACTOR: u32 = 4;
+    /// From this depth on, the soft limit is multiplied by `(SHARE_OFFSET - share) *
+    /// SHARE_SCALE`, with the share of the nodes that the best move took: most of them,
+    /// an easy move that gets less time; few, a hard one that gets more. The first
+    /// iterations are too noisy for it
+    const SHARE_DEPTH: u32 = 8;
+    const SHARE_OFFSET: f64 = 1.5;
+    const SHARE_SCALE: f64 = 1.35;
 
     /// The budget of a `go` that arrived at `start`, with `us` to move.
     pub fn new(limits: &Limits, us: Color, start: Instant) -> Self {
@@ -94,11 +101,35 @@ impl Budget {
             ..self
         }
     }
+
+    /// No new iteration after `depth`, at `now`, with `nodes` searched and `best_share`
+    /// of them taken by the best move
+    pub(super) fn soft_reached(
+        &self,
+        depth: u32,
+        nodes: u64,
+        best_share: f64,
+        now: Instant,
+    ) -> bool {
+        let time = self.soft.is_some_and(|soft| {
+            if depth < Self::SHARE_DEPTH {
+                return now >= soft;
+            }
+            let scale = (Self::SHARE_OFFSET - best_share) * Self::SHARE_SCALE;
+            now - self.start >= (soft - self.start).mul_f64(scale)
+        });
+
+        time || self.soft_nodes.is_some_and(|soft| nodes >= soft)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        search::tests::{Searched, search},
+        test_utils::{MATED, STALEMATED, board},
+    };
 
     fn ms(millis: u64) -> Duration {
         Duration::from_millis(millis)
@@ -208,5 +239,70 @@ mod tests {
         let (black, _) = budget(limits, Color::Black);
         assert!(white.hard.unwrap() > start + ms(1_000));
         assert!(black.hard.unwrap() <= black.start + ms(1_000));
+    }
+
+    #[test]
+    fn a_sure_best_move_stops_earlier_and_an_unsure_one_later() {
+        // the soft limit is a quarter of the movetime: 1 s
+        let (budget, start) = budget(
+            Limits {
+                movetime: Some(ms(4_000)),
+                ..Limits::default()
+            },
+            Color::White,
+        );
+        let at = |millis| start + ms(millis);
+
+        // the first iterations only look at the clock
+        assert!(!budget.soft_reached(7, 0, 1.0, at(990)));
+        assert!(budget.soft_reached(7, 0, 0.0, at(1_000)));
+
+        // 90% of the nodes stops at 0.81 of it, 10% at 1.89
+        assert!(!budget.soft_reached(8, 0, 0.9, at(800)));
+        assert!(budget.soft_reached(8, 0, 0.9, at(820)));
+        assert!(!budget.soft_reached(8, 0, 0.1, at(1_880)));
+        assert!(budget.soft_reached(8, 0, 0.1, at(1_900)));
+    }
+
+    #[test]
+    fn soft_nodes_ignore_the_share_of_the_best_move() {
+        let budget = Budget::depth(None).with_soft_nodes(1_000);
+        let now = Instant::now();
+        for (depth, share) in [(3, 0.5), (10, 0.0), (10, 1.0)] {
+            assert!(
+                !budget.soft_reached(depth, 999, share, now),
+                "{depth} {share}"
+            );
+            assert!(
+                budget.soft_reached(depth, 1_000, share, now),
+                "{depth} {share}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_clock_works_however_the_nodes_split_among_the_moves() {
+        let limits = Limits {
+            time: [Some(ms(10_000)); 2],
+            ..Limits::default()
+        };
+        for (fen, has_moves) in [
+            // Qxg4 takes nearly every node, as the other moves lose
+            (
+                "rnb1kbnr/pppp1ppp/8/4p3/4P1q1/8/PPPPQPPP/RNB1KBNR w KQkq - 0 1",
+                true,
+            ),
+            // every move completes the fifty moves: draws, found before any search
+            ("k7/8/8/8/8/8/8/1K5R w - - 99 150", true),
+            // no move at all, so no best move to take a share
+            (MATED, false),
+            (STALEMATED, false),
+        ] {
+            let position = board(fen);
+            let us = position.side_to_move();
+            let budget = Budget::new(&limits, us, Instant::now());
+            let Searched { best, out, .. } = search(&position, &[], budget);
+            assert_eq!(best.is_some(), has_moves, "{fen}\n{out}");
+        }
     }
 }
