@@ -104,9 +104,8 @@ impl ops::Sub for CastlingRights {
 mod tests {
     use std::collections::HashSet;
 
-    use crate::chess_move::MoveKind;
-
     use super::*;
+    use crate::chess_move::MoveKind;
     use CastlingRights as CR;
     use Square as S;
 

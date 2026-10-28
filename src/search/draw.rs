@@ -1,5 +1,4 @@
-use super::Searcher;
-use crate::{board::Board, score::Score};
+use crate::{board::Board, score::Score, search::Searcher};
 
 impl Searcher<'_> {
     /// Draws by the rules, checked before quiescence so that a repetition right at

@@ -510,12 +510,8 @@ fn parse_go(args: &[&str]) -> Result<Limits, UciError> {
 mod tests {
     use std::{assert_matches, sync::Mutex};
 
-    use crate::{
-        search::Limits,
-        test_utils::{CASTLING_WHITE, KIWIPETE, LOST_KING, MATED},
-    };
-
     use super::*;
+    use crate::test_utils::{CASTLING_WHITE, KIWIPETE, LOST_KING, MATED};
 
     /// An output the tests can read, shared with the search thread
     #[derive(Clone, Default)]

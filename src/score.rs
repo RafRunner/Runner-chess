@@ -90,7 +90,7 @@ impl ops::Neg for Score {
     }
 }
 
-impl ops::Add<i16> for Score {
+impl Add<i16> for Score {
     type Output = Self;
 
     /// Never past infinity, either way, so the result can still be negated

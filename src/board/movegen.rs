@@ -704,7 +704,7 @@ mod tests {
             .map(board)
             .flat_map(|b| {
                 let next: Vec<Board> = b.legal_successors().map(|(_, next)| next).collect();
-                std::iter::once(b).chain(next)
+                iter::once(b).chain(next)
             })
             .collect();
 

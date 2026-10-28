@@ -1,6 +1,4 @@
-use crate::chess_move::Move;
-
-use super::Board;
+use crate::{board::Board, chess_move::Move};
 
 impl Board {
     pub fn divide(&self, depth: u32) -> Vec<(Move, u64)> {

@@ -293,7 +293,7 @@ impl MovePicker {
         }
     }
 
-    pub fn into_iterator<'board>(self, board: &'board Board) -> MovePickerIterator<'board> {
+    pub(super) fn into_iterator<'board>(self, board: &'board Board) -> MovePickerIterator<'board> {
         MovePickerIterator {
             move_picker: self,
             board,
@@ -301,7 +301,7 @@ impl MovePicker {
     }
 }
 
-pub struct MovePickerIterator<'board> {
+pub(super) struct MovePickerIterator<'board> {
     move_picker: MovePicker,
     board: &'board Board,
 }

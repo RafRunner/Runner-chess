@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn move_is_two_bytes() {
-        assert_eq!(std::mem::size_of::<Move>(), 2);
+        assert_eq!(size_of::<Move>(), 2);
     }
 
     /// decoding gives back exactly what was encoded for every combination,

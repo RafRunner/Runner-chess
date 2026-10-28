@@ -1,12 +1,13 @@
+mod random64;
+
+use random64::RANDOM64;
+
 use crate::{
     board::Board,
     castling::CastlingRights,
     piece::{Color, Piece},
     square::Square,
-    zobrist::random64::RANDOM64,
 };
-
-mod random64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ZobristHash(u64);
@@ -89,10 +90,7 @@ impl ZobristHash {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        square::Square,
-        test_utils::{CASTLING_WHITE, PERFT_POSITIONS, board, play},
-    };
+    use crate::test_utils::{CASTLING_WHITE, PERFT_POSITIONS, board, play};
 
     // The offsets below are written as the book format page gives them, instead of
     // reusing the constants, so a wrong constant can't hide behind its own test.

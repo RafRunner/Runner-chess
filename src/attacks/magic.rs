@@ -1,7 +1,11 @@
 use std::sync::LazyLock;
 
-use super::rays::{self, Direction, negative_ray, positive_ray};
-use crate::{bitboard::BitBoard, rng::Rng, square::Square};
+use crate::{
+    attacks::rays::{self, Direction, negative_ray, positive_ray},
+    bitboard::BitBoard,
+    rng::Rng,
+    square::Square,
+};
 
 pub(super) static MAGIC_BISHOPS: LazyLock<MagicTable> =
     LazyLock::new(|| MagicTable::new_bishops(1337));
@@ -46,7 +50,7 @@ struct Magic {
 }
 
 impl Magic {
-    pub fn empty() -> Self {
+    fn empty() -> Self {
         Self {
             mask: BitBoard::EMPTY,
             bits: 0,

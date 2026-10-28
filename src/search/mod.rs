@@ -8,18 +8,18 @@ mod ordering;
 mod root;
 mod tt;
 
-pub use limits::Budget;
-pub use limits::Limits;
+pub use limits::{Budget, Limits};
 pub use ordering::MoveOrdering;
-use ordering::MovePicker;
-pub use tt::Bound;
-pub use tt::Entry;
 pub use tt::TranspositionTable;
 
-use node::{NodeInfo, Outcome};
+use std::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Instant,
+};
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use node::{NodeInfo, Outcome};
+use ordering::MovePicker;
+use tt::{Bound, Entry};
 
 use crate::{
     board::Board,
@@ -378,13 +378,9 @@ impl<'search> Searcher<'search> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        board::Board,
-        chess_move::Move,
-        test_utils::{
-            KIWIPETE, MATE_IN_ONE, MATED, PERFT_POSITIONS, STALEMATED, board, both_colors,
-            mirror_fen, mirror_uci, static_eval,
-        },
+    use crate::test_utils::{
+        KIWIPETE, MATE_IN_ONE, MATED, PERFT_POSITIONS, STALEMATED, board, both_colors, mirror_fen,
+        mirror_uci, static_eval,
     };
 
     // search

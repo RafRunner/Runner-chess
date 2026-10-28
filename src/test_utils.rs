@@ -1,5 +1,7 @@
 //! Helpers shared by the tests of every module.
 
+pub use crate::bench::{KIWIPETE, POSITION_3, POSITION_4, POSITION_5};
+
 use crate::{
     bitboard::BitBoard,
     board::Board,
@@ -9,8 +11,6 @@ use crate::{
     square::Square,
     zobrist::ZobristHash,
 };
-
-pub use crate::bench::{KIWIPETE, POSITION_3, POSITION_4, POSITION_5};
 
 pub const PERFT_POSITIONS: [&str; 5] = [
     Board::STARTPOS,

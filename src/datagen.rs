@@ -417,7 +417,7 @@ fn beyond(score: Score, centipawns: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, path::Path};
+    use std::env;
 
     use super::*;
     use crate::test_utils::{MATED, STALEMATED, board, play_with_history};
