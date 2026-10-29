@@ -58,40 +58,15 @@ impl Accumulators {
     pub fn new(board: &Board) -> Self {
         let mut accumulators = Self([NNUE.feature_bias; 2]);
         for sq in board.all_pieces_bb() {
-            accumulators.add(board.piece_at(sq).expect("an occupied square"), sq);
+            let piece = board.piece_at(sq).expect("an occupied square");
+            for view in Color::ALL {
+                let column = &NNUE.feature_weights[input(view, piece, sq)].0;
+                for (value, weight) in accumulators.0[view].0.iter_mut().zip(column) {
+                    *value += weight;
+                }
+            }
         }
         accumulators
-    }
-
-    /// From `parent`'s accumulators to those after `mv`
-    pub fn apply(&mut self, parent: &Board, mv: Move) {
-        let us = parent.side_to_move();
-        let moving = parent.piece_at(mv.from()).expect("a piece moves");
-
-        match mv.kind() {
-            MoveKind::Normal | MoveKind::DoublePush => self.move_piece(moving, mv.from(), mv.to()),
-            MoveKind::Capture => {
-                self.remove(parent.piece_at(mv.to()).expect("a capture"), mv.to());
-                self.move_piece(moving, mv.from(), mv.to());
-            }
-            MoveKind::EnPassant => {
-                let taken = mv.get_ep_square(us);
-                self.remove(Piece::new(us.oposite(), PieceKind::Pawn), taken);
-                self.move_piece(moving, mv.from(), mv.to());
-            }
-            MoveKind::Castle => {
-                let (rook_from, rook_to) = mv.get_rook_squares();
-                self.move_piece(moving, mv.from(), mv.to());
-                self.move_piece(Piece::new(us, PieceKind::Rook), rook_from, rook_to);
-            }
-            MoveKind::Promotion(promoted) | MoveKind::PromotionCapture(promoted) => {
-                if mv.is_capture() {
-                    self.remove(parent.piece_at(mv.to()).expect("a capture"), mv.to());
-                }
-                self.remove(moving, mv.from());
-                self.add(Piece::new(us, promoted.to_piece_kind()), mv.to());
-            }
-        }
     }
 
     /// For the side to move, at the trainer's scale
@@ -107,27 +82,163 @@ impl Accumulators {
         (output * i64::from(SCALE) / i64::from(QA * QB)) as i32
     }
 
-    fn add(&mut self, piece: Piece, sq: Square) {
+    /// Writes into `child` these accumulators changed by `update`, in one pass over each
+    /// view: reading the parent and the columns once is most of the cost
+    fn update_into(&self, update: Update, child: &mut Self) {
         for view in Color::ALL {
-            let column = &NNUE.feature_weights[input(view, piece, sq)].0;
-            for (value, weight) in self.0[view].0.iter_mut().zip(column) {
-                *value += weight;
+            let (parent, child) = (&self.0[view], &mut child.0[view]);
+            let column = |(piece, sq)| &NNUE.feature_weights[input(view, piece, sq)];
+            match update {
+                Update::Pass => *child = *parent,
+                Update::Move { add, remove } => add_sub(child, parent, column(add), column(remove)),
+                Update::Capture {
+                    add,
+                    remove,
+                    captured,
+                } => add_sub_sub(child, parent, column(add), column(remove), column(captured)),
+                Update::Castle { add, remove } => add_add_sub_sub(
+                    child,
+                    parent,
+                    [column(add[0]), column(add[1])],
+                    [column(remove[0]), column(remove[1])],
+                ),
             }
         }
     }
+}
 
-    fn remove(&mut self, piece: Piece, sq: Square) {
-        for view in Color::ALL {
-            let column = &NNUE.feature_weights[input(view, piece, sq)].0;
-            for (value, weight) in self.0[view].0.iter_mut().zip(column) {
-                *value -= weight;
+/// What a move changes in the inputs: the pieces it puts on squares and takes off them
+#[derive(Clone, Copy, Debug)]
+enum Update {
+    /// A null move
+    Pass,
+    Move {
+        add: (Piece, Square),
+        remove: (Piece, Square),
+    },
+    Capture {
+        add: (Piece, Square),
+        remove: (Piece, Square),
+        captured: (Piece, Square),
+    },
+    Castle {
+        add: [(Piece, Square); 2],
+        remove: [(Piece, Square); 2],
+    },
+}
+
+impl Update {
+    fn new(parent: &Board, mv: Move) -> Self {
+        let us = parent.side_to_move();
+        let moving = parent.piece_at(mv.from()).expect("a piece moves");
+        let remove = (moving, mv.from());
+        let captured = || (parent.piece_at(mv.to()).expect("a capture"), mv.to());
+
+        match mv.kind() {
+            MoveKind::Normal | MoveKind::DoublePush => Self::Move {
+                add: (moving, mv.to()),
+                remove,
+            },
+            MoveKind::Capture => Self::Capture {
+                add: (moving, mv.to()),
+                remove,
+                captured: captured(),
+            },
+            MoveKind::EnPassant => Self::Capture {
+                add: (moving, mv.to()),
+                remove,
+                captured: (
+                    Piece::new(us.oposite(), PieceKind::Pawn),
+                    mv.get_ep_square(us),
+                ),
+            },
+            MoveKind::Castle => {
+                let (rook_from, rook_to) = mv.get_rook_squares();
+                let rook = Piece::new(us, PieceKind::Rook);
+                Self::Castle {
+                    add: [(moving, mv.to()), (rook, rook_to)],
+                    remove: [remove, (rook, rook_from)],
+                }
             }
+            MoveKind::Promotion(promoted) => Self::Move {
+                add: (Piece::new(us, promoted.to_piece_kind()), mv.to()),
+                remove,
+            },
+            MoveKind::PromotionCapture(promoted) => Self::Capture {
+                add: (Piece::new(us, promoted.to_piece_kind()), mv.to()),
+                remove,
+                captured: captured(),
+            },
+        }
+    }
+}
+
+/// The accumulators along the line being searched, the current node's last. A child's
+/// are written straight from its parent's, which sit next to them
+pub struct AccumulatorStack {
+    stack: Box<[Accumulators]>,
+    len: usize,
+}
+
+impl AccumulatorStack {
+    /// Room for the root and `plies` below it
+    pub fn new(plies: usize) -> Self {
+        let empty = Accumulators([Accumulator([0; HIDDEN_SIZE]); 2]);
+        Self {
+            stack: vec![empty; plies + 1].into_boxed_slice(),
+            len: 0,
         }
     }
 
-    fn move_piece(&mut self, piece: Piece, from: Square, to: Square) {
-        self.remove(piece, from);
-        self.add(piece, to);
+    /// Starts over with only `root`
+    pub fn reset(&mut self, root: &Board) {
+        self.stack[0] = Accumulators::new(root);
+        self.len = 1;
+    }
+
+    /// Enters the child of `parent` that `mv` reaches (`None` passes)
+    pub fn push(&mut self, parent: &Board, mv: Option<Move>) {
+        let update = mv.map_or(Update::Pass, |mv| Update::new(parent, mv));
+        let (line, rest) = self.stack.split_at_mut(self.len);
+        line[self.len - 1].update_into(update, &mut rest[0]);
+        self.len += 1;
+    }
+
+    pub fn pop(&mut self) {
+        self.len -= 1;
+    }
+
+    pub fn current(&self) -> &Accumulators {
+        &self.stack[self.len - 1]
+    }
+}
+
+fn add_sub(child: &mut Accumulator, parent: &Accumulator, add: &Accumulator, sub: &Accumulator) {
+    for i in 0..HIDDEN_SIZE {
+        child.0[i] = parent.0[i] + add.0[i] - sub.0[i];
+    }
+}
+
+fn add_sub_sub(
+    child: &mut Accumulator,
+    parent: &Accumulator,
+    add: &Accumulator,
+    sub: &Accumulator,
+    sub2: &Accumulator,
+) {
+    for i in 0..HIDDEN_SIZE {
+        child.0[i] = parent.0[i] + add.0[i] - sub.0[i] - sub2.0[i];
+    }
+}
+
+fn add_add_sub_sub(
+    child: &mut Accumulator,
+    parent: &Accumulator,
+    [add, add2]: [&Accumulator; 2],
+    [sub, sub2]: [&Accumulator; 2],
+) {
+    for i in 0..HIDDEN_SIZE {
+        child.0[i] = parent.0[i] + add.0[i] + add2.0[i] - sub.0[i] - sub2.0[i];
     }
 }
 
@@ -269,7 +380,7 @@ mod tests {
         for (mv, next) in board.legal_successors() {
             kinds.insert(mem::discriminant(&mv.kind()));
             let mut updated = accumulators;
-            updated.apply(board, mv);
+            accumulators.update_into(Update::new(board, mv), &mut updated);
             assert_eq!(
                 updated,
                 Accumulators::new(&next),
@@ -289,6 +400,28 @@ mod tests {
             assert_updates_match(&board, Accumulators::new(&board), 2, &mut kinds);
         }
         assert_eq!(kinds.len(), 7, "not every kind of move got played");
+    }
+
+    #[test]
+    fn the_stack_follows_the_line_being_searched() {
+        let root = board(KIWIPETE);
+        let mut stack = AccumulatorStack::new(2);
+        stack.reset(&root);
+
+        let (mv, child) = root
+            .legal_successors()
+            .find(|(mv, _)| mv.is_capture())
+            .expect("a capture");
+        stack.push(&root, Some(mv));
+        assert_eq!(*stack.current(), Accumulators::new(&child));
+
+        // passing moves no piece
+        stack.push(&child, None);
+        assert_eq!(*stack.current(), Accumulators::new(&child));
+
+        stack.pop();
+        stack.pop();
+        assert_eq!(*stack.current(), Accumulators::new(&root));
     }
 
     /// `trainer/checkpoints/net-006-evals.txt`, before quantising

@@ -1,6 +1,6 @@
 mod nnue;
 
-pub use nnue::{Accumulators, NETWORK_NAME};
+pub use nnue::{AccumulatorStack, Accumulators, NETWORK_NAME};
 
 use crate::{
     bitboard::BitBoard,

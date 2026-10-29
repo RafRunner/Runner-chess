@@ -7,7 +7,6 @@ use crate::{
     bench,
     board::Board,
     chess_move::Move,
-    eval::Accumulators,
     score::Score,
     search::{MovePicker, NodeInfo, Outcome, Searcher},
     zobrist::ZobristHash,
@@ -39,7 +38,7 @@ impl Searcher<'_> {
         self.hashes.extend_from_slice(history);
         self.root_index = history.len();
         self.push_hash(board.hash());
-        self.accumulators.push(Accumulators::new(board));
+        self.accumulators.reset(board);
 
         // Depth 1 should always finish (unless no legal moves)
         let mut best_move = None;

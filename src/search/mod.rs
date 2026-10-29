@@ -24,7 +24,7 @@ use tt::{Bound, Entry};
 use crate::{
     board::Board,
     chess_move::Move,
-    eval::{self, Accumulators},
+    eval::{self, AccumulatorStack, Accumulators},
     score::Score,
     zobrist::ZobristHash,
 };
@@ -44,7 +44,7 @@ pub struct Searcher<'search> {
     /// The positions of the game before the root, then the line being searched
     hashes: Vec<ZobristHash>,
     /// The network's hidden layer along the line being searched, the current node's last
-    accumulators: Vec<Accumulators>,
+    accumulators: AccumulatorStack,
     tt: &'search mut TranspositionTable,
     ordering: &'search mut MoveOrdering,
     /// The index of the hash of the root position on the hashes vec
@@ -70,7 +70,7 @@ impl<'search> Searcher<'search> {
             completed_depth: 0,
             completed_score: None,
             hashes: Vec::with_capacity(100 + Score::MAX_PLY as usize),
-            accumulators: Vec::with_capacity(Score::MAX_PLY as usize + 1),
+            accumulators: AccumulatorStack::new(Score::MAX_PLY as usize),
             tt,
             ordering,
             root_index: 0,
@@ -310,12 +310,7 @@ impl<'search> Searcher<'search> {
     }
 
     fn enter(&mut self, parent: &Board, child: &NodeInfo<'_>, mv: Option<Move>) {
-        // updated in place: building them apart and pushing cost 2% of the speed
-        let parent_index = self.accumulators.len() - 1;
-        self.accumulators.extend_from_within(parent_index..);
-        if let Some(mv) = mv {
-            self.accumulators[parent_index + 1].apply(parent, mv);
-        }
+        self.accumulators.push(parent, mv);
         self.push_hash(child.board.hash());
     }
 
@@ -325,9 +320,7 @@ impl<'search> Searcher<'search> {
     }
 
     fn current_accumulators(&self) -> &Accumulators {
-        self.accumulators
-            .last()
-            .expect("the root's go on the stack first")
+        self.accumulators.current()
     }
 
     /// `node` has to be the current one, whose accumulators are on top
@@ -422,7 +415,7 @@ mod tests {
     /// The stacks of `board` as `search_root` sets them up
     fn start_at(searcher: &mut Searcher, board: &Board) {
         searcher.push_hash(board.hash());
-        searcher.accumulators.push(Accumulators::new(board));
+        searcher.accumulators.reset(board);
     }
 
     /// The score of `fen` for the side to move, searched `depth` plies deep.
