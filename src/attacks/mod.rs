@@ -1,6 +1,8 @@
 mod magic;
 mod rays;
 
+use std::sync::LazyLock;
+
 use crate::{
     bitboard::BitBoard,
     piece::{Color, Piece, PieceKind},
@@ -18,6 +20,41 @@ pub fn bishop_attacks(sq: Square, occupied: BitBoard) -> BitBoard {
 pub fn rook_attacks(sq: Square, occupied: BitBoard) -> BitBoard {
     magic::MAGIC_ROOKS.attacks(sq, occupied)
 }
+
+/// The squares strictly between `a` and `b`, when they share a rank, a file or a diagonal
+pub fn between(a: Square, b: Square) -> BitBoard {
+    LINES.between[a][b]
+}
+
+/// The whole rank, file or diagonal that `a` and `b` share, them included
+pub fn line(a: Square, b: Square) -> BitBoard {
+    LINES.line[a][b]
+}
+
+/// Indexed by both squares, empty where they aren't on a line
+struct Lines {
+    between: [[BitBoard; 64]; 64],
+    line: [[BitBoard; 64]; 64],
+}
+
+static LINES: LazyLock<Box<Lines>> = LazyLock::new(|| {
+    let mut lines = Box::new(Lines {
+        between: [[BitBoard::EMPTY; 64]; 64],
+        line: [[BitBoard::EMPTY; 64]; 64],
+    });
+    for a in (0..64).map(Square::new) {
+        for b in (0..64).map(Square::new) {
+            for slider in [rook_attacks, bishop_attacks] {
+                if a != b && slider(a, BitBoard::EMPTY).contains(b) {
+                    lines.between[a][b] = slider(a, b.bb()) & slider(b, a.bb());
+                    lines.line[a][b] =
+                        slider(a, BitBoard::EMPTY) & slider(b, BitBoard::EMPTY) | a.bb() | b.bb();
+                }
+            }
+        }
+    }
+    lines
+});
 
 pub fn attacks(piece: Piece, sq: Square, occupied: BitBoard) -> BitBoard {
     match piece.kind() {

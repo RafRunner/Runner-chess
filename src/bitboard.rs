@@ -66,6 +66,10 @@ impl BitBoard {
         self.0.trailing_zeros()
     }
 
+    pub const fn contains(self, sq: Square) -> bool {
+        self.0 & (1 << sq.index()) != 0
+    }
+
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }

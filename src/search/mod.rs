@@ -188,22 +188,23 @@ impl<'search> Searcher<'search> {
         let mut moves = MovePicker::new(node.board, tt_move, self.ordering, node.ply, buffers)
             .into_iterator(node.board);
         let mut legal_moves = 0;
+        let info = node.board.check_info(in_check);
         for mv in moves.by_ref() {
             // decided before making the move, since most moves that get here are pruned
-            let gives_check = node.board.gives_check(mv);
+            let gives_check = node.board.gives_check_with(mv, &info);
+            let legal = node.board.is_legal_with(mv, &info);
             if futility::prunes_quiet(node, static_eval, best, quiets_tried.len(), mv, gives_check)
                 || futility::prunes_by_see(node, best, mv, gives_check)
             {
                 // the index of the moves after it counts every legal move
-                if node.board.is_legal(mv, in_check) {
-                    legal_moves += 1;
-                }
+                legal_moves += usize::from(legal);
+                continue;
+            }
+            if !legal {
                 continue;
             }
 
-            let Some(next) = node.board.make_legal_move(mv) else {
-                continue;
-            };
+            let next = node.board.make_move(mv);
             let idx = legal_moves;
             legal_moves += 1;
 
@@ -288,11 +289,17 @@ impl<'search> Searcher<'search> {
         let buffers = mem::take(&mut self.move_buffers[ply]);
         let mut moves = MovePicker::new_captures(node.board, buffers).into_iterator(node.board);
 
-        for mv in moves.by_ref().filter(|&mv| node.board.is_legal(mv, false)) {
-            // We verified above we're not in check rn
+        // only worked out once a capture comes, since most nodes here have none
+        let mut info = None;
+        for mv in moves.by_ref() {
+            // not in check: that goes to negamax
+            let info = info.get_or_insert_with(|| node.board.check_info(false));
+            if !node.board.is_legal_with(mv, info) {
+                continue;
+            }
+            let gives_check = node.board.gives_check_with(mv, info);
             let next = node.board.make_move(mv);
 
-            let gives_check = next.is_in_check(next.side_to_move());
             let score = self.quiescence_child(node.board, node.child(&next, gives_check), mv);
 
             if self.stopped {

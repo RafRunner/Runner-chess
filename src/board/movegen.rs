@@ -1,7 +1,7 @@
 use std::iter;
 
 use crate::{
-    attacks::{PAWN_ATTACKS, attacks, bishop_attacks, rook_attacks},
+    attacks::{KNIGHT_ATTACKS, PAWN_ATTACKS, attacks, between, bishop_attacks, line, rook_attacks},
     bitboard::BitBoard,
     board::Board,
     castling::CastlingRights,
@@ -12,6 +12,23 @@ use crate::{
 
 #[derive(Debug)]
 pub struct IllegalMoveError;
+
+/// What decides, for every move of a position, whether it's legal and whether it checks,
+/// worked out once for all of them
+#[derive(Debug, Clone, Copy)]
+pub struct CheckInfo {
+    king: Square,
+    /// Their pieces that attack our king
+    checkers: BitBoard,
+    /// Ours alone between our king and a slider of theirs: they can only move along that
+    /// line
+    pinned: BitBoard,
+    their_king: Square,
+    /// Ours alone between their king and a slider of ours: leaving that line checks
+    discoverers: BitBoard,
+    /// By kind, the squares from where a piece of ours attacks their king
+    check_squares: [BitBoard; 6],
+}
 
 /// Which pawn pushes to generate: the ones that promote are noisy, the others quiet
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -296,6 +313,109 @@ impl Board {
             .is_empty()
     }
 
+    /// See [`CheckInfo`]. `in_check` is whether the side to move is, which the search
+    /// already knows
+    pub fn check_info(&self, in_check: bool) -> CheckInfo {
+        let us = self.side_to_move();
+        let them = us.oposite();
+        let (king, their_king) = (self.king(us), self.king(them));
+        let occupied = self.all_pieces_bb();
+        let (diagonal, straight) = (
+            bishop_attacks(their_king, occupied),
+            rook_attacks(their_king, occupied),
+        );
+
+        CheckInfo {
+            king,
+            checkers: if in_check {
+                self.attackers_by(king, them)
+            } else {
+                BitBoard::EMPTY
+            },
+            pinned: self.lone_blockers(king, them),
+            their_king,
+            discoverers: self.lone_blockers(their_king, us),
+            check_squares: [
+                PAWN_ATTACKS[them][their_king],
+                KNIGHT_ATTACKS[their_king],
+                diagonal,
+                straight,
+                diagonal | straight,
+                BitBoard::EMPTY,
+            ],
+        }
+    }
+
+    /// The pieces of the side to move that are alone between `sq` and a slider of
+    /// `sliders` on a line: the lines go through them, and stop at the other side's
+    fn lone_blockers(&self, sq: Square, sliders: Color) -> BitBoard {
+        let ours = self.by_color(self.side_to_move());
+        let theirs = self.by_color(self.side_to_move().oposite());
+        let queens = self.pieces(Piece::new(sliders, PieceKind::Queen));
+        let snipers = (rook_attacks(sq, theirs)
+            & (self.pieces(Piece::new(sliders, PieceKind::Rook)) | queens))
+            | (bishop_attacks(sq, theirs)
+                & (self.pieces(Piece::new(sliders, PieceKind::Bishop)) | queens));
+
+        let mut blockers = BitBoard::EMPTY;
+        for sniper in snipers {
+            let between = between(sq, sniper) & ours;
+            if between.count_ones() == 1 {
+                blockers |= between;
+            }
+        }
+        blockers
+    }
+
+    /// [`Board::is_legal`], with what `info` already worked out for this position. Only
+    /// en passant, and the king's moves in check, still get made
+    pub fn is_legal_with(&self, mv: Move, info: &CheckInfo) -> bool {
+        let (from, to) = (mv.from(), mv.to());
+        let in_check = !info.checkers.is_empty();
+        match mv.kind() {
+            MoveKind::EnPassant => return self.make_legal_move(mv).is_some(),
+            // generated only out of check, when the king's way isn't attacked
+            MoveKind::Castle => return true,
+            _ if from == info.king && in_check => return self.make_legal_move(mv).is_some(),
+            // out of check no slider sees the king, so its own square hides nothing
+            _ if from == info.king => {
+                return self
+                    .attackers_by(to, self.side_to_move().oposite())
+                    .is_empty();
+            }
+            _ => (),
+        }
+
+        if info.pinned.contains(from) && !line(info.king, from).contains(to) {
+            return false;
+        }
+        let mut checkers = info.checkers;
+        match (checkers.next(), checkers.next()) {
+            (None, _) => true,
+            // capture the checker or block it. A pinned piece can do neither: the lines
+            // through the king only cross on it
+            (Some(checker), None) => (between(info.king, checker) | checker.bb()).contains(to),
+            // only the king can get out of a double check
+            (Some(_), Some(_)) => false,
+        }
+    }
+
+    /// [`Board::gives_check`], with what `info` already worked out for this position.
+    /// Castling, en passant and promotions, which change more than one piece of a line,
+    /// still go the long way
+    pub fn gives_check_with(&self, mv: Move, info: &CheckInfo) -> bool {
+        if !matches!(
+            mv.kind(),
+            MoveKind::Normal | MoveKind::DoublePush | MoveKind::Capture
+        ) {
+            return self.gives_check(mv);
+        }
+        let (from, to) = (mv.from(), mv.to());
+        let kind = self.piece_at(from).expect("a piece moves").kind();
+        info.check_squares[kind].contains(to)
+            || (info.discoverers.contains(from) && !line(info.their_king, from).contains(to))
+    }
+
     fn king_square(&self, color: Color) -> Square {
         self.pieces(Piece::new(color, PieceKind::King))
             .next()
@@ -367,19 +487,31 @@ mod tests {
         (b, moves)
     }
 
-    /// Along every line `depth` plies deep, checks and legality as making each move tells
+    /// Along every line `depth` plies deep, checks and legality as making each move tells,
+    /// with and without a [`CheckInfo`]
     fn assert_checks_and_legality_match(board: &Board, depth: u32) {
         let in_check = board.is_in_check(board.side_to_move());
+        let info = board.check_info(in_check);
         for mv in board.generate_moves() {
             let next = board.make_move(mv);
             let fen = board.to_fen();
             let check = next.is_in_check(next.side_to_move());
             assert_eq!(board.gives_check(mv), check, "{mv} gives check in {fen}");
+            assert_eq!(
+                board.gives_check_with(mv, &info),
+                check,
+                "{mv} gives check in {fen}, with the info"
+            );
             let legal = !next.is_in_check(board.side_to_move());
             assert_eq!(
                 board.is_legal(mv, in_check),
                 legal,
                 "{mv} is legal in {fen}"
+            );
+            assert_eq!(
+                board.is_legal_with(mv, &info),
+                legal,
+                "{mv} is legal in {fen}, with the info"
             );
 
             if depth > 1 && legal {
@@ -399,6 +531,11 @@ mod tests {
             "6k1/4P3/8/8/8/8/8/4K3 w - - 0 1",        // promotions that check
             "5k2/8/8/8/8/8/8/4K2R w K - 0 1",         // castling that checks
             "4k3/8/8/8/8/8/r7/4K3 w - - 0 1",         // the king along the rook's rank
+            "4k3/8/8/8/8/5n2/8/r3K3 w - - 0 1",       // double check: only the king moves
+            "4k3/8/8/8/1b6/8/3R4/r3K3 w - - 0 1",     // the pinned rook can't block on d1
+            "4k3/8/8/8/8/8/5N2/4K2r w - - 0 1",       // only Nxh1 answers the check
+            "k7/8/8/8/8/8/K7/R7 w - - 0 1",           // the king uncovers the rook
+            "4k3/8/8/8/1b6/8/3P4/4K3 w - - 0 1",      // the pawn pinned by the bishop
         ];
         for fen in PERFT_POSITIONS
             .into_iter()
