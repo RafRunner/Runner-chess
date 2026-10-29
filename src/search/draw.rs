@@ -101,10 +101,10 @@ mod tests {
 
     #[test]
     fn trades_into_a_dead_draw_when_lost() {
-        // a knight down, with Rxd8# coming, Black holds only by trading rooks: K+N vs K
-        // can't be won. K+R+N vs K+R alone is nearly a draw for the network, so the mate
-        // makes the other moves lose. It shows from depth 5 on
-        let fen = "3r3k/8/6K1/8/8/4N3/8/3R4 b - - 0 1";
+        // two bishops down, Black gives back the rook with check, and the only replies
+        // take it: bishops of one color alone can't mate. Without pawns, the network
+        // can see the side with the active king as fine, so the reply has to be forced
+        let fen = "3r4/8/8/7B/8/1B4k1/8/3R3K b - - 0 1";
         for depth in 6..=7 {
             assert_best(fen, depth, "d8d1");
         }
