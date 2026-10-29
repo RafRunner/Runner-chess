@@ -8,6 +8,21 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.2.0 - 2026-10-29
+
+### Changed
+- A new network of the same shape, `nets/net-006.bin`: trained on 90 million positions,
+  30 million each of the games of 1.1.1, 0.10.0 and 0.9.2 against themselves, half of
+  each starting from `popularpos_lichess_v3.epd`. It gives 1.57 times the scores of
+  its data, and its output is still divided by 1.5.
+
+### Measured
+- Bench: 26531 (from 32169).
+- Strength: +37.2 ± 17.7 Elo against 1.1.1 at 10+0.1, SPRT [0, 10] passed in 778
+  games (261 wins, 178 losses, 339 draws).
+- Quantisation: rounding the weights moves net-006's output by up to 2.7 centipawns on
+  the reference positions, against 25 for net-005.
+
 ## 1.1.1 - 2026-10-28
 
 ### Fixed
