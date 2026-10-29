@@ -168,11 +168,11 @@ million positions take 70 seconds.
 
 Every network trains on the games of the current version and of the two before it,
 each generation half from random openings and half from `popularpos_lichess_v3.epd`,
-in `data/<version>-random/` and `data/<version>-book/`. For net-005:
+in `data/<version>-random/` and `data/<version>-book/`. For net-006:
 
 ```
-scripts/prepare-data.sh all-90m data/0.10.0-random data/0.10.0-book \
-    data/0.9.2-random data/0.9.2-book data/0.9.1
+scripts/prepare-data.sh net-006 data/1.1.1-random data/1.1.1-book \
+    data/0.10.0-random data/0.10.0-book data/0.9.2-random data/0.9.2-book
 ```
 
 The labels of the older generations come from shallower searches of weaker versions,

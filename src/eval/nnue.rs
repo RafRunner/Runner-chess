@@ -20,7 +20,7 @@ const _: () =
 
 macro_rules! network_name {
     () => {
-        "net-005"
+        "net-006"
     };
 }
 pub const NETWORK_NAME: &str = network_name!();
@@ -291,29 +291,30 @@ mod tests {
         assert_eq!(kinds.len(), 7, "not every kind of move got played");
     }
 
-    /// `trainer/checkpoints/net-005-90m-evals.txt`, before quantising
+    /// `trainer/checkpoints/net-006-evals.txt`, before quantising
     const TRAINER_EVALS: [(&str, f32); 7] = [
-        (Board::STARTPOS, 35.9),
+        (Board::STARTPOS, 42.6),
         (
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
-            -32.6,
+            -30.0,
         ),
-        (KIWIPETE, -122.6),
+        (KIWIPETE, -252.6),
         (
             "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
-            31.4,
+            45.2,
         ),
         (
             "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR b KQkq - 2 3",
-            31.4,
+            45.2,
         ),
-        ("4k3/8/8/8/8/8/PPP5/4K2R w K - 0 1", 2950.3),
-        ("4k2r/ppp5/8/8/8/8/8/4K3 b k - 0 1", 2950.3),
+        ("4k3/8/8/8/8/8/PPP5/4K2R w K - 0 1", 3933.4),
+        ("4k2r/ppp5/8/8/8/8/8/4K3 b k - 0 1", 3933.4),
     ];
 
-    /// Rounding net-005's weights moves these positions by up to 25.4, most of it in the
-    /// output layer, whose steps of 1/64 nearly all fall the same way for this network
-    const QUANTISATION_ERROR: f32 = 30.0;
+    /// Rounding net-006's weights moves these positions by up to 2.7. It depends on the
+    /// network: net-005's moved by up to 25.4, its steps of 1/64 in the output layer
+    /// nearly all falling the same way
+    const QUANTISATION_ERROR: f32 = 10.0;
 
     #[test]
     fn the_output_matches_the_trainer() {

@@ -10,7 +10,8 @@ use crate::{
     square::Square,
 };
 
-/// net-005 gives about 1.5x the scores it learned from, as it mostly predicts results
+/// net-006 gives about 1.57x the scores it learned from, as it mostly predicts results:
+/// close enough to the 1.5 of net-005 to keep it
 const NETWORK_INFLATION: i32 = 150;
 
 /// For the side to move: the network, except in dead positions
