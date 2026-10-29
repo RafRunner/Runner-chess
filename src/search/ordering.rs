@@ -135,10 +135,10 @@ fn pack(key: i32, idx: usize, mv: Move) -> u64 {
     (u64::from(inverted) << 32) | ((idx as u64) << 16) | u64::from(mv.raw())
 }
 
-/// `moves` packed with their keys by [`pack`]
-fn packed(moves: Vec<Move>, key: impl Fn(Move) -> i32) -> Vec<u64> {
-    let indexed = moves.into_iter().enumerate();
-    indexed.map(|(i, mv)| pack(key(mv), i, mv)).collect()
+/// `moves` packed with their keys by [`pack`] into `packed`
+fn pack_into(moves: &[Move], packed: &mut Vec<u64>, key: impl Fn(Move) -> i32) {
+    let indexed = moves.iter().enumerate();
+    packed.extend(indexed.map(|(i, &mv)| pack(key(mv), i, mv)));
 }
 
 fn unpack(packed: u64) -> Move {
@@ -171,6 +171,18 @@ pub(super) struct MovePicker {
     /// In the order they came
     losing_captures: Vec<Move>,
     next_losing: usize,
+    /// Where the moves get generated, before getting their keys
+    generated: Vec<Move>,
+}
+
+/// The lists of a [`MovePicker`], which the search hands from one node to the next of the
+/// same ply, so that their memory only gets allocated once
+#[derive(Default)]
+pub(super) struct MoveBuffers {
+    noisy: Vec<u64>,
+    quiets: Vec<u64>,
+    losing_captures: Vec<Move>,
+    generated: Vec<Move>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,37 +203,70 @@ impl MovePicker {
         tt_move: Option<Move>,
         ordering: &MoveOrdering,
         ply: u32,
+        buffers: MoveBuffers,
     ) -> Self {
-        let noisy = board.generate_noisy();
-        let quiets = board.generate_quiets();
-        let tt_move = tt_move.filter(|mv| noisy.contains(mv) || quiets.contains(mv));
+        let mut picker = Self::empty(Stage::TtMove, buffers);
+        let mut generated_tt_move = false;
 
-        Self {
-            stage: Stage::TtMove,
-            tt_move,
-            noisy: packed(noisy, |mv| MoveOrdering::noisy_key(board, mv)),
-            next_noisy: 0,
-            quiets: packed(quiets, |mv| ordering.quiet_key(board, ply, mv)),
-            next_quiet: 0,
-            losing_captures: Vec::new(),
-            next_losing: 0,
-        }
+        board.generate_noisy_into(&mut picker.generated);
+        generated_tt_move |= tt_move.is_some_and(|mv| picker.generated.contains(&mv));
+        pack_into(&picker.generated, &mut picker.noisy, |mv| {
+            MoveOrdering::noisy_key(board, mv)
+        });
+
+        picker.generated.clear();
+        board.generate_quiets_into(&mut picker.generated);
+        generated_tt_move |= tt_move.is_some_and(|mv| picker.generated.contains(&mv));
+        pack_into(&picker.generated, &mut picker.quiets, |mv| {
+            ordering.quiet_key(board, ply, mv)
+        });
+
+        picker.tt_move = tt_move.filter(|_| generated_tt_move);
+        picker
     }
 
     /// Only the captures that don't lose material in the exchange, for quiescence: the
     /// others won't improve on standing pat
-    pub(super) fn new_captures(board: &Board) -> Self {
-        let noisy = board.generate_captures();
+    pub(super) fn new_captures(board: &Board, buffers: MoveBuffers) -> Self {
+        let mut picker = Self::empty(Stage::SortNoisy { keep_losing: false }, buffers);
+        board.generate_captures_into(&mut picker.generated);
+        pack_into(&picker.generated, &mut picker.noisy, |mv| {
+            MoveOrdering::noisy_key(board, mv)
+        });
+        picker
+    }
+
+    fn empty(stage: Stage, buffers: MoveBuffers) -> Self {
+        let MoveBuffers {
+            mut noisy,
+            mut quiets,
+            mut losing_captures,
+            mut generated,
+        } = buffers;
+        noisy.clear();
+        quiets.clear();
+        losing_captures.clear();
+        generated.clear();
 
         Self {
-            stage: Stage::SortNoisy { keep_losing: false },
+            stage,
             tt_move: None,
-            noisy: packed(noisy, |mv| MoveOrdering::noisy_key(board, mv)),
+            noisy,
             next_noisy: 0,
-            quiets: Vec::new(),
+            quiets,
             next_quiet: 0,
-            losing_captures: Vec::new(),
+            losing_captures,
             next_losing: 0,
+            generated,
+        }
+    }
+
+    fn into_buffers(self) -> MoveBuffers {
+        MoveBuffers {
+            noisy: self.noisy,
+            quiets: self.quiets,
+            losing_captures: self.losing_captures,
+            generated: self.generated,
         }
     }
 
@@ -304,6 +349,13 @@ impl MovePicker {
 pub(super) struct MovePickerIterator<'board> {
     move_picker: MovePicker,
     board: &'board Board,
+}
+
+impl MovePickerIterator<'_> {
+    /// The lists back, for the next node of the same ply
+    pub(super) fn into_buffers(self) -> MoveBuffers {
+        self.move_picker.into_buffers()
+    }
 }
 
 impl Iterator for MovePickerIterator<'_> {
@@ -423,7 +475,7 @@ mod tests {
         ply: u32,
         tt_move: Option<Move>,
     ) -> Vec<Move> {
-        let moves = MovePicker::new(board, tt_move, ordering, ply);
+        let moves = MovePicker::new(board, tt_move, ordering, ply, MoveBuffers::default());
         moves.into_iterator(board).collect()
     }
 
@@ -562,7 +614,8 @@ mod tests {
         let promotions = "1n2k3/P7/1r6/8/8/8/8/4K3 w - - 0 1";
         for fen in PERFT_POSITIONS.into_iter().chain([promotions]) {
             let board = board(fen);
-            let captures = MovePicker::new_captures(&board).into_iterator(&board);
+            let captures =
+                MovePicker::new_captures(&board, MoveBuffers::default()).into_iterator(&board);
             let captures = legal(&board, captures.collect());
             let expected: Vec<Move> = ordered(fen)
                 .into_iter()

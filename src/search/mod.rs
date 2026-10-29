@@ -13,12 +13,13 @@ pub use ordering::MoveOrdering;
 pub use tt::TranspositionTable;
 
 use std::{
+    mem,
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
 
 use node::{NodeInfo, Outcome};
-use ordering::MovePicker;
+use ordering::{MoveBuffers, MovePicker};
 use tt::{Bound, Entry};
 
 use crate::{
@@ -45,6 +46,10 @@ pub struct Searcher<'search> {
     hashes: Vec<ZobristHash>,
     /// The network's hidden layer along the line being searched, the current node's last
     accumulators: AccumulatorStack,
+    /// The lists of moves of each ply, kept from node to node so they don't get allocated
+    /// for every one
+    move_buffers: Vec<MoveBuffers>,
+    quiets_tried: Vec<Vec<Move>>,
     tt: &'search mut TranspositionTable,
     ordering: &'search mut MoveOrdering,
     /// The index of the hash of the root position on the hashes vec
@@ -71,6 +76,10 @@ impl<'search> Searcher<'search> {
             completed_score: None,
             hashes: Vec::with_capacity(100 + Score::MAX_PLY as usize),
             accumulators: AccumulatorStack::new(Score::MAX_PLY as usize),
+            move_buffers: (0..=Score::MAX_PLY)
+                .map(|_| MoveBuffers::default())
+                .collect(),
+            quiets_tried: vec![Vec::new(); Score::MAX_PLY as usize + 1],
             tt,
             ordering,
             root_index: 0,
@@ -171,11 +180,15 @@ impl<'search> Searcher<'search> {
         let mut best = -Score::INF;
         let original_alpha = node.alpha;
         let mut best_move = None;
-        let mut quiets_tried = Vec::with_capacity(64);
+        let ply = node.ply as usize;
+        let mut quiets_tried = mem::take(&mut self.quiets_tried[ply]);
+        quiets_tried.clear();
 
-        let moves = MovePicker::new(node.board, tt_move, self.ordering, node.ply);
+        let buffers = mem::take(&mut self.move_buffers[ply]);
+        let mut moves = MovePicker::new(node.board, tt_move, self.ordering, node.ply, buffers)
+            .into_iterator(node.board);
         let mut legal_moves = 0;
-        for mv in moves.into_iterator(node.board) {
+        for mv in moves.by_ref() {
             // decided before making the move, since most moves that get here are pruned
             let gives_check = node.board.gives_check(mv);
             if futility::prunes_quiet(node, static_eval, best, quiets_tried.len(), mv, gives_check)
@@ -215,6 +228,8 @@ impl<'search> Searcher<'search> {
                 quiets_tried.push(mv);
             }
         }
+        self.move_buffers[ply] = moves.into_buffers();
+        self.quiets_tried[ply] = quiets_tried;
 
         if legal_moves == 0 {
             best = if in_check {
@@ -269,12 +284,11 @@ impl<'search> Searcher<'search> {
         }
 
         let mut best = static_eval;
-        let moves = MovePicker::new_captures(node.board);
+        let ply = node.ply as usize;
+        let buffers = mem::take(&mut self.move_buffers[ply]);
+        let mut moves = MovePicker::new_captures(node.board, buffers).into_iterator(node.board);
 
-        for mv in moves
-            .into_iterator(node.board)
-            .filter(|&mv| node.board.is_legal(mv, false))
-        {
+        for mv in moves.by_ref().filter(|&mv| node.board.is_legal(mv, false)) {
             // We verified above we're not in check rn
             let next = node.board.make_move(mv);
 
@@ -289,6 +303,7 @@ impl<'search> Searcher<'search> {
                 break;
             }
         }
+        self.move_buffers[ply] = moves.into_buffers();
 
         best
     }

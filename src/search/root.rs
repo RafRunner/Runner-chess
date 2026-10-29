@@ -1,5 +1,6 @@
 use std::{
     io::{self, Write},
+    mem,
     time::Instant,
 };
 
@@ -127,10 +128,12 @@ impl Searcher<'_> {
     ) -> Score {
         let mut best_score = -Score::INF;
         let mut root = NodeInfo::new(board, depth, 0, alpha, beta);
-        let moves = MovePicker::new(board, *best_move, self.ordering, 0);
+        let buffers = mem::take(&mut self.move_buffers[0]);
+        let mut moves =
+            MovePicker::new(board, *best_move, self.ordering, 0, buffers).into_iterator(board);
 
         for (idx, (mv, next)) in moves
-            .into_iterator(board)
+            .by_ref()
             .filter_map(|mv| {
                 let next = board.make_move(mv);
                 (!next.is_in_check(board.side_to_move())).then_some((mv, next))
@@ -161,6 +164,7 @@ impl Searcher<'_> {
             }
         }
 
+        self.move_buffers[0] = moves.into_buffers();
         best_score
     }
 

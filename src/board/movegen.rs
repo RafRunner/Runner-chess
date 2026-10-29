@@ -24,28 +24,39 @@ enum Pushes {
 impl Board {
     pub fn generate_captures(&self) -> Vec<Move> {
         let mut moves = Vec::with_capacity(16);
-        self.generate_piece_moves(self.by_color(self.side_to_move().oposite()), &mut moves);
-        self.generate_pawn_captures(&mut moves);
-
+        self.generate_captures_into(&mut moves);
         moves
     }
 
     /// The captures, then the promotions that don't capture
     pub fn generate_noisy(&self) -> Vec<Move> {
-        let mut moves = self.generate_captures();
-        self.generate_pawn_pushes(Pushes::Promotions, &mut moves);
-
+        let mut moves = Vec::with_capacity(16);
+        self.generate_noisy_into(&mut moves);
         moves
     }
 
     /// The moves that neither capture nor promote, in the order `generate_moves` has them
     pub fn generate_quiets(&self) -> Vec<Move> {
         let mut moves = Vec::with_capacity(48);
-        self.generate_piece_moves(!self.all_pieces_bb(), &mut moves);
-        self.generate_castling(&mut moves);
-        self.generate_pawn_pushes(Pushes::Quiet, &mut moves);
-
+        self.generate_quiets_into(&mut moves);
         moves
+    }
+
+    /// The generators that add to `moves`, so that the search can keep its lists
+    pub fn generate_captures_into(&self, moves: &mut Vec<Move>) {
+        self.generate_piece_moves(self.by_color(self.side_to_move().oposite()), moves);
+        self.generate_pawn_captures(moves);
+    }
+
+    pub fn generate_noisy_into(&self, moves: &mut Vec<Move>) {
+        self.generate_captures_into(moves);
+        self.generate_pawn_pushes(Pushes::Promotions, moves);
+    }
+
+    pub fn generate_quiets_into(&self, moves: &mut Vec<Move>) {
+        self.generate_piece_moves(!self.all_pieces_bb(), moves);
+        self.generate_castling(moves);
+        self.generate_pawn_pushes(Pushes::Quiet, moves);
     }
 
     pub fn generate_moves(&self) -> Vec<Move> {
