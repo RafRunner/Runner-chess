@@ -411,16 +411,26 @@ mod tests {
 
     /// Searches `board`, the game `history` behind it, within `budget`
     pub(super) fn search(board: &Board, history: &[ZobristHash], budget: Budget) -> Searched {
-        with_searcher(budget, |searcher| {
-            let mut out = Vec::new();
-            let best = searcher.search_root(board, history, &mut out).unwrap();
-            Searched {
-                best: best.map(Move::to_uci),
-                out: String::from_utf8(out).unwrap(),
-                nodes: searcher.nodes(),
-                score: searcher.score(),
-            }
-        })
+        search_with(&mut TranspositionTable::new(1), board, history, budget)
+    }
+
+    /// The same, with a table that may remember earlier searches
+    fn search_with(
+        tt: &mut TranspositionTable,
+        board: &Board,
+        history: &[ZobristHash],
+        budget: Budget,
+    ) -> Searched {
+        let mut ordering = MoveOrdering::new();
+        let mut searcher = Searcher::new(budget, tt, &mut ordering);
+        let mut out = Vec::new();
+        let best = searcher.search_root(board, history, &mut out).unwrap();
+        Searched {
+            best: best.map(Move::to_uci),
+            out: String::from_utf8(out).unwrap(),
+            nodes: searcher.nodes(),
+            score: searcher.score(),
+        }
     }
 
     /// Runs `f` on a searcher with a fresh table and ordering
@@ -440,19 +450,27 @@ mod tests {
         searcher.accumulators.reset(board);
     }
 
-    /// The score of `fen` for the side to move, searched `depth` plies deep.
+    /// The score of `fen` for the side to move, searched to `depth` as the engine does:
+    /// iterations from depth 1, each ordered by the table the last one left
     pub(super) fn score(fen: &str, depth: u32) -> Score {
         score_with(&mut TranspositionTable::new(1), fen, depth)
     }
 
     /// The same, with a table that may remember earlier searches.
     fn score_with(tt: &mut TranspositionTable, fen: &str, depth: u32) -> Score {
+        search_with(tt, &board(fen), &[], Budget::depth(Some(depth)))
+            .score
+            .expect("depth 1 always finishes")
+    }
+
+    /// What `negamax` makes of `fen` as a lone node `depth` plies deep, without the
+    /// iterations of the root: for what a single node does, as quiescence at depth 0
+    fn node_score(fen: &str, depth: u32) -> Score {
         let board = board(fen);
-        let mut ordering = MoveOrdering::new();
-        let mut searcher = Searcher::new(Budget::depth(Some(depth)), tt, &mut ordering);
-        start_at(&mut searcher, &board);
-        let node = NodeInfo::new(&board, depth, 0, -Score::INF, Score::INF);
-        searcher.negamax(node)
+        with_searcher(Budget::depth(Some(depth)), |searcher| {
+            start_at(searcher, &board);
+            searcher.negamax(NodeInfo::new(&board, depth, 0, -Score::INF, Score::INF))
+        })
     }
 
     /// `expected` must be the best move of `fen`, and its mirror the best move of
@@ -528,10 +546,10 @@ mod tests {
     #[test]
     fn mate_and_stalemate_scores() {
         for fen in both_colors(MATED) {
-            assert_eq!(score(&fen, 1), Score::mated_in(0), "{fen}");
+            assert_eq!(node_score(&fen, 1), Score::mated_in(0), "{fen}");
         }
         for fen in both_colors(STALEMATED) {
-            assert_eq!(score(&fen, 1), Score::DRAW, "{fen}");
+            assert_eq!(node_score(&fen, 1), Score::DRAW, "{fen}");
         }
         // one ply until the mate
         for fen in both_colors(MATE_IN_ONE) {
@@ -677,8 +695,8 @@ mod tests {
             // mirror doesn't keep
             for depth in 0..=1 {
                 assert_eq!(
-                    score(fen, depth),
-                    score(&mirrored, depth),
+                    node_score(fen, depth),
+                    node_score(&mirrored, depth),
                     "{fen} vs {mirrored} at depth {depth}"
                 );
             }
@@ -692,7 +710,7 @@ mod tests {
         // Black is a queen down, but exd5 takes it back
         for fen in both_colors("4k3/8/4p3/3Q4/8/8/8/4K3 b - - 0 1") {
             assert!(static_eval(&board(&fen)) < Score::new(-500), "{fen}");
-            assert!(score(&fen, 0) > Score::DRAW, "{fen}");
+            assert!(node_score(&fen, 0) > Score::DRAW, "{fen}");
         }
     }
 
@@ -700,7 +718,7 @@ mod tests {
     fn quiescence_stands_pat_when_captures_lose() {
         // the only capture, Qxd5, loses the queen, so not capturing keeps the static eval
         for fen in both_colors("4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1") {
-            assert_eq!(score(&fen, 0), static_eval(&board(&fen)), "{fen}");
+            assert_eq!(node_score(&fen, 0), static_eval(&board(&fen)), "{fen}");
         }
     }
 
@@ -711,7 +729,7 @@ mod tests {
         // the knight from being a dead draw afterwards
         for fen in both_colors("r3k3/2N4p/8/8/8/8/7P/7K b - - 0 1") {
             assert!(static_eval(&board(&fen)) > Score::new(100), "{fen}");
-            assert!(score(&fen, 0) < Score::new(-100), "{fen}");
+            assert!(node_score(&fen, 0) < Score::new(-100), "{fen}");
         }
     }
 
@@ -719,7 +737,7 @@ mod tests {
     fn quiescence_sees_mate() {
         // checkmated right at the horizon
         for fen in both_colors(MATED) {
-            assert_eq!(score(&fen, 0), Score::mated_in(0), "{fen}");
+            assert_eq!(node_score(&fen, 0), Score::mated_in(0), "{fen}");
         }
     }
 }
