@@ -159,6 +159,26 @@ impl TranspositionTable {
         bucket[slot] = Some(new);
     }
 
+    /// Asks the memory for the bucket of `hash` without waiting for it, so that it's in
+    /// the cache by the time the node probes it: the table is far bigger than the caches
+    pub fn prefetch(&self, hash: ZobristHash) {
+        let bucket: *const Bucket = &self.buckets[self.index(hash)];
+        // SAFETY: a prefetch only hints the cache, it never faults nor writes
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            std::arch::asm!(
+                "prfm pldl1keep, [{0}]",
+                in(reg) bucket,
+                options(nostack, readonly, preserves_flags)
+            );
+        }
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use std::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+            _mm_prefetch::<_MM_HINT_T0>(bucket.cast());
+        }
+    }
+
     /// The hash as a fraction of 2^64, times the length: always inside the table, and
     /// from the high bits of the hash
     fn index(&self, hash: ZobristHash) -> usize {

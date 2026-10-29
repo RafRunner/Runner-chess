@@ -317,6 +317,10 @@ impl<'search> Searcher<'search> {
 
     /// The score of `child`, reached by `mv` (`None` passes), for the side to move here
     fn search_child(&mut self, parent: &Board, child: NodeInfo<'_>, mv: Option<Move>) -> Score {
+        // quiescence doesn't look at the table
+        if child.depth > 0 {
+            self.tt.prefetch(child.board.hash());
+        }
         self.enter(parent, &child, mv);
         let score = -self.negamax(child);
         self.leave();
