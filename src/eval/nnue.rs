@@ -13,10 +13,11 @@ const QA: i32 = 255;
 const QB: i32 = 64;
 const SCALE: i32 = 400;
 
-/// The trainer clips weights to ±1.98, 127 in `QB`: the output layer always fits an i32
+/// The trainer clips weights to ±1.98, 127 in `QB`: each view's half of the output layer
+/// always fits an i32, so its sum stays in the lanes that SIMD handles best. Both halves
+/// together may not
 const MAX_OUTPUT_WEIGHT: i64 = 127;
-const _: () =
-    assert!(2 * HIDDEN_SIZE as i64 * (QA * QA) as i64 * MAX_OUTPUT_WEIGHT <= i32::MAX as i64);
+const _: () = assert!(HIDDEN_SIZE as i64 * (QA * QA) as i64 * MAX_OUTPUT_WEIGHT <= i32::MAX as i64);
 
 macro_rules! network_name {
     () => {
@@ -76,9 +77,10 @@ impl Accumulators {
         let (our_weights, their_weights) = NNUE.output_weights.split_at(HIDDEN_SIZE);
 
         // in QA * QA * QB, since screlu squares what is in QA
-        let output = activated_dot(us, our_weights) + activated_dot(them, their_weights);
-        // to QA * QB, the bias's, then to centipawns, in i64 against overflow
-        let output = i64::from(output / QA + i32::from(NNUE.output_bias));
+        let output = i64::from(activated_dot(us, our_weights))
+            + i64::from(activated_dot(them, their_weights));
+        // to QA * QB, the bias's, then to centipawns
+        let output = output / i64::from(QA) + i64::from(NNUE.output_bias);
         (output * i64::from(SCALE) / i64::from(QA * QB)) as i32
     }
 
