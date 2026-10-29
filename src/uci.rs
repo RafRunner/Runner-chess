@@ -225,7 +225,7 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                 let args: Vec<&str> = tokens.collect();
                 self.set_option(&args)?;
             }
-            "d" => writeln!(self.out, "{}\n{}\n", self.board, self.board.to_fen())?,
+            "d" => writeln!(self.out, "\n{}\nFen: {}\n", self.board, self.board.to_fen())?,
             "bench" => {
                 let args: Vec<&str> = tokens.collect();
                 // a search at the same time would take half the CPU and mix its output

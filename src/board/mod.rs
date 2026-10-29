@@ -436,13 +436,14 @@ impl Display for Board {
             writeln!(f)?;
         }
         writeln!(f, "  a b c d e f g h")?;
-        writeln!(f, "Castling: {}", self.castling)?;
-        write!(
+        writeln!(f, "\nCastling: {}", self.castling)?;
+        writeln!(
             f,
             "En-Passant: {}",
             self.en_passant
                 .map_or(String::from("-"), |s| s.to_algebraic())
-        )
+        )?;
+        write!(f, "Hash: {:X}", self.hash.raw())
     }
 }
 
@@ -510,8 +511,10 @@ mod tests {
                 "2 P P P P P P P P",
                 "1 R N B Q K B N R",
                 "  a b c d e f g h",
+                "",
                 "Castling: KQkq",
                 "En-Passant: -",
+                "Hash: 463B96181691FC9C",
             ]
         );
     }
@@ -530,8 +533,10 @@ mod tests {
                 "2 . . . . . . . .",
                 "1 . . . . . . . K",
                 "  a b c d e f g h",
+                "",
                 "Castling: -",
                 "En-Passant: e3",
+                "Hash: BF7AF4FAAF9C2479",
             ]
         );
     }
