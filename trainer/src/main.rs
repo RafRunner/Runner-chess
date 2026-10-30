@@ -24,7 +24,7 @@ use bullet::{
 };
 
 // the engine's inference has to match these
-const HIDDEN_SIZE: usize = 128;
+const HIDDEN_SIZE: usize = 256;
 const SCALE: i32 = 400;
 const QA: i16 = 255;
 const QB: i16 = 64;
@@ -56,7 +56,7 @@ fn main() {
         }
     };
     let superbatches: usize = args.get(2).map_or(30, |n| n.parse().expect("superbatches"));
-    let wdl_proportion: f32 = args.get(3).map_or(0.75, |w| w.parse().expect("wdl"));
+    let wdl_proportion: f32 = args.get(3).map_or(0.5, |w| w.parse().expect("wdl"));
 
     let positions = fs::metadata(data).expect("the data file").len() / POSITION_BYTES;
     let batches_per_superbatch = (positions as usize / BATCH_SIZE).max(1);

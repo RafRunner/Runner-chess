@@ -1,4 +1,4 @@
-//! The network, `(768 -> 128)x2 -> 1`, from `trainer/` (see `docs/nnue.md`).
+//! The network, `(768 -> 256)x2 -> 1`, from `trainer/` (see `docs/nnue.md`).
 
 use crate::{
     board::Board,
@@ -8,7 +8,7 @@ use crate::{
 };
 
 // as in trainer/src/main.rs, checked by the file's size and the trainer test below
-const HIDDEN_SIZE: usize = 128;
+const HIDDEN_SIZE: usize = 256;
 const QA: i32 = 255;
 const QB: i32 = 64;
 const SCALE: i32 = 400;
@@ -21,7 +21,7 @@ const _: () = assert!(HIDDEN_SIZE as i64 * (QA * QA) as i64 * MAX_OUTPUT_WEIGHT 
 
 macro_rules! network_name {
     () => {
-        "net-006"
+        "net-007"
     };
 }
 pub const NETWORK_NAME: &str = network_name!();
@@ -426,30 +426,29 @@ mod tests {
         assert_eq!(*stack.current(), Accumulators::new(&root));
     }
 
-    /// `trainer/checkpoints/net-006-evals.txt`, before quantising
+    /// `trainer/checkpoints/net-007-evals.txt`, before quantising
     const TRAINER_EVALS: [(&str, f32); 7] = [
-        (Board::STARTPOS, 42.6),
+        (Board::STARTPOS, 40.4),
         (
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
-            -30.0,
+            -11.2,
         ),
-        (KIWIPETE, -252.6),
+        (KIWIPETE, -143.1),
         (
             "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
-            45.2,
+            57.9,
         ),
         (
             "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR b KQkq - 2 3",
-            45.2,
+            57.9,
         ),
-        ("4k3/8/8/8/8/8/PPP5/4K2R w K - 0 1", 3933.4),
-        ("4k2r/ppp5/8/8/8/8/8/4K3 b k - 0 1", 3933.4),
+        ("4k3/8/8/8/8/8/PPP5/4K2R w K - 0 1", 2496.8),
+        ("4k2r/ppp5/8/8/8/8/8/4K3 b k - 0 1", 2496.8),
     ];
 
-    /// Rounding net-006's weights moves these positions by up to 2.7. It depends on the
-    /// network: net-005's moved by up to 25.4, its steps of 1/64 in the output layer
-    /// nearly all falling the same way
-    const QUANTISATION_ERROR: f32 = 10.0;
+    /// Rounding net-007's weights moves these positions by up to 15.6, most of it in the
+    /// output layer. It depends on the network: net-006's moved by up to 2.7
+    const QUANTISATION_ERROR: f32 = 20.0;
 
     #[test]
     fn the_output_matches_the_trainer() {

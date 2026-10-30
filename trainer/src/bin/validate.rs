@@ -7,7 +7,7 @@ use std::{fs, path::Path, thread};
 
 use bulletformat::{BulletFormat, ChessBoard};
 
-const HIDDEN_SIZE: usize = 128;
+const HIDDEN_SIZE: usize = 256;
 const SCALE: f32 = 400.0;
 const WEIGHTS: usize = 768 * HIDDEN_SIZE + HIDDEN_SIZE + 2 * HIDDEN_SIZE + 1;
 
@@ -21,7 +21,7 @@ struct Network {
 impl Network {
     fn load(path: &Path) -> Self {
         let bytes = fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        assert_eq!(bytes.len(), WEIGHTS * 4, "not a 768x128 network");
+        assert_eq!(bytes.len(), WEIGHTS * 4, "not a 768x256 network");
         let values: Vec<f32> = bytes
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -82,7 +82,7 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let wdl: f32 = args.get(2).map_or(0.75, |w| w.parse().expect("wdl"));
+    let wdl: f32 = args.get(2).map_or(0.5, |w| w.parse().expect("wdl"));
 
     let network = Network::load(&checkpoint.join("raw.bin"));
     let bytes = fs::read(data).unwrap_or_else(|e| panic!("{data}: {e}"));
