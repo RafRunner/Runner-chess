@@ -51,6 +51,8 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - Bench: 26531 (unchanged).
 - Speed: 5.14 million nodes a second on `bench search 17` on an M4 Pro, from 3.97 for
   1.2.0: 30% faster.
+- Strength: +61.8 ± 21.3 Elo against 1.2.0 at 10+0.1, an SPRT [0, 10] accepted after
+  398 games (116 wins, 46 losses, 236 draws), all of it from the speed.
 
 ## 1.2.0 - 2026-10-29
 
