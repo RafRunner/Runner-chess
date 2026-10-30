@@ -266,19 +266,19 @@ fn input(view: Color, piece: Piece, sq: Square) -> usize {
     side + 64 * piece.kind().index() + sq.index()
 }
 
-/// One view's half of the output layer
+/// One view's half of the output layer: the sum of screlu(x) * w = (y * w) * y, with y
+/// the value clamped to [0, QA]. y * w fits an i16, as y <= 255 and |w| <= 127, so the
+/// first product takes 8 values at once, and only the second gets widened
 fn activated_dot(accumulator: &Accumulator, weights: &[i16]) -> i32 {
     accumulator
         .0
         .iter()
         .zip(weights)
-        .map(|(&x, &w)| screlu(x) * i32::from(w))
+        .map(|(&x, &w)| {
+            let y = x.clamp(0, QA as i16);
+            i32::from(y * w) * i32::from(y)
+        })
         .sum()
-}
-
-fn screlu(x: i16) -> i32 {
-    let y = i32::from(x).clamp(0, QA);
-    y * y
 }
 
 #[cfg(test)]
@@ -435,6 +435,16 @@ mod tests {
         stack.pop();
         stack.pop();
         assert_eq!(*stack.current(), Accumulators::new(&root));
+    }
+
+    #[test]
+    fn the_output_weights_fit_the_activated_product() {
+        let weights = NNUE.output_weights.iter().flatten();
+        assert!(
+            weights
+                .into_iter()
+                .all(|w| i64::from(w.unsigned_abs()) <= MAX_OUTPUT_WEIGHT)
+        );
     }
 
     /// `trainer/checkpoints/net-008-evals.txt`, before quantising
