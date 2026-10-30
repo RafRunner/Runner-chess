@@ -8,6 +8,26 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.4.0 - 2026-10-30
+
+### Changed
+- The network gets 8 output layers, one for each bucket of numbers of pieces, from the
+  kings alone to the full board: `nets/net-008.bin` is net-007 with them, on the same
+  data. The hidden layer stays the same for every position, and only how its neurons
+  add up depends on the bucket. It gives 1.21 times the scores of its data.
+- Faster on the same tree: the output layer multiplies the clamped values by the
+  weights in 16 bits, 8 at once, and only then widens them. With 256 neurons it had
+  become the biggest function of the search, at 18% of the time.
+
+### Measured
+- Bench: 26071 (from 31518).
+- Speed: 4.37 million nodes a second on `bench search 17` on an M4 Pro, as 1.3.0 in
+  the same run: the buckets cost about 2%, and the 16-bit products win it back.
+- Strength: +24.1 ± 13.4 Elo against 1.3.0 at 10+0.1, an SPRT [0, 10] accepted after
+  1184 games (332 wins, 250 losses, 602 draws).
+- Quantisation: rounding the weights moves the output by up to 16.3 centipawns on the
+  reference positions, now 9 of them, in the output buckets 7, 4, 1 and 0.
+
 ## 1.3.0 - 2026-10-30
 
 ### Changed
