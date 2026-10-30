@@ -8,20 +8,28 @@ use std::{fs, path::Path, thread};
 use bulletformat::{BulletFormat, ChessBoard};
 
 const HIDDEN_SIZE: usize = 256;
+const OUTPUT_BUCKETS: usize = 8;
 const SCALE: f32 = 400.0;
-const WEIGHTS: usize = 768 * HIDDEN_SIZE + HIDDEN_SIZE + 2 * HIDDEN_SIZE + 1;
+const WEIGHTS: usize =
+    768 * HIDDEN_SIZE + HIDDEN_SIZE + 2 * HIDDEN_SIZE * OUTPUT_BUCKETS + OUTPUT_BUCKETS;
 
 struct Network {
     l0w: Vec<f32>, // the column of each input, one after the other
     l0b: Vec<f32>,
-    l1w: Vec<f32>, // the side to move's half, then the other's
-    l1b: f32,
+    /// For each input, the side to move's half and then the other's, the weights of
+    /// the buckets one after the other
+    l1w: Vec<f32>,
+    l1b: Vec<f32>,
 }
 
 impl Network {
     fn load(path: &Path) -> Self {
         let bytes = fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        assert_eq!(bytes.len(), WEIGHTS * 4, "not a 768x256 network");
+        assert_eq!(
+            bytes.len(),
+            WEIGHTS * 4,
+            "not a 768x256 network with 8 buckets"
+        );
         let values: Vec<f32> = bytes
             .chunks_exact(4)
             .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -29,12 +37,12 @@ impl Network {
 
         let (l0w, rest) = values.split_at(768 * HIDDEN_SIZE);
         let (l0b, rest) = rest.split_at(HIDDEN_SIZE);
-        let (l1w, rest) = rest.split_at(2 * HIDDEN_SIZE);
+        let (l1w, l1b) = rest.split_at(2 * HIDDEN_SIZE * OUTPUT_BUCKETS);
         Self {
             l0w: l0w.to_vec(),
             l0b: l0b.to_vec(),
             l1w: l1w.to_vec(),
-            l1b: rest[0],
+            l1b: l1b.to_vec(),
         }
     }
 
@@ -58,14 +66,14 @@ impl Network {
         }
 
         let screlu = |x: f32| x.clamp(0.0, 1.0).powi(2);
-        let (us, them) = self.l1w.split_at(HIDDEN_SIZE);
-        stm.iter().zip(us).map(|(&x, w)| screlu(x) * w).sum::<f32>()
-            + ntm
-                .iter()
-                .zip(them)
-                .map(|(&x, w)| screlu(x) * w)
-                .sum::<f32>()
-            + self.l1b
+        // bullet's MaterialCount
+        let bucket = (board.occ().count_ones() as usize - 2) / 32usize.div_ceil(OUTPUT_BUCKETS);
+        let weight = |input: usize| self.l1w[input * OUTPUT_BUCKETS + bucket];
+        let us: f32 = (0..HIDDEN_SIZE).map(|i| screlu(stm[i]) * weight(i)).sum();
+        let them: f32 = (0..HIDDEN_SIZE)
+            .map(|i| screlu(ntm[i]) * weight(HIDDEN_SIZE + i))
+            .sum();
+        us + them + self.l1b[bucket]
     }
 }
 
