@@ -8,6 +8,25 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.3.0 - 2026-10-30
+
+### Changed
+- A network twice as wide, `nets/net-007.bin`: 256 neurons on the data of net-006,
+  trained with `wdl = 0.5` instead of 0.75, so that half of its target is the result of
+  the game and half the score of the search. It gives 1.25 times the scores of its
+  data, which the engine divides its output by.
+
+### Measured
+- Bench: 31518 (from 26531).
+- Speed: 4.52 million nodes a second on `bench search 17` on an M4 Pro, from 5.14 with
+  net-006.
+- Strength: +69.3 ± 22.2 Elo against 1.2.1 at 10+0.1, an SPRT [0, 10] accepted after
+  396 games (135 wins, 57 losses, 204 draws).
+- The same 256 neurons trained with `wdl = 0.75` lost to net-006: by 66.4 ± 26.9 Elo in
+  302 games when the output layer summed in 64 bits and searched 36% slower, and by
+  about 60 at 8% slower. Their losses on a million positions of 1.2.0 that none of the
+  networks trained on are in `docs/nnue.md`.
+
 ## 1.2.1 - 2026-10-30
 
 ### Changed
