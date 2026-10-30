@@ -138,8 +138,11 @@ its own, so the engine stays without dependencies, and pins bullet to a commit.
 
 ```
 scripts/prepare-data.sh <name> <.txt files or directories>...   # data/<name>.data
-cd trainer && cargo r -r -- ../data/<name>.data <net id> [superbatches] [wdl]
+scripts/train.sh data/<name>.data <net id> [superbatches] [wdl]
 ```
+
+`scripts/train.sh` runs `cargo r -r -- ../data/<name>.data <net id> [superbatches] [wdl]`
+in `trainer/`, and keeps its output in `trainer/checkpoints/<net id>.log`.
 
 - **Network**: `(768 -> 256)x2 -> 1x8` with SCReLU, as bullet's `examples/simple`
   with the output buckets of its `progression/2_output_buckets`: 8 output layers, and
