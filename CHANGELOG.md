@@ -8,6 +8,31 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.2.1 - 2026-10-30
+
+### Changed
+- Faster on the same tree:
+  - a child's accumulators are written from its parent's in one pass, instead of
+    copied and then changed a piece at a time;
+  - the lists of moves of each ply are kept from one node to the next, instead of
+    allocated for every node;
+  - the legality and the checks of the moves come from what each node works out once:
+    the pinned pieces, those that would uncover a check, and the squares from where
+    each kind of piece checks;
+  - the table entry of a child is asked from memory as the move is made.
+- Each half of the output layer sums in 32 bits and both together in 64, so that a
+  wider network can't overflow and still vectorises.
+- Internal: the tests score positions with a search from depth 1, as the engine runs
+  it, and only what a single node does by `negamax` alone.
+
+### Added
+- The `d` command also writes the hash of the position, and labels its FEN.
+
+### Measured
+- Bench: 26531 (unchanged).
+- Speed: 5.14 million nodes a second on `bench search 17` on an M4 Pro, from 3.97 for
+  1.2.0: 30% faster.
+
 ## 1.2.0 - 2026-10-29
 
 ### Changed
