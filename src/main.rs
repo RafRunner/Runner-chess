@@ -5,7 +5,7 @@ use std::{
 };
 
 use runner_chess::{
-    datagen,
+    book, datagen,
     uci::{Control, Stdout, Uci},
 };
 
@@ -15,6 +15,17 @@ fn main() -> ExitCode {
     // `runner-chess datagen <dir> [options]` plays games for training data and exits
     if args.first().map(String::as_str) == Some("datagen") {
         return match datagen::run(&args[1..]) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    // `runner-chess book <lines> <out.bin>` writes a book as a Polyglot file and exits
+    if args.first().map(String::as_str) == Some("book") {
+        return match book::run(&args[1..]) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("{e}");

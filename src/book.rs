@@ -5,18 +5,39 @@
 //! ```text
 //! key: u64 | move: u16 | weight: u16 | learn: u32   (all big-endian)
 //! ```
+//!
+//! The engine's own book is built from the lines of `books/aggressive.txt`, see
+//! [`Book::build`].
 
-use std::{fmt, fs, io, path::Path};
+use std::{collections::HashMap, fmt, fs, io, path::Path};
 
 use crate::{
     board::Board,
-    chess_move::{AbstractMove, Move, PromotionPiece},
-    piece::{Piece, PieceKind},
+    chess_move::{AbstractMove, Move, MoveKind, PromotionPiece},
+    piece::{Color, Piece, PieceKind},
     rng::Rng,
     square::Square,
 };
 
 const ENTRY_SIZE: usize = 16;
+
+/// The lines of the engine's own book
+pub const BUILTIN_LINES: &str = include_str!("../books/aggressive.txt");
+
+const USAGE: &str = "usage: runner-chess book <lines> <out.bin>";
+
+/// A line of a book's source that can't be read, from 1
+#[derive(Debug, PartialEq, Eq)]
+pub struct BuildError {
+    pub line: usize,
+    pub message: String,
+}
+
+impl fmt::Display for BuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "line {}: {}", self.line, self.message)
+    }
+}
 
 #[derive(Debug)]
 pub enum BookError {
@@ -84,6 +105,76 @@ impl Book {
         }
 
         Ok(Self { entries })
+    }
+
+    /// The book of `lines`, each `<side> <weight> <moves in UCI>` from the start
+    /// position, with `#` starting a comment. The moves of `side` (`w` or `b`) go in the
+    /// book, and a move in a position gets the weight of every line that plays it there.
+    pub fn build(lines: &str) -> Result<Self, BuildError> {
+        let mut weights: HashMap<(u64, u16), u32> = HashMap::new();
+
+        for (i, line) in lines.lines().enumerate() {
+            let error = |message: String| BuildError {
+                line: i + 1,
+                message,
+            };
+            let line = line.split('#').next().unwrap_or_default();
+            let mut tokens = line.split_whitespace();
+            let Some(side) = tokens.next() else {
+                continue;
+            };
+            let side = match side {
+                "w" => Color::White,
+                "b" => Color::Black,
+                _ => return Err(error(format!("the side is w or b, not {side}"))),
+            };
+            let weight = tokens
+                .next()
+                .and_then(|weight| weight.parse::<u16>().ok())
+                .filter(|&weight| weight > 0)
+                .ok_or_else(|| error("the weight is a number from 1 to 65535".to_string()))?;
+
+            let mut board = Board::startpos();
+            for uci in tokens {
+                let illegal = || error(format!("{uci} is illegal in {}", board.to_fen()));
+                let mv = AbstractMove::from_uci(uci).map_err(|_| illegal())?;
+                let (mv, next) = board.resolve_move(mv).map_err(|_| illegal())?;
+                if board.side_to_move() == side {
+                    let total = weights.entry((board.hash().raw(), encode(mv))).or_default();
+                    *total += u32::from(weight);
+                }
+                board = next;
+            }
+        }
+
+        let mut entries: Vec<Entry> = weights
+            .into_iter()
+            .map(|((key, mv), weight)| Entry {
+                key,
+                mv,
+                weight: weight.min(u16::MAX.into()) as u16,
+            })
+            .collect();
+        // the heaviest move first, as Polyglot sorts them
+        entries.sort_by_key(|entry| (entry.key, std::cmp::Reverse(entry.weight), entry.mv));
+        Ok(Self { entries })
+    }
+
+    /// The engine's own book, from [`BUILTIN_LINES`]
+    pub fn builtin() -> Self {
+        Self::build(BUILTIN_LINES).expect("the lines of the engine's book are tested")
+    }
+
+    /// The book as a Polyglot file, which [`Book::from_bytes`] reads back
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.entries.len() * ENTRY_SIZE);
+        for entry in &self.entries {
+            bytes.extend(entry.key.to_be_bytes());
+            bytes.extend(entry.mv.to_be_bytes());
+            bytes.extend(entry.weight.to_be_bytes());
+            bytes.extend(0u32.to_be_bytes());
+        }
+        bytes
     }
 
     pub fn len(&self) -> usize {
@@ -157,26 +248,36 @@ fn decode(raw: u16, board: &Board) -> Option<AbstractMove> {
     Some(AbstractMove::new(from, to, promotion_piece))
 }
 
+/// The Polyglot encoding of `mv`, as [`decode`] reads it
+fn encode(mv: Move) -> u16 {
+    let to = match (mv.kind(), mv.to()) {
+        (MoveKind::Castle, _) => mv.get_rook_squares().0,
+        (_, to) => to,
+    };
+    let promotion = match mv.kind() {
+        MoveKind::Promotion(piece) | MoveKind::PromotionCapture(piece) => piece as u16 + 1,
+        _ => 0,
+    };
+    (promotion << 12) | ((mv.from().index() as u16) << 6) | to.index() as u16
+}
+
+/// `runner-chess book <lines> <out.bin>`: writes the book of the lines, as
+/// [`Book::build`] reads them, as a Polyglot file for other programs
+pub fn run(args: &[String]) -> Result<(), String> {
+    let [lines, out] = args else {
+        return Err(USAGE.to_string());
+    };
+    let source = fs::read_to_string(lines).map_err(|e| format!("{lines}: {e}"))?;
+    let book = Book::build(&source).map_err(|e| format!("{lines}: {e}"))?;
+    fs::write(out, book.to_bytes()).map_err(|e| format!("{out}: {e}"))?;
+    println!("{} entries written to {out}", book.len());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        chess_move::MoveKind,
-        test_utils::{CASTLING_BLACK, CASTLING_WHITE, board, play},
-    };
-
-    /// The Polyglot encoding of `mv`, as [`decode`] reads it
-    fn encode(mv: Move) -> u16 {
-        let to = match (mv.kind(), mv.to()) {
-            (MoveKind::Castle, _) => mv.get_rook_squares().0,
-            (_, to) => to,
-        };
-        let promotion = match mv.kind() {
-            MoveKind::Promotion(piece) | MoveKind::PromotionCapture(piece) => piece as u16 + 1,
-            _ => 0,
-        };
-        (promotion << 12) | ((mv.from().index() as u16) << 6) | to.index() as u16
-    }
+    use crate::test_utils::{CASTLING_BLACK, CASTLING_WHITE, board, play};
 
     /// A book file of `entries`: the move of each, in UCI, played from its board
     fn book_bytes(entries: &[(&Board, &str, u16)]) -> Vec<u8> {
@@ -357,5 +458,66 @@ mod tests {
             Err(BookError::Io(_))
         ));
         assert!(Book::from_bytes(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_engines_book_builds() {
+        let book = Book::builtin();
+        assert!(book.len() > 300, "{}", book.len());
+        // a Polyglot file of it reads back the same
+        let read = Book::from_bytes(&book.to_bytes()).unwrap();
+        assert_eq!(read.entries, book.entries);
+        // only 1.e4 with white
+        assert_eq!(ucis(&book.moves(&Board::startpos())).len(), 1);
+    }
+
+    #[test]
+    fn a_built_book_has_the_moves_of_its_side_with_their_weights_added() {
+        let book = Book::build(
+            "# a comment\n\
+             w 3 e2e4 e7e5 g1f3   # Nf3\n\
+             \n\
+             w 2 e2e4 e7e5 f2f4\n\
+             b 5 e2e4 c7c5\n",
+        )
+        .unwrap();
+
+        let start = Board::startpos();
+        let after_e4 = play(Board::STARTPOS, "e2e4");
+        let after_e5 = play(Board::STARTPOS, "e2e4 e7e5");
+        assert_eq!(ucis(&book.moves(&start)), [("e2e4".to_string(), 5)]);
+        // only the black line puts black's moves in the book
+        assert_eq!(ucis(&book.moves(&after_e4)), [("c7c5".to_string(), 5)]);
+        // the heaviest first
+        assert_eq!(
+            ucis(&book.moves(&after_e5)),
+            [("g1f3".to_string(), 3), ("f2f4".to_string(), 2)]
+        );
+    }
+
+    #[test]
+    fn built_books_store_castling_as_polyglot_does() {
+        let book = Book::build("w 1 e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 e1g1").unwrap();
+        let bytes = book.to_bytes();
+        let castling = bytes
+            .chunks_exact(ENTRY_SIZE)
+            .map(|entry| u16::from_be_bytes([entry[8], entry[9]]))
+            .find(|&mv| mv >> 6 == 4)
+            .unwrap();
+        // e1 takes h1
+        assert_eq!(castling & 0b11_1111, 7);
+    }
+
+    #[test]
+    fn broken_lines_are_refused_with_their_number() {
+        for (lines, line) in [
+            ("w 1 e2e4\nx 1 e2e4", 2),
+            ("w 0 e2e4", 1),
+            ("w e2e4", 1),
+            ("\n\nb 1 e2e4 e7e5 e5e4", 3),
+            ("w 1 e2e9", 1),
+        ] {
+            assert_eq!(Book::build(lines).unwrap_err().line, line, "{lines}");
+        }
     }
 }

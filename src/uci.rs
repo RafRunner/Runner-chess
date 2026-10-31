@@ -117,7 +117,8 @@ pub struct Uci<W> {
     infinite: bool,
     /// Set by `stop` and `quit` to end the search early
     stop: Arc<AtomicBool>,
-    /// The book of the `BookFile` option, if one was given
+    /// The engine's own book, or the one of the `BookFile` option. None if that one
+    /// didn't open.
     book: Option<Book>,
     /// The `OwnBook` option: whether the book plays the moves it has
     own_book: bool,
@@ -143,7 +144,7 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             search: None,
             infinite: false,
             stop: Arc::new(AtomicBool::new(false)),
-            book: None,
+            book: Some(Book::builtin()),
             own_book: true,
             book_rng: Rng(SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -330,7 +331,9 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             // a book that doesn't open leaves none, rather than the one before
             self.book = None;
             let path = value.unwrap_or_default();
+            // back to the engine's own
             if path.is_empty() || path == "<empty>" {
+                self.book = Some(Book::builtin());
                 return Ok(());
             }
             let book = Book::open(&path).map_err(|e| UciError::Book(path.clone(), e))?;
@@ -591,8 +594,11 @@ mod tests {
         }
     }
 
+    /// Without a book, so that the start position gets searched
     fn uci() -> Uci<SharedBuffer> {
-        Uci::new(SharedBuffer::default())
+        let mut uci = Uci::new(SharedBuffer::default());
+        uci.book = None;
+        uci
     }
 
     /// Runs `line` and, if it started a search, waits for it. Returns what got written
@@ -1298,6 +1304,23 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    /// 1.e4 with white, the Sicilian against it and the King's Indian against 1.d4
+    #[test]
+    fn the_engine_plays_its_own_book_by_default() {
+        let mut uci = Uci::new(SharedBuffer::default());
+        for (position, expected) in [
+            ("startpos", &["e2e4"][..]),
+            ("startpos moves e2e4", &["c7c5"]),
+            ("startpos moves d2d4", &["g8f6"]),
+            ("startpos moves e2e4 e7e5", &["g1f3", "f2f4"]),
+        ] {
+            run(&mut uci, &format!("position {position}")).unwrap();
+            let (_, out) = run(&mut uci, "go wtime 1000 btime 1000").unwrap();
+            assert!(out.starts_with("info string book move "), "{out}");
+            assert!(expected.contains(&bestmove(&out)), "{position}: {out}");
+        }
+    }
+
     #[test]
     fn a_book_that_does_not_open_leaves_none() {
         let mut uci = uci();
@@ -1315,8 +1338,13 @@ mod tests {
         assert!(uci.book.is_none());
 
         run(&mut uci, &format!("setoption name BookFile value {path}")).unwrap();
+        // back to the engine's own
         let (_, out) = run(&mut uci, "setoption name BookFile value <empty>").unwrap();
-        assert_eq!((out.as_str(), uci.book.is_none()), ("", true));
+        assert_eq!(out, "");
+        assert_eq!(
+            uci.book.as_ref().map(Book::len),
+            Some(Book::builtin().len())
+        );
 
         std::fs::write(&path, [0; 20]).unwrap();
         assert_matches!(

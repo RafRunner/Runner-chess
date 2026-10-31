@@ -11,11 +11,19 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 ## Unreleased
 
 ### Added
-- An opening book in the Polyglot format, from the `BookFile` option. While the
-  position is in it, `go` answers at once with one of its moves, each as likely as its
-  weight, and no search; `go infinite` still searches. `OwnBook` (on by default) turns
-  it off without unloading it. Without a `BookFile` nothing changes, so matches with
-  `scripts/match.sh` keep their openings.
+- An opening book in the Polyglot format. While the position is in it, `go` answers
+  at once with one of its moves, each as likely as its weight, and no search; `go
+  infinite` still searches. `OwnBook` (on by default) turns it off.
+- The engine's own book, built from the lines of `books/aggressive.txt`: 1.e4 with
+  gambits against 1...e5 (King's, Evans, Scotch, the Two Knights) and the sharp open
+  Sicilians, and with black the Najdorf, the Dragon, the King's Indian and the Benko.
+  The end of every line was checked with a depth 13 search, no worse than -0.9 for
+  the side of the book. `BookFile` takes another book instead, and `<empty>` brings
+  the engine's own back.
+- `runner-chess book <lines> <out.bin>` writes the book of such lines as a Polyglot
+  file, for GUIs and other engines.
+- `scripts/match.sh` turns the engines' own books off, so that only its openings get
+  played.
 
 ### Measured
 - Bench: 26531 (unchanged).
