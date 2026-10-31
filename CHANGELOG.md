@@ -8,6 +8,18 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## Unreleased
+
+### Added
+- An opening book in the Polyglot format, from the `BookFile` option. While the
+  position is in it, `go` answers at once with one of its moves, each as likely as its
+  weight, and no search; `go infinite` still searches. `OwnBook` (on by default) turns
+  it off without unloading it. Without a `BookFile` nothing changes, so matches with
+  `scripts/match.sh` keep their openings.
+
+### Measured
+- Bench: 26531 (unchanged).
+
 ## 1.2.0 - 2026-10-29
 
 ### Changed
