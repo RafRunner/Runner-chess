@@ -46,6 +46,8 @@ pub struct Searcher<'search> {
     hashes: Vec<ZobristHash>,
     /// The network's hidden layer along the line being searched, the current node's last
     accumulators: AccumulatorStack,
+    /// The static eval of each node along the line being searched, by ply: `None` in check
+    static_evals: Vec<Option<Score>>,
     /// The lists of moves of each ply, kept from node to node so they don't get allocated
     /// for every one
     move_buffers: Vec<MoveBuffers>,
@@ -76,6 +78,7 @@ impl<'search> Searcher<'search> {
             completed_score: None,
             hashes: Vec::with_capacity(100 + Score::MAX_PLY as usize),
             accumulators: AccumulatorStack::new(Score::MAX_PLY as usize),
+            static_evals: vec![None; Score::MAX_PLY as usize + 1],
             move_buffers: (0..=Score::MAX_PLY)
                 .map(|_| MoveBuffers::default())
                 .collect(),
@@ -163,6 +166,8 @@ impl<'search> Searcher<'search> {
             let eval = self.evaluate(node);
             entry.map_or(eval, |entry| entry.refine(eval))
         });
+        self.static_evals[node.ply as usize] = static_eval;
+        node.improving = self.is_improving(node.ply, static_eval);
 
         if let Some(eval) = static_eval
             && let Some(score) = Self::reverse_futility_pruning(node, eval)
@@ -347,6 +352,20 @@ impl<'search> Searcher<'search> {
 
     fn current_accumulators(&self) -> &Accumulators {
         self.accumulators.current()
+    }
+
+    /// Whether `static_eval`, of the node `ply` plies deep, is above the one of the same
+    /// side two plies up, or four when that one was in check
+    fn is_improving(&self, ply: u32, static_eval: Option<Score>) -> bool {
+        let Some(eval) = static_eval else {
+            return false;
+        };
+        let ply = ply as usize;
+        let earlier = [2, 4]
+            .into_iter()
+            .filter(|&back| back <= ply)
+            .find_map(|back| self.static_evals[ply - back]);
+        earlier.is_none_or(|earlier| eval > earlier)
     }
 
     /// `node` has to be the current one, whose accumulators are on top

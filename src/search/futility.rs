@@ -63,7 +63,8 @@ pub(super) fn prunes_quiet(
         return false;
     }
 
-    let late = node.depth <= LMP_MAX_DEPTH && quiets_tried >= lmp_threshold(node.depth);
+    let late =
+        node.depth <= LMP_MAX_DEPTH && quiets_tried >= lmp_threshold(node.depth, node.improving);
     let futile = node.depth <= FP_MAX_DEPTH
         && static_eval + FP_BASE + FP_MARGIN * node.depth as i16 <= node.alpha;
 
@@ -90,9 +91,11 @@ pub(super) fn prunes_by_see(node: NodeInfo<'_>, best: Score, mv: Move, gives_che
     !node.board.see(mv, -margin * node.depth as i32)
 }
 
-/// How many quiet moves a node `depth` plies deep tries before skipping the rest
-fn lmp_threshold(depth: u32) -> usize {
-    3 + (depth * depth) as usize
+/// How many quiet moves a node `depth` plies deep tries before skipping the rest: half
+/// as many when its eval isn't improving, as a quiet move is less likely to turn it around
+fn lmp_threshold(depth: u32, improving: bool) -> usize {
+    let threshold = 3 + (depth * depth) as usize;
+    if improving { threshold } else { threshold / 2 }
 }
 
 #[cfg(test)]
@@ -105,9 +108,24 @@ mod tests {
     /// What `prunes_quiet` says about Nf3 from `QUIET_FEN`, in a node `depth` plies deep
     /// at ply 3, with alpha at `alpha` and a static eval of `eval`
     fn prunes(depth: u32, eval: Option<i32>, alpha: i32, best: Score, quiets: usize) -> bool {
+        prunes_improving(true, depth, eval, alpha, best, quiets)
+    }
+
+    /// The same, in a node whose eval is `improving` or not
+    fn prunes_improving(
+        improving: bool,
+        depth: u32,
+        eval: Option<i32>,
+        alpha: i32,
+        best: Score,
+        quiets: usize,
+    ) -> bool {
         let board = board(QUIET_FEN);
         let mv = find_move(&board, "g1f3");
-        let node = NodeInfo::new(&board, depth, 3, Score::new(alpha), Score::new(alpha + 1));
+        let node = NodeInfo {
+            improving,
+            ..NodeInfo::new(&board, depth, 3, Score::new(alpha), Score::new(alpha + 1))
+        };
         let check = board.gives_check(mv);
         prunes_quiet(node, eval.map(Score::new), best, quiets, mv, check)
     }
@@ -115,10 +133,19 @@ mod tests {
     #[test]
     fn late_quiet_moves_get_skipped() {
         let best = Score::new(0);
-        assert!(!prunes(2, Some(0), 0, best, lmp_threshold(2) - 1));
-        assert!(prunes(2, Some(0), 0, best, lmp_threshold(2)));
+        assert!(!prunes(2, Some(0), 0, best, lmp_threshold(2, true) - 1));
+        assert!(prunes(2, Some(0), 0, best, lmp_threshold(2, true)));
         // too far from the horizon
         assert!(!prunes(LMP_MAX_DEPTH + 1, Some(0), 0, best, 1000));
+    }
+
+    #[test]
+    fn quiet_moves_get_skipped_sooner_without_an_improving_eval() {
+        let best = Score::new(0);
+        let fewer = lmp_threshold(2, false);
+        assert!(fewer < lmp_threshold(2, true));
+        assert!(!prunes_improving(false, 2, Some(0), 0, best, fewer - 1));
+        assert!(prunes_improving(false, 2, Some(0), 0, best, fewer));
     }
 
     #[test]
