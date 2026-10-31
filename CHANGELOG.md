@@ -8,6 +8,31 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.5.0 - 2026-10-31
+
+### Changed
+- Late move reductions start at the third move off the principal variation, instead
+  of the sixth, which they still wait for on it.
+- Late move pruning skips the quiet moves sooner, after half as many, where the static
+  eval isn't improving: below the one of the same side two plies up, or four when that
+  one was in check.
+
+### Added
+- `scripts/match.sh` and the new `scripts/train.sh` keep their output next to the games
+  and the checkpoints, as `.log` files.
+
+### Measured
+- Bench: 26147 (from 26071).
+- Strength, at 10+0.1, each change against the one before:
+  - the reductions: +7.9 ± 7.5 Elo against 1.4.0 in 3260 games (719 wins, 645 losses,
+    1896 draws), an SPRT [0, 10] stopped at an LLR of 2.03 of 2.94, as a gain this
+    small takes thousands of games more to tell from 0 or 10. With net-006, +19.6 ±
+    18.3 in 498;
+  - the pruning: +8.7 ± 6.6 Elo, an SPRT [0, 10] accepted after 3412 games (635
+    wins, 550 losses, 2227 draws).
+- Improving also in reverse futility pruning, by a margin of a ply less, and in late
+  move reductions, by a ply more: -2.6 ± 15.6 Elo in 678 games, not kept.
+
 ## 1.4.0 - 2026-10-30
 
 ### Changed
