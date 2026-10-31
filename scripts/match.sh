@@ -100,7 +100,8 @@ pgn="$engines/games/$engine_name-vs-$baseline_name-$(date +%Y%m%d-%H%M%S).pgn"
 # fastchess autosaves the match there every 20 games, instead of config.json in
 # the current directory
 state="${pgn%.pgn}.json"
-echo "games saved to $pgn"
+log="${pgn%.pgn}.log"
+echo "games saved to $pgn, and this output to $log"
 echo "if interrupted, resume with: fastchess -config file=$state"
 
 # word splitting of $sprt is on purpose: it holds several fastchess arguments
@@ -114,4 +115,4 @@ fastchess \
     ${sprt:+-sprt $sprt} \
     -pgnout file="$pgn" \
     -config outname="$state" \
-    "$@"
+    "$@" | tee "$log"

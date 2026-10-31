@@ -26,7 +26,73 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
   played.
 
 ### Measured
-- Bench: 26531 (unchanged).
+- Bench: 27149 (unchanged).
+
+## 1.4.0 - 2026-10-30
+
+### Changed
+- The network gets 8 output layers, one for each bucket of numbers of pieces, from the
+  kings alone to the full board: `nets/net-008.bin` is net-007 with them, on the same
+  data. The hidden layer stays the same for every position, and only how its neurons
+  add up depends on the bucket. It gives 1.21 times the scores of its data.
+- Faster on the same tree: the output layer multiplies the clamped values by the
+  weights in 16 bits, 8 at once, and only then widens them. With 256 neurons it had
+  become the biggest function of the search, at 18% of the time.
+
+### Measured
+- Bench: 26071 (from 31518).
+- Speed: 4.37 million nodes a second on `bench search 17` on an M4 Pro, as 1.3.0 in
+  the same run: the buckets cost about 2%, and the 16-bit products win it back.
+- Strength: +24.1 ± 13.4 Elo against 1.3.0 at 10+0.1, an SPRT [0, 10] accepted after
+  1184 games (332 wins, 250 losses, 602 draws).
+- Quantisation: rounding the weights moves the output by up to 16.3 centipawns on the
+  reference positions, now 9 of them, in the output buckets 7, 4, 1 and 0.
+
+## 1.3.0 - 2026-10-30
+
+### Changed
+- A network twice as wide, `nets/net-007.bin`: 256 neurons on the data of net-006,
+  trained with `wdl = 0.5` instead of 0.75, so that half of its target is the result of
+  the game and half the score of the search. It gives 1.25 times the scores of its
+  data, which the engine divides its output by.
+
+### Measured
+- Bench: 31518 (from 26531).
+- Speed: 4.52 million nodes a second on `bench search 17` on an M4 Pro, from 5.14 with
+  net-006.
+- Strength: +69.3 ± 22.2 Elo against 1.2.1 at 10+0.1, an SPRT [0, 10] accepted after
+  396 games (135 wins, 57 losses, 204 draws).
+- The same 256 neurons trained with `wdl = 0.75` lost to net-006: by 66.4 ± 26.9 Elo in
+  302 games when the output layer summed in 64 bits and searched 36% slower, and by
+  about 60 at 8% slower. Their losses on a million positions of 1.2.0 that none of the
+  networks trained on are in `docs/nnue.md`.
+
+## 1.2.1 - 2026-10-30
+
+### Changed
+- Faster on the same tree:
+  - a child's accumulators are written from its parent's in one pass, instead of
+    copied and then changed a piece at a time;
+  - the lists of moves of each ply are kept from one node to the next, instead of
+    allocated for every node;
+  - the legality and the checks of the moves come from what each node works out once:
+    the pinned pieces, those that would uncover a check, and the squares from where
+    each kind of piece checks;
+  - the table entry of a child is asked from memory as the move is made.
+- Each half of the output layer sums in 32 bits and both together in 64, so that a
+  wider network can't overflow and still vectorises.
+- Internal: the tests score positions with a search from depth 1, as the engine runs
+  it, and only what a single node does by `negamax` alone.
+
+### Added
+- The `d` command also writes the hash of the position, and labels its FEN.
+
+### Measured
+- Bench: 27149 (unchanged).
+- Speed: 5.14 million nodes a second on `bench search 17` on an M4 Pro, from 3.97 for
+  1.2.0: 30% faster.
+- Strength: +61.8 ± 21.3 Elo against 1.2.0 at 10+0.1, an SPRT [0, 10] accepted after
+  398 games (116 wins, 46 losses, 236 draws), all of it from the speed.
 
 ## 1.2.0 - 2026-10-29
 

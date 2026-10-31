@@ -8,79 +8,74 @@ use crate::{
 impl Board {
     pub fn make_move(&self, mv: Move) -> Self {
         let mut next = self.clone();
-        next.en_passant = None;
-        if let Some(ep) = self.en_passant {
-            next.hash = next.hash.toggle_en_passant_key(ep);
-        }
 
         let us = self.side_to_move;
         let them = us.oposite();
-        let white_to_move = us == Color::White;
 
         let from = mv.from();
         let to = mv.to();
         let piece = self.piece_at(from).expect("No piece in 'from' square");
         let target = self.piece_at(to);
+        debug_assert!(
+            mv.kind() == MoveKind::EnPassant || target.is_some() == mv.is_capture(),
+            "{mv}: capture flag doesn't match the board"
+        );
+
+        // the hash is worked out in a local and written once, at the end
+        let mut hash = self.hash;
+        if let Some(ep) = self.en_passant {
+            hash = hash.toggle_en_passant_key(ep);
+        }
+        next.en_passant = None;
+
+        // every kind of move takes what is on `to` and puts the piece there, promoted
+        // or not; castling and en passant then move or take a second piece
+        if let Some(captured) = target {
+            next.lift(captured, to);
+            hash = hash.toggle_piece_key(captured, to);
+        }
+        let landed = match mv.kind() {
+            MoveKind::Promotion(kind) | MoveKind::PromotionCapture(kind) => {
+                Piece::new(us, kind.to_piece_kind())
+            }
+            _ => piece,
+        };
+        next.lift(piece, from);
+        next.put(landed, to);
+        hash = hash
+            .toggle_piece_key(piece, from)
+            .toggle_piece_key(landed, to);
 
         match mv.kind() {
-            MoveKind::Normal | MoveKind::Capture => {
-                if let Some(captured) = target {
-                    next.remove_piece(captured, to);
-                }
-                next.move_piece(piece, from, to, None);
-
-                debug_assert_eq!(
-                    target.is_some(),
-                    mv.is_capture(),
-                    "{mv}: capture flag doesn't match the board"
-                );
-            }
             MoveKind::DoublePush => {
-                next.move_piece(piece, from, to, None);
-
                 let ep_square = mv.get_ep_square(us);
-
                 if self.can_take_ep(ep_square, them) {
                     next.en_passant = Some(ep_square);
-                    next.hash = next.hash.toggle_en_passant_key(ep_square);
+                    hash = hash.toggle_en_passant_key(ep_square);
                 }
             }
             MoveKind::EnPassant => {
-                next.move_piece(piece, from, to, None);
-
                 let captured = mv.get_ep_square(us);
-
-                next.remove_piece(Piece::new(them, PieceKind::Pawn), captured);
+                let pawn = Piece::new(them, PieceKind::Pawn);
+                next.lift(pawn, captured);
+                hash = hash.toggle_piece_key(pawn, captured);
             }
             MoveKind::Castle => {
-                // move the king
-                next.move_piece(piece, from, to, None);
-
-                // and the rook
                 let (rook_from, rook_to) = mv.get_rook_squares();
-
-                next.move_piece(Piece::new(us, PieceKind::Rook), rook_from, rook_to, None);
+                let rook = Piece::new(us, PieceKind::Rook);
+                next.lift(rook, rook_from);
+                next.put(rook, rook_to);
+                hash = hash
+                    .toggle_piece_key(rook, rook_from)
+                    .toggle_piece_key(rook, rook_to);
             }
-            MoveKind::Promotion(kind) | MoveKind::PromotionCapture(kind) => {
-                if let Some(captured) = target {
-                    next.remove_piece(captured, to);
-                }
-                let new_piece = Some(Piece::new(us, kind.to_piece_kind()));
-                next.move_piece(piece, from, to, new_piece);
-
-                debug_assert_eq!(
-                    target.is_some(),
-                    mv.is_capture(),
-                    "{mv}: capture flag doesn't match the board"
-                );
-            }
+            _ => (),
         }
 
         // Housekeeping
         next.castling = self.castling.update_move(mv);
         next.side_to_move = them;
-        next.hash = next
-            .hash
+        next.hash = hash
             .toggle_castling_key(self.castling())
             .toggle_castling_key(next.castling())
             .toggle_turn_key();
@@ -91,7 +86,7 @@ impl Board {
         } else {
             next.halfmove_clock += 1;
         }
-        if !white_to_move {
+        if us == Color::Black {
             next.fullmove_counter += 1;
         }
 
@@ -100,29 +95,20 @@ impl Board {
         next
     }
 
-    fn move_piece(&mut self, piece: Piece, from: Square, to: Square, new_piece: Option<Piece>) {
-        let new_piece = new_piece.unwrap_or(piece);
-
-        self.pieces[piece] &= !from.bb();
-        self.pieces[new_piece] |= to.bb();
-        self.by_color[piece.color()] ^= from.bb() | to.bb();
-
-        self.mailbox[from] = None;
-        self.mailbox[to] = Some(new_piece);
-
-        self.hash = self
-            .hash
-            .toggle_piece_key(piece, from)
-            .toggle_piece_key(new_piece, to);
+    /// Puts `piece` on the empty `sq`, leaving the hash alone
+    #[inline(always)]
+    fn put(&mut self, piece: Piece, sq: Square) {
+        self.pieces[piece] |= sq.bb();
+        self.by_color[piece.color()] |= sq.bb();
+        self.mailbox[sq] = Some(piece);
     }
 
-    fn remove_piece(&mut self, piece: Piece, sq: Square) {
+    /// Takes `piece` off `sq`, leaving the hash alone
+    #[inline(always)]
+    fn lift(&mut self, piece: Piece, sq: Square) {
         self.pieces[piece] &= !sq.bb();
         self.by_color[piece.color()] &= !sq.bb();
-
         self.mailbox[sq] = None;
-
-        self.hash = self.hash.toggle_piece_key(piece, sq);
     }
 }
 

@@ -9,8 +9,10 @@ use crate::{
 
 /// Late move reductions only start at this depth
 pub(super) const MIN_DEPTH: u32 = 3;
-/// The first moves of a node always get the full depth
+/// The first moves of a node always get the full depth: more of them on the principal
+/// variation, where the order is the least sure to be right
 pub(super) const FULL_DEPTH_MOVES: usize = 5;
+pub(super) const FULL_DEPTH_MOVES_OFF_PV: usize = 2;
 
 /// Move indices the table covers, later ones get calculated on the spot
 const TABLE_MOVES: usize = 256;
@@ -58,9 +60,14 @@ impl Searcher<'_> {
 
     /// Most moves get the full depth, only late quiet ones get reduced
     fn is_reducible(&self, node: NodeInfo, mv: Move, move_idx: usize, gives_check: bool) -> bool {
+        let full_depth_moves = if node.is_pv() {
+            FULL_DEPTH_MOVES
+        } else {
+            FULL_DEPTH_MOVES_OFF_PV
+        };
         node.ply > 0
             && node.depth >= MIN_DEPTH
-            && move_idx >= FULL_DEPTH_MOVES
+            && move_idx >= full_depth_moves
             && mv.is_quiet()
             && !self.ordering.is_killer(mv, node.ply)
             && !node.in_check
@@ -116,13 +123,14 @@ mod tests {
 
     /// Every (depth, move index) where the search reduces, up to past the table
     fn reduced() -> impl Iterator<Item = (u32, usize)> {
-        (MIN_DEPTH..Score::MAX_PLY + 20)
-            .flat_map(|depth| (FULL_DEPTH_MOVES..TABLE_MOVES + 20).map(move |idx| (depth, idx)))
+        (MIN_DEPTH..Score::MAX_PLY + 20).flat_map(|depth| {
+            (FULL_DEPTH_MOVES_OFF_PV..TABLE_MOVES + 20).map(move |idx| (depth, idx))
+        })
     }
 
     #[test]
     fn the_first_late_move_already_loses_a_ply() {
-        assert!(reduction(MIN_DEPTH, FULL_DEPTH_MOVES, 0, 0) >= 1);
+        assert!(reduction(MIN_DEPTH, FULL_DEPTH_MOVES_OFF_PV, 0, 0) >= 1);
     }
 
     #[test]
@@ -156,7 +164,7 @@ mod tests {
                 "depth {depth}"
             );
         }
-        for idx in FULL_DEPTH_MOVES..TABLE_MOVES {
+        for idx in FULL_DEPTH_MOVES_OFF_PV..TABLE_MOVES {
             let past = Score::MAX_PLY;
             assert_eq!(
                 reduction(past, idx, 0, 0),
@@ -223,7 +231,7 @@ mod tests {
     fn a_good_history_can_cancel_the_reduction() {
         // where the reduction is smallest, a good history searches the move at full depth
         assert_eq!(
-            reduction(MIN_DEPTH, FULL_DEPTH_MOVES, 2 * HISTORY_DIVISOR, 0),
+            reduction(MIN_DEPTH, FULL_DEPTH_MOVES_OFF_PV, 2 * HISTORY_DIVISOR, 0),
             0
         );
     }
@@ -257,7 +265,7 @@ mod tests {
     #[test]
     fn a_search_deeper_than_max_ply_does_not_panic() {
         // `go depth 1000` gets that far at the root's children
-        assert!(reduction(1000, FULL_DEPTH_MOVES, 0, 0) > 0);
+        assert!(reduction(1000, FULL_DEPTH_MOVES_OFF_PV, 0, 0) > 0);
         assert!(reduction(1000, 10_000, 0, 0) > 0);
     }
 }

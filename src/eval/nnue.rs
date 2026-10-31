@@ -1,4 +1,5 @@
-//! The network, `(768 -> 128)x2 -> 1`, from `trainer/` (see `docs/nnue.md`).
+//! The network, `(768 -> 256)x2 -> 1x8`, from `trainer/` (see `docs/nnue.md`): 8 output
+//! layers, one for each bucket of numbers of pieces.
 
 use crate::{
     board::Board,
@@ -8,10 +9,12 @@ use crate::{
 };
 
 // as in trainer/src/main.rs, checked by the file's size and the trainer test below
-const HIDDEN_SIZE: usize = 128;
+const HIDDEN_SIZE: usize = 256;
 const QA: i32 = 255;
 const QB: i32 = 64;
 const SCALE: i32 = 400;
+/// The output layer of a position is the one of its bucket, by its number of pieces
+const OUTPUT_BUCKETS: usize = 8;
 
 /// The trainer clips weights to ±1.98, 127 in `QB`: each view's half of the output layer
 /// always fits an i32, so its sum stays in the lanes that SIMD handles best. Both halves
@@ -21,7 +24,7 @@ const _: () = assert!(HIDDEN_SIZE as i64 * (QA * QA) as i64 * MAX_OUTPUT_WEIGHT 
 
 macro_rules! network_name {
     () => {
-        "net-006"
+        "net-008"
     };
 }
 pub const NETWORK_NAME: &str = network_name!();
@@ -32,10 +35,10 @@ struct Network {
     /// One column per input, in `QA`
     feature_weights: [Accumulator; 768],
     feature_bias: Accumulator,
-    /// The side to move's half first, in `QB`
-    output_weights: [i16; 2 * HIDDEN_SIZE],
+    /// For each bucket, the side to move's half first, in `QB`
+    output_weights: [[i16; 2 * HIDDEN_SIZE]; OUTPUT_BUCKETS],
     /// In `QA * QB`
-    output_bias: i16,
+    output_bias: [i16; OUTPUT_BUCKETS],
 }
 
 static NNUE: Network = unsafe {
@@ -70,17 +73,19 @@ impl Accumulators {
         accumulators
     }
 
-    /// For the side to move, at the trainer's scale
-    pub fn evaluate(&self, side_to_move: Color) -> i32 {
-        let us = &self.0[side_to_move];
-        let them = &self.0[side_to_move.oposite()];
-        let (our_weights, their_weights) = NNUE.output_weights.split_at(HIDDEN_SIZE);
+    /// Of `board`, whose accumulators these are, for the side to move, at the trainer's
+    /// scale
+    pub fn evaluate(&self, board: &Board) -> i32 {
+        let us = &self.0[board.side_to_move()];
+        let them = &self.0[board.side_to_move().oposite()];
+        let bucket = output_bucket(board);
+        let (our_weights, their_weights) = NNUE.output_weights[bucket].split_at(HIDDEN_SIZE);
 
         // in QA * QA * QB, since screlu squares what is in QA
         let output = i64::from(activated_dot(us, our_weights))
             + i64::from(activated_dot(them, their_weights));
         // to QA * QB, the bias's, then to centipawns
-        let output = output / i64::from(QA) + i64::from(NNUE.output_bias);
+        let output = output / i64::from(QA) + i64::from(NNUE.output_bias[bucket]);
         (output * i64::from(SCALE) / i64::from(QA * QB)) as i32
     }
 
@@ -244,6 +249,12 @@ fn add_add_sub_sub(
     }
 }
 
+/// bullet's `MaterialCount`: 4 numbers of pieces in each, from the kings alone in 0 to
+/// the full board in 7
+fn output_bucket(board: &Board) -> usize {
+    (board.all_pieces_bb().count_ones() as usize - 2) / 32usize.div_ceil(OUTPUT_BUCKETS)
+}
+
 /// bullet's numbering: own pieces first, then by kind and by square, flipped for Black
 fn input(view: Color, piece: Piece, sq: Square) -> usize {
     let side = if piece.color() == view { 0 } else { 384 };
@@ -255,19 +266,19 @@ fn input(view: Color, piece: Piece, sq: Square) -> usize {
     side + 64 * piece.kind().index() + sq.index()
 }
 
-/// One view's half of the output layer
+/// One view's half of the output layer: the sum of screlu(x) * w = (y * w) * y, with y
+/// the value clamped to [0, QA]. y * w fits an i16, as y <= 255 and |w| <= 127, so the
+/// first product takes 8 values at once, and only the second gets widened
 fn activated_dot(accumulator: &Accumulator, weights: &[i16]) -> i32 {
     accumulator
         .0
         .iter()
         .zip(weights)
-        .map(|(&x, &w)| screlu(x) * i32::from(w))
+        .map(|(&x, &w)| {
+            let y = x.clamp(0, QA as i16);
+            i32::from(y * w) * i32::from(y)
+        })
         .sum()
-}
-
-fn screlu(x: i16) -> i32 {
-    let y = i32::from(x).clamp(0, QA);
-    y * y
 }
 
 #[cfg(test)]
@@ -302,8 +313,8 @@ mod tests {
             .iter()
             .chain([&NNUE.feature_bias])
             .flat_map(|accumulator| accumulator.0)
-            .chain(NNUE.output_weights)
-            .chain([NNUE.output_bias])
+            .chain(NNUE.output_weights.into_iter().flatten())
+            .chain(NNUE.output_bias)
             .collect();
         assert!(
             in_file[..embedded.len()] == embedded[..],
@@ -426,36 +437,48 @@ mod tests {
         assert_eq!(*stack.current(), Accumulators::new(&root));
     }
 
-    /// `trainer/checkpoints/net-006-evals.txt`, before quantising
-    const TRAINER_EVALS: [(&str, f32); 7] = [
-        (Board::STARTPOS, 42.6),
+    #[test]
+    fn the_output_weights_fit_the_activated_product() {
+        let weights = NNUE.output_weights.iter().flatten();
+        assert!(
+            weights
+                .into_iter()
+                .all(|w| i64::from(w.unsigned_abs()) <= MAX_OUTPUT_WEIGHT)
+        );
+    }
+
+    /// `trainer/checkpoints/net-008-evals.txt`, before quantising
+    const TRAINER_EVALS: [(&str, f32); 9] = [
+        (Board::STARTPOS, 44.3),
         (
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
-            -30.0,
+            -23.7,
         ),
-        (KIWIPETE, -252.6),
+        (KIWIPETE, -248.1),
         (
             "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
-            45.2,
+            50.8,
         ),
         (
             "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR b KQkq - 2 3",
-            45.2,
+            50.8,
         ),
-        ("4k3/8/8/8/8/8/PPP5/4K2R w K - 0 1", 3933.4),
-        ("4k2r/ppp5/8/8/8/8/8/4K3 b k - 0 1", 3933.4),
+        ("4k3/8/8/8/8/8/PPP5/4K2R w K - 0 1", 2744.7),
+        ("4k2r/ppp5/8/8/8/8/8/4K3 b k - 0 1", 2744.7),
+        // output buckets 4 and 0
+        ("r4rk1/pp3ppp/8/8/8/8/PP3PPP/R4RK1 w - - 0 1", 40.5),
+        ("8/8/8/4k3/8/8/2BN4/4K3 w - - 0 1", 46.9),
     ];
 
-    /// Rounding net-006's weights moves these positions by up to 2.7. It depends on the
-    /// network: net-005's moved by up to 25.4, its steps of 1/64 in the output layer
-    /// nearly all falling the same way
-    const QUANTISATION_ERROR: f32 = 10.0;
+    /// Rounding net-008's weights moves these positions by up to 16.3, most of it in the
+    /// output layer. It depends on the network: net-006's moved by up to 2.7
+    const QUANTISATION_ERROR: f32 = 20.0;
 
     #[test]
     fn the_output_matches_the_trainer() {
         for (fen, expected) in TRAINER_EVALS {
             let board = board(fen);
-            let output = Accumulators::new(&board).evaluate(board.side_to_move());
+            let output = Accumulators::new(&board).evaluate(&board);
             assert!(
                 (output as f32 - expected).abs() <= QUANTISATION_ERROR,
                 "{fen}: {output} against {expected}"

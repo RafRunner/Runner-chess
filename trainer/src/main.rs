@@ -13,7 +13,7 @@
 use std::{fs, path::Path};
 
 use bullet::{
-    game::inputs::Chess768,
+    game::{inputs::Chess768, outputs::MaterialCount},
     nn::optimiser::AdamW,
     trainer::{
         save::SavedFormat,
@@ -24,7 +24,9 @@ use bullet::{
 };
 
 // the engine's inference has to match these
-const HIDDEN_SIZE: usize = 128;
+const HIDDEN_SIZE: usize = 256;
+/// The output layer of a position is the one of its bucket: (pieces - 2) / 4
+const OUTPUT_BUCKETS: usize = 8;
 const SCALE: i32 = 400;
 const QA: i16 = 255;
 const QB: i16 = 64;
@@ -35,8 +37,9 @@ const POSITION_BYTES: u64 = 32;
 const CHECKPOINTS: &str = "checkpoints";
 
 /// For the engine to compare its evaluation with: both sides to move, material up
-/// and down, and a position with its colors swapped, which must evaluate the same
-const REFERENCE_FENS: [&str; 7] = [
+/// and down, a position with its colors swapped, which must evaluate the same, and
+/// output buckets 7, 4, 1 and 0
+const REFERENCE_FENS: [&str; 9] = [
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
     "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
     "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -44,6 +47,8 @@ const REFERENCE_FENS: [&str; 7] = [
     "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR b KQkq - 2 3",
     "4k3/8/8/8/8/8/PPP5/4K2R w K - 0 1",
     "4k2r/ppp5/8/8/8/8/8/4K3 b k - 0 1",
+    "r4rk1/pp3ppp/8/8/8/8/PP3PPP/R4RK1 w - - 0 1",
+    "8/8/8/4k3/8/8/2BN4/4K3 w - - 0 1",
 ];
 
 fn main() {
@@ -56,7 +61,7 @@ fn main() {
         }
     };
     let superbatches: usize = args.get(2).map_or(30, |n| n.parse().expect("superbatches"));
-    let wdl_proportion: f32 = args.get(3).map_or(0.75, |w| w.parse().expect("wdl"));
+    let wdl_proportion: f32 = args.get(3).map_or(0.5, |w| w.parse().expect("wdl"));
 
     let positions = fs::metadata(data).expect("the data file").len() / POSITION_BYTES;
     let batches_per_superbatch = (positions as usize / BATCH_SIZE).max(1);
@@ -65,21 +70,27 @@ fn main() {
         .dual_perspective()
         .optimiser(AdamW)
         .inputs(Chess768)
+        .output_buckets(MaterialCount::<OUTPUT_BUCKETS>)
         .save_format(&[
             SavedFormat::id("l0w").round().quantise::<i16>(QA),
             SavedFormat::id("l0b").round().quantise::<i16>(QA),
-            SavedFormat::id("l1w").round().quantise::<i16>(QB),
+            // a bucket's weights next to each other, as the engine reads them
+            SavedFormat::id("l1w")
+                .round()
+                .quantise::<i16>(QB)
+                .transpose(),
             SavedFormat::id("l1b").round().quantise::<i16>(QA * QB),
         ])
         // the target is wdl * result + (1 - wdl) * sigmoid(score / SCALE)
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
-        .build(|builder, stm_inputs, ntm_inputs| {
+        .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
             let l0 = builder.new_affine("l0", 768, HIDDEN_SIZE);
-            let l1 = builder.new_affine("l1", 2 * HIDDEN_SIZE, 1);
+            let l1 = builder.new_affine("l1", 2 * HIDDEN_SIZE, OUTPUT_BUCKETS);
 
             let stm_hidden = l0.forward(stm_inputs).screlu();
             let ntm_hidden = l0.forward(ntm_inputs).screlu();
             l1.forward(stm_hidden.concat(ntm_hidden))
+                .select(output_buckets)
         });
 
     let initial_lr = 0.001;
@@ -92,7 +103,9 @@ fn main() {
             start_superbatch: 1,
             end_superbatch: superbatches,
         },
-        wdl_scheduler: wdl::ConstantWDL { value: wdl_proportion },
+        wdl_scheduler: wdl::ConstantWDL {
+            value: wdl_proportion,
+        },
         lr_scheduler: lr::CosineDecayLR {
             initial_lr,
             final_lr: initial_lr * 0.3f32.powi(5),
@@ -119,6 +132,9 @@ fn main() {
         })
         .collect();
     print!("{evals}");
-    fs::write(Path::new(CHECKPOINTS).join(format!("{net_id}-evals.txt")), evals)
-        .expect("the evaluations");
+    fs::write(
+        Path::new(CHECKPOINTS).join(format!("{net_id}-evals.txt")),
+        evals,
+    )
+    .expect("the evaluations");
 }

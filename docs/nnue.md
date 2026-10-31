@@ -138,22 +138,26 @@ its own, so the engine stays without dependencies, and pins bullet to a commit.
 
 ```
 scripts/prepare-data.sh <name> <.txt files or directories>...   # data/<name>.data
-cd trainer && cargo r -r -- ../data/<name>.data <net id> [superbatches] [wdl]
+scripts/train.sh data/<name>.data <net id> [superbatches] [wdl]
 ```
 
-- **Network**: `(768 -> 128)x2 -> 1` with SCReLU, as bullet's `examples/simple`: the
-  weights of the hidden layer quantised by `QA = 255`, those of the output by
-  `QB = 64`, and an eval scale of 400.
+`scripts/train.sh` runs `cargo r -r -- ../data/<name>.data <net id> [superbatches] [wdl]`
+in `trainer/`, and keeps its output in `trainer/checkpoints/<net id>.log`.
+
+- **Network**: `(768 -> 256)x2 -> 1x8` with SCReLU, as bullet's `examples/simple`
+  with the output buckets of its `progression/2_output_buckets`: 8 output layers, and
+  each position uses the one of its bucket, `(pieces - 2) / 4`, from the kings alone to
+  the full board. The weights of the hidden layer are quantised by `QA = 255`, those of
+  the output by `QB = 64`, and the eval scale is 400.
 - **Schedule**: every superbatch is one pass over the data, 30 by default, with the
   learning rate decaying as a cosine from 0.001 to 0.001 x 0.3^5. The target is
-  `wdl x result + (1 - wdl) x sigmoid(score / 400)`, with `wdl = 0.75` by default.
+  `wdl x result + (1 - wdl) x sigmoid(score / 400)`, with `wdl = 0.5` by default.
 - **Output**: `trainer/checkpoints/<net id>-<superbatch>/quantised.bin`, the network the
-  engine embeds, 197,440 bytes for 128 neurons: bullet pads it to a multiple of 64
-  bytes, the size of the network's struct with its `align(64)` columns. The one the
-  engine uses gets copied to `nets/<net id>.bin` and committed, since
-  `trainer/checkpoints` is ignored. At the end,
-  `<net id>-evals.txt` has the evaluation of a few positions, in `f32`, for the
-  engine's inference to be compared with.
+  engine embeds, 401,984 bytes for 256 neurons and 8 buckets: bullet pads it to a
+  multiple of 64 bytes, the size of the network's struct with its `align(64)` columns.
+  The one the engine uses gets copied to `nets/<net id>.bin` and committed, since
+  `trainer/checkpoints` is ignored. At the end, `<net id>-evals.txt` has the evaluation
+  of a few positions, in `f32`, for the engine's inference to be compared with.
 - **Backend**: Metal by default, `--no-default-features --features cuda` on NVIDIA.
 - bullet doesn't implement a validation set yet: it prints a warning when given one.
   `cargo r -r --bin validate -- checkpoints/<net id>-30 ../data/<name>.data` gives the
@@ -168,7 +172,7 @@ million positions take 70 seconds.
 
 Every network trains on the games of the current version and of the two before it,
 each generation half from random openings and half from `popularpos_lichess_v3.epd`,
-in `data/<version>-random/` and `data/<version>-book/`. For net-006:
+in `data/<version>-random/` and `data/<version>-book/`. For net-006 and net-007:
 
 ```
 scripts/prepare-data.sh net-006 data/1.1.1-random data/1.1.1-book \
@@ -192,6 +196,30 @@ the positions, as a static evaluation, against 0.90 and 96% for a search of 0.8.
 since it mostly predicts the result of the game: the engine can divide it back by
 using a scale of 200 instead of 400.
 
+### `net-007`
+
+The data of net-006 on 256 neurons instead of 128. With `wdl = 0.75`, as every network
+before, it lost about 60 Elo to net-006, though its loss was lower even on positions
+it never saw: it predicted the results of the games better, and the scores of the
+searches worse. With `wdl = 0.5` it predicts the results about as well and the scores
+far better, and won by 69. On a million positions of 1.2.0 that none of them trained on:
+
+| network | wdl | against the result | against the score |
+|---|---|---|---|
+| net-006, 128 | 0.75 | 0.0783 | 0.0062 |
+| 256 | 0.75 | 0.0773 | 0.0074 |
+| net-007, 256 | 0.5 | 0.0775 | 0.0046 |
+| 256 | 0.25 | 0.0793 | 0.0037 |
+
+### `net-008`
+
+net-007 with 8 output buckets, on the same data: the hidden layer stays the same for
+every position, and only how its neurons add up depends on the number of pieces, as a
+king on e4 is weak in the middlegame and strong in an endgame. It has 2% more weights,
+and costs nothing in speed. On the million positions of 1.2.0, 0.0771 against the
+result and 0.0046 against the score, a little better than net-007 in both, and it won
+by 24 Elo.
+
 ## 5. In the engine
 
 - **Inputs**: for each side's view, `(own piece ? 0 : 384) + 64 x kind + square`, with
@@ -199,8 +227,10 @@ using a scale of 200 instead of 400.
   Black's view.
 - **Accumulator**: for each view, the bias plus the column of every input on the board.
 - **Output**, for the side to move:
-  `(sum(screlu(us) x w[..128]) + sum(screlu(them) x w[128..])) / QA + bias`, times the
-  scale, divided by `QA x QB`, where `screlu(x) = clamp(x, 0, QA)^2`.
+  `(sum(screlu(us) x w[b][..256]) + sum(screlu(them) x w[b][256..])) / QA + bias[b]`,
+  times the scale, divided by `QA x QB`, where `screlu(x) = clamp(x, 0, QA)^2` and `b`
+  is the bucket. bullet saves the output weights a bucket after the other once told to
+  `transpose` them.
 - The weights embedded with `include_bytes!` in a `static`, read-only and shared by
   every thread.
 - A stack of accumulators, one pair per ply, in the `Searcher`, never in `Board`, which
