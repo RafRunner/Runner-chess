@@ -88,7 +88,7 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - The `d` command also writes the hash of the position, and labels its FEN.
 
 ### Measured
-- Bench: 27149 (unchanged).
+- Bench: 26531 (unchanged).
 - Speed: 5.14 million nodes a second on `bench search 17` on an M4 Pro, from 3.97 for
   1.2.0: 30% faster.
 - Strength: +61.8 ± 21.3 Elo against 1.2.0 at 10+0.1, an SPRT [0, 10] accepted after
