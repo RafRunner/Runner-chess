@@ -1304,13 +1304,14 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
-    /// 1.e4 with white, the Sicilian against it and the King's Indian against 1.d4
+    /// 1.e4 with white, the Sicilian, 1...e5 or the Caro-Kann against it, and the King's
+    /// Indian against 1.d4
     #[test]
     fn the_engine_plays_its_own_book_by_default() {
         let mut uci = Uci::new(SharedBuffer::default());
         for (position, expected) in [
             ("startpos", &["e2e4"][..]),
-            ("startpos moves e2e4", &["c7c5"]),
+            ("startpos moves e2e4", &["c7c5", "e7e5", "c7c6"]),
             ("startpos moves d2d4", &["g8f6"]),
             ("startpos moves e2e4 e7e5", &["g1f3", "f2f4"]),
         ] {

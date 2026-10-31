@@ -16,7 +16,9 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
   infinite` still searches. `OwnBook` (on by default) turns it off.
 - The engine's own book, built from the lines of `books/aggressive.txt`: 1.e4 with
   gambits against 1...e5 (King's, Evans, Scotch, the Two Knights) and the sharp open
-  Sicilians, and with black the Najdorf, the Dragon, the King's Indian and the Benko.
+  Sicilians, and with black, against 1.e4, the Najdorf and the Dragon in half of the
+  games, 1...e5 with the Marshall in a third and the Caro-Kann in the rest, and the
+  King's Indian and the Benko against 1.d4.
   The end of every line was checked with a depth 13 search, no worse than -0.9 for
   the side of the book. `BookFile` takes another book instead, and `<empty>` brings
   the engine's own back.
