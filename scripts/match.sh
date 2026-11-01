@@ -6,7 +6,8 @@
 #
 # <engine> and <baseline> are versions built by scripts/build-engine.sh (v0.1.0
 # means engines/runner-chess-v0.1.0) or paths to any UCI engine. Every opening
-# from the book is played twice, once with each color.
+# from the book is played twice, once with each color. The engines' own books are
+# turned off, so that only these openings get played.
 #
 # Options:
 #   --tc <tc>           time control, in seconds plus increment (default: 10+0.1)
@@ -108,7 +109,7 @@ echo "if interrupted, resume with: fastchess -config file=$state"
 fastchess \
     -engine cmd="$engine" name="$engine_name" \
     -engine cmd="$baseline" name="$baseline_name" \
-    -each "$limit" \
+    -each "$limit" option.OwnBook=false \
     -openings file="$book" format=pgn order=random \
     -rounds "$rounds" -games 2 -repeat -concurrency "$concurrency" \
     ${sprt:+-sprt $sprt} \

@@ -8,6 +8,38 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## Unreleased
+
+### Added
+- An opening book in the Polyglot format. While the position is in it, `go` answers
+  at once with one of its moves, each as likely as its weight, and no search; `go
+  infinite` still searches. `OwnBook` (on by default) turns it off.
+- The engine's own book, built from the lines of `books/aggressive.txt`: 1.e4 with
+  gambits against 1...e5 (King's, Evans, Scotch, the Two Knights) and the sharp open
+  Sicilians, and with black, against 1.e4, the Najdorf and the Dragon in half of the
+  games, 1...e5 with the Marshall in a third and the Caro-Kann in the rest, and the
+  King's Indian and the Benko against 1.d4.
+  The end of every line was checked with a depth 13 search, no worse than -0.9 for
+  the side of the book. `BookFile` takes another book instead, and `<empty>` brings
+  the engine's own back.
+- `runner-chess book <lines> <out.bin>` writes the book of such lines as a Polyglot
+  file, for GUIs and other engines.
+- `scripts/match.sh` turns the engines' own books off, so that only its openings get
+  played.
+
+### Changed
+- Faster on the same tree: `make_move` takes every kind of move through one path, and
+  works the hash out once at the end; perft loops over the moves instead of an
+  iterator of boards.
+- On Linux, the transposition table asks for pages of 2 MB instead of 4 KB: with a
+  random bucket for each probe, nearly every one also missed the TLB. Elsewhere nothing
+  changes: macOS on Apple silicon already has pages of 16 KB.
+
+### Measured
+- Bench: 26147 (unchanged).
+- On Linux, from the pull request: the prefetches of the search take 5.6% of its time
+  instead of 11.8%, about 3% faster.
+
 ## 1.5.0 - 2026-10-31
 
 ### Changed

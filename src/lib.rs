@@ -2,6 +2,7 @@ pub mod attacks;
 pub mod bench;
 pub mod bitboard;
 pub mod board;
+pub mod book;
 pub mod castling;
 pub mod chess_move;
 pub mod datagen;

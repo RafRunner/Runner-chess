@@ -6,15 +6,17 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
     bench::{self, BENCH, BenchError, SEARCH_BENCH, SEARCH_BENCH_DEPTH},
     board::{Board, FenParseError, movegen::IllegalMoveError},
+    book::{Book, BookError},
     chess_move::{AbstractMove, MoveParseError},
     eval::NETWORK_NAME,
     piece::Color,
+    rng::Rng,
     search::{Budget, Limits, MoveOrdering, Searcher, TranspositionTable},
     zobrist::ZobristHash,
 };
@@ -28,6 +30,7 @@ pub enum UciError {
     MoveParseError(String),
     IllegalMove(String),
     Bench(BenchError),
+    Book(String, BookError),
     Io(io::Error),
     SearchPanicked,
 }
@@ -42,6 +45,7 @@ impl fmt::Display for UciError {
             Self::MoveParseError(mv) => write!(f, "can't read the move {mv}"),
             Self::IllegalMove(mv) => write!(f, "illegal move {mv}"),
             Self::Bench(e) => write!(f, "bench: {e:?}"),
+            Self::Book(path, e) => write!(f, "no book from {path}: {e}"),
             Self::Io(e) => write!(f, "{e}"),
             Self::SearchPanicked => write!(f, "the search panicked"),
         }
@@ -113,6 +117,13 @@ pub struct Uci<W> {
     infinite: bool,
     /// Set by `stop` and `quit` to end the search early
     stop: Arc<AtomicBool>,
+    /// The engine's own book, or the one of the `BookFile` option. None if that one
+    /// didn't open.
+    book: Option<Book>,
+    /// The `OwnBook` option: whether the book plays the moves it has
+    own_book: bool,
+    /// Picks among the moves of the book, differently in every run
+    book_rng: Rng,
     out: W,
     debug: bool,
 }
@@ -133,6 +144,11 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             search: None,
             infinite: false,
             stop: Arc::new(AtomicBool::new(false)),
+            book: Some(Book::builtin()),
+            own_book: true,
+            book_rng: Rng(SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos() as u64)),
             out,
             debug: false,
         }
@@ -171,6 +187,8 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                     self.out,
                     "option name Hash type spin default {HASH_MB} min 1 max {MAX_HASH_MB}"
                 )?;
+                writeln!(self.out, "option name OwnBook type check default true")?;
+                writeln!(self.out, "option name BookFile type string default <empty>")?;
                 writeln!(self.out, "info string {NETWORK_NAME}")?;
                 writeln!(self.out, "uciok")?;
             }
@@ -298,7 +316,30 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             None => (rest, None),
         };
 
-        if name.join(" ").eq_ignore_ascii_case("hash") {
+        let name = name.join(" ");
+        if name.eq_ignore_ascii_case("ownbook") {
+            self.own_book = match value.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                Some("true") => true,
+                Some("false") => false,
+                _ => {
+                    return Err(UciError::UnexpectedArgs(
+                        "OwnBook is true or false".to_string(),
+                    ));
+                }
+            };
+        } else if name.eq_ignore_ascii_case("bookfile") {
+            // a book that doesn't open leaves none, rather than the one before
+            self.book = None;
+            let path = value.unwrap_or_default();
+            // back to the engine's own
+            if path.is_empty() || path == "<empty>" {
+                self.book = Some(Book::builtin());
+                return Ok(());
+            }
+            let book = Book::open(&path).map_err(|e| UciError::Book(path.clone(), e))?;
+            writeln!(self.out, "info string book {path}, {} entries", book.len())?;
+            self.book = Some(book);
+        } else if name.eq_ignore_ascii_case("hash") {
             let megabytes = value
                 .and_then(|value| value.parse::<usize>().ok())
                 .filter(|megabytes| (1..=MAX_HASH_MB).contains(megabytes))
@@ -351,10 +392,23 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
     }
 
     /// `go [wtime <ms>] [btime <ms>] [winc <ms>] [binc <ms>] [movestogo <n>] [depth <n>]
-    /// [movetime <ms>] [nodes <n>] [infinite]`: starts a search in its own thread, with a
-    /// copy of the game, and the table and the ordering, which come back in `wait_search`
+    /// [movetime <ms>] [nodes <n>] [infinite]`: plays the book's move if it has one, or
+    /// else starts a search in its own thread, with a copy of the game, and the table and
+    /// the ordering, which come back in `wait_search`
     fn go_search(&mut self, args: &[&str], start: Instant) -> Result<(), UciError> {
         let limits = parse_go(args)?;
+        // an analysis wants the search's opinion, not the book's
+        if self.own_book && !limits.infinite {
+            let book_move = self
+                .book
+                .as_ref()
+                .and_then(|book| book.pick(&self.board, &mut self.book_rng));
+            if let Some(mv) = book_move {
+                writeln!(self.out, "info string book move {mv}")?;
+                writeln!(self.out, "bestmove {mv}")?;
+                return Ok(());
+            }
+        }
         let budget = Budget::new(&limits, self.board.side_to_move(), start);
 
         let (board, history) = (self.board.clone(), self.history.clone());
@@ -540,8 +594,11 @@ mod tests {
         }
     }
 
+    /// Without a book, so that the start position gets searched
     fn uci() -> Uci<SharedBuffer> {
-        Uci::new(SharedBuffer::default())
+        let mut uci = Uci::new(SharedBuffer::default());
+        uci.book = None;
+        uci
     }
 
     /// Runs `line` and, if it started a search, waits for it. Returns what got written
@@ -1176,5 +1233,125 @@ mod tests {
         let (control, out) = run(&mut uci, "bench").unwrap();
         assert_eq!(control, Control::Continue);
         assert!(out.contains("Nodes searched  : 37918074"), "{out}");
+    }
+
+    /// A Polyglot book of one move, 1.e4, written to a file of its own
+    fn e4_book(name: &str) -> String {
+        let mut bytes = Board::startpos().hash().raw().to_be_bytes().to_vec();
+        // e2 is 12 and e4 28, with a weight of 1
+        bytes.extend(((12u16 << 6) | 28).to_be_bytes());
+        bytes.extend([0, 1, 0, 0, 0, 0]);
+        let path =
+            std::env::temp_dir().join(format!("runner-chess-{name}-{}.bin", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn the_book_options_are_announced() {
+        let (_, out) = run(&mut uci(), "uci").unwrap();
+        assert!(
+            out.contains("option name OwnBook type check default true\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("option name BookFile type string default <empty>\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_book_plays_its_moves_without_a_search() {
+        let mut uci = uci();
+        let path = e4_book("book-plays");
+        let (_, out) = run(&mut uci, &format!("setoption name BookFile value {path}")).unwrap();
+        assert_eq!(out, format!("info string book {path}, 1 entries\n"));
+
+        let (_, out) = run(&mut uci, "go wtime 1000 btime 1000").unwrap();
+        assert_eq!(out, "info string book move e2e4\nbestmove e2e4\n");
+
+        // out of the book, the search plays
+        run(&mut uci, "position startpos moves e2e4").unwrap();
+        let (_, out) = run(&mut uci, "go depth 2").unwrap();
+        assert!(out.starts_with("info depth 1 "), "{out}");
+        bestmove(&out);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn the_book_stays_out_of_analyses_and_when_turned_off() {
+        let mut uci = uci();
+        let path = e4_book("book-off");
+        run(&mut uci, &format!("setoption name BookFile value {path}")).unwrap();
+
+        uci.handle("go infinite").unwrap();
+        uci.handle("stop").unwrap();
+        let out = uci.out.take();
+        assert!(out.starts_with("info depth 1 "), "{out}");
+
+        run(&mut uci, "setoption name OwnBook value false").unwrap();
+        let (_, out) = run(&mut uci, "go depth 1").unwrap();
+        assert!(out.starts_with("info depth 1 "), "{out}");
+
+        run(&mut uci, "setoption name ownbook value TRUE").unwrap();
+        let (_, out) = run(&mut uci, "go depth 1").unwrap();
+        assert_eq!(bestmove(&out), "e2e4");
+        assert_matches!(
+            run(&mut uci, "setoption name OwnBook value maybe"),
+            Err(UciError::UnexpectedArgs(_))
+        );
+        assert!(uci.own_book);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// 1.e4 with white, the Sicilian, 1...e5 or the Caro-Kann against it, and the King's
+    /// Indian against 1.d4
+    #[test]
+    fn the_engine_plays_its_own_book_by_default() {
+        let mut uci = Uci::new(SharedBuffer::default());
+        for (position, expected) in [
+            ("startpos", &["e2e4"][..]),
+            ("startpos moves e2e4", &["c7c5", "e7e5", "c7c6"]),
+            ("startpos moves d2d4", &["g8f6"]),
+            ("startpos moves e2e4 e7e5", &["g1f3", "f2f4"]),
+        ] {
+            run(&mut uci, &format!("position {position}")).unwrap();
+            let (_, out) = run(&mut uci, "go wtime 1000 btime 1000").unwrap();
+            assert!(out.starts_with("info string book move "), "{out}");
+            assert!(expected.contains(&bestmove(&out)), "{position}: {out}");
+        }
+    }
+
+    #[test]
+    fn a_book_that_does_not_open_leaves_none() {
+        let mut uci = uci();
+        let path = e4_book("book-none");
+        run(&mut uci, &format!("setoption name BookFile value {path}")).unwrap();
+        assert!(uci.book.is_some());
+
+        assert_matches!(
+            run(
+                &mut uci,
+                "setoption name BookFile value /nonexistent/book.bin"
+            ),
+            Err(UciError::Book(_, BookError::Io(_)))
+        );
+        assert!(uci.book.is_none());
+
+        run(&mut uci, &format!("setoption name BookFile value {path}")).unwrap();
+        // back to the engine's own
+        let (_, out) = run(&mut uci, "setoption name BookFile value <empty>").unwrap();
+        assert_eq!(out, "");
+        assert_eq!(
+            uci.book.as_ref().map(Book::len),
+            Some(Book::builtin().len())
+        );
+
+        std::fs::write(&path, [0; 20]).unwrap();
+        assert_matches!(
+            run(&mut uci, &format!("setoption name BookFile value {path}")),
+            Err(UciError::Book(_, BookError::Truncated(20)))
+        );
+        std::fs::remove_file(path).unwrap();
     }
 }
