@@ -93,7 +93,9 @@ impl Book {
         }
 
         let entries: Vec<Entry> = bytes
-            .chunks_exact(ENTRY_SIZE)
+            .as_chunks::<ENTRY_SIZE>()
+            .0
+            .iter()
             .map(|chunk| Entry {
                 key: u64::from_be_bytes(chunk[0..8].try_into().unwrap()),
                 mv: u16::from_be_bytes(chunk[8..10].try_into().unwrap()),
@@ -500,7 +502,9 @@ mod tests {
         let book = Book::build("w 1 e2e4 e7e5 g1f3 b8c6 f1c4 f8c5 e1g1").unwrap();
         let bytes = book.to_bytes();
         let castling = bytes
-            .chunks_exact(ENTRY_SIZE)
+            .as_chunks::<ENTRY_SIZE>()
+            .0
+            .iter()
             .map(|entry| u16::from_be_bytes([entry[8], entry[9]]))
             .find(|&mv| mv >> 6 == 4)
             .unwrap();
