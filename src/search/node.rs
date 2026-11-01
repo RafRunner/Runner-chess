@@ -10,6 +10,10 @@ pub(super) struct NodeInfo<'board> {
     pub(super) beta: Score,
     /// For the side to move: the parent knows it already, from testing the move
     pub(super) in_check: bool,
+    /// The static eval is above the one two plies up, of the same side: set by the node
+    /// itself, and true until then, as without an eval to compare there's nothing to
+    /// prune more for
+    pub(super) improving: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -34,6 +38,7 @@ impl<'board> NodeInfo<'board> {
             alpha,
             beta,
             in_check: board.is_in_check(board.side_to_move()),
+            improving: true,
         }
     }
 
@@ -52,6 +57,7 @@ impl<'board> NodeInfo<'board> {
             alpha: -self.beta,
             beta: -self.alpha,
             in_check,
+            improving: true,
         }
     }
 
@@ -70,6 +76,7 @@ impl<'board> NodeInfo<'board> {
             alpha: threshold,
             beta: threshold + 1,
             in_check,
+            improving: true,
         }
     }
 

@@ -27,8 +27,48 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - `scripts/match.sh` turns the engines' own books off, so that only its openings get
   played.
 
+### Changed
+- Faster on the same tree: `make_move` takes every kind of move through one path, and
+  works the hash out once at the end; perft loops over the moves instead of an
+  iterator of boards.
+- On Linux, the transposition table asks for pages of 2 MB instead of 4 KB: with a
+  random bucket for each probe, nearly every one also missed the TLB. Elsewhere nothing
+  changes: macOS on Apple silicon already has pages of 16 KB.
+
 ### Measured
-- Bench: 27149 (unchanged).
+- Bench: 26147 (unchanged).
+- On Linux, from the pull request: the prefetches of the search take 5.6% of its time
+  instead of 11.8%, about 3% faster.
+
+## 1.5.0 - 2026-10-31
+
+### Changed
+- Late move reductions start at the third move off the principal variation, instead
+  of the sixth, which they still wait for on it.
+- Late move pruning skips the quiet moves sooner, after half as many, where the static
+  eval isn't improving: below the one of the same side two plies up, or four when that
+  one was in check.
+
+### Added
+- `scripts/match.sh` and the new `scripts/train.sh` keep their output next to the games
+  and the checkpoints, as `.log` files.
+
+### Measured
+- Bench: 26147 (from 26071).
+- Strength, at 10+0.1, each change against the one before:
+  - the reductions: +7.9 ± 7.5 Elo against 1.4.0 in 3260 games (719 wins, 645 losses,
+    1896 draws), an SPRT [0, 10] stopped at an LLR of 2.03 of 2.94, as a gain this
+    small takes thousands of games more to tell from 0 or 10. With net-006, +19.6 ±
+    18.3 in 498;
+  - the pruning: +8.7 ± 6.6 Elo, an SPRT [0, 10] accepted after 3412 games (635
+    wins, 550 losses, 2227 draws).
+- Improving also in reverse futility pruning, by a margin of a ply less, and in late
+  move reductions, by a ply more: -2.6 ± 15.6 Elo in 678 games, not kept.
+- Against Stockfish 19 limited by `UCI_Elo = 3000`, at 60+0.6 with a thread and 16 MB
+  each, from `8moves_v3.pgn`: +135 ± 42 Elo in 200 games (102 wins, 28 losses, 70
+  draws), so about 3135 on its scale, which is calibrated on engines, not on people.
+  Four games were lost on time while the computer was busy, three of them by
+  Stockfish: without them, +134.
 
 ## 1.4.0 - 2026-10-30
 
@@ -565,25 +605,78 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 
 ## Tried and left out
 
-- **Evaluation terms** (bishop pair, doubled, isolated and passed pawns, pawn shield
-  and open files next to the king): +75 ± 28 Elo against 0.5.0 at 10+0.1, SPRT [0, 10]
-  passed in 456 games. Kept out on purpose: the plan is to see how far search goes
-  with a minimal evaluation, then move to NNUE. Saved in a git stash.
-- **Root moves ordered by the score of the previous iteration**, instead of only
-  bringing the best one to the front: neutral, 0 ± 25 Elo after more than 1000 games.
-  It only matters when an iteration gets interrupted or the best move changes in the
-  middle of one. Worth trying again with PVS, LMR and a time control based on the
-  stability of the best move.
+What didn't make it, measured or not, so that it isn't tried again blindly.
+
+### Speed, on the same tree
+
+These keep the nodes of the bench, so `hyperfine` on `bench search 17` decides them.
+
+- **Accumulators updated lazily**, only when an evaluation asks for them: just 5.3% of
+  the updates got skipped, as nearly every node evaluates, quiescence always, and the
+  bookkeeping cost as much as it saved.
+- **The best move picked one at a time** instead of sorting the list of moves: 10.6%
+  slower. The nodes that don't cut go through all their moves, the ones pruned too,
+  and picking each of them goes through the rest.
+- **Captures and quiet moves told apart by bitboard masks** in the generator, instead
+  of looking up the board for each target square: +0.6%, noise.
+- **The second exchange evaluation skipped** for the captures that the move picker
+  already found not to lose material: neutral, as `see` returns early for them.
+- **The 16-bit products of the output layer** with 128 neurons: -0.4%, noise, when the
+  output layer was 5% of the time. With 256 neurons it is 18%, and they won 2%, in
+  1.4.0.
+- **64-bit sums in the output layer**, against the overflow of 256 neurons: the
+  output layer took 45% of the time, and the search was 40% slower, as 64-bit lanes
+  only take 2 values at once. Each half summing in 32 bits fits, and is as fast.
+- **Moves generated only after the table move**, when it doesn't cut: not tried. At
+  depth 17 of the bench, 79% of the nodes are quiescence, and the table move alone cuts
+  only 11.8% of the others, so it would save about 2%, against a check of the table
+  move without the list of moves, and the order of the quiet moves changing where it
+  doesn't cut. Their keys taken as their stage comes, with the history the moves
+  before them left, had grown the tree by a third.
+- **The output bucket kept in the board**: not tried. Counting the pieces is two
+  instructions an evaluation, against updating it on every capture.
+- **The network on the GPU**: not tried. An evaluation takes about 25 ns on the CPU,
+  a round trip to the GPU tens of microseconds, and alpha-beta can't batch them: each
+  evaluation decides what gets searched next.
 - **Check status stored in the board**, recalculated at the end of every move: the
   same nodes, but 9% slower perft and 2% slower search, since every board pays for
   it, illegal ones and nodes the table cuts included. Worth it once checks get
   computed incrementally (the moved piece and the lines it opens) and the move
   generator uses them, for evasions and pins.
-- **Check extension**, searching a ply deeper after a move that gives check: -10 ±
-  15 Elo against 0.8.0 after about 1350 games, so neutral at best. LMR already
-  leaves those moves unreduced.
 - **Legality from pins**: the pinned pieces computed once per node, so only king
   moves, en passant, moves out of check and pinned pieces need the full check. The
   same nodes, with 24% faster perft but 2 to 4.5% slower search, in four variants:
   most nodes cut after one to three moves, so the setup of each node costs more than
-  the checks it saves. Worth it with a fully legal move generator.
+  the checks it saves. In 1.2.1 they came back with the checks: the pieces that would
+  uncover one and the squares that give one, worked out once per node, also replace
+  making each move to test its legality, and the search got 7% faster.
+
+### Search
+
+- **`improving` in reverse futility pruning and late move reductions**, as in late
+  move pruning: -2.6 ± 15.6 Elo against 1.4.0 with the reductions of 1.5.0, in 678
+  games. In late move pruning alone it won 8.7, in 1.5.0. In all three, with 0.10.0,
+  it had lost 58 ± 29.
+- **Check extension**, searching a ply deeper after a move that gives check: -10 ±
+  15 Elo against 0.8.0 after about 1350 games, so neutral at best. LMR already
+  leaves those moves unreduced.
+- **Root moves ordered by the score of the previous iteration**, instead of only
+  bringing the best one to the front: neutral, 0 ± 25 Elo after more than 1000 games.
+  It only matters when an iteration gets interrupted or the best move changes in the
+  middle of one. Worth trying again with PVS, LMR and a time control based on the
+  stability of the best move.
+- **Root moves ordered by the nodes each took**: neutral against 1.0.1, +4.4 ± 14.3 Elo
+  counting only the last search of each move, -4.7 ± 12.7 adding them up.
+
+### The network and its data
+
+- **256 neurons with `wdl = 0.75`**: lost to the 128 of net-006, by 66 Elo while the
+  output layer summed in 64 bits, and by about 60 at 8% slower. It predicted the
+  results better and the scores of the searches worse; with `wdl = 0.5` it won by 69,
+  as net-007. `wdl = 0.25` predicts the results worse than net-006 (see `docs/nnue.md`).
+- **Endgames relabelled by the Syzygy tables**: -10.3 ± 12.8 Elo. The network learned
+  wins of perfect play that the engine can't convert.
+- **Evaluation terms** (bishop pair, doubled, isolated and passed pawns, pawn shield
+  and open files next to the king): +75 ± 28 Elo against 0.5.0 at 10+0.1, SPRT [0, 10]
+  passed in 456 games. Kept out on purpose: the plan is to see how far search goes
+  with a minimal evaluation, then move to NNUE. Saved in a git stash.
