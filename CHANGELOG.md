@@ -8,7 +8,7 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
-## Unreleased
+## 1.6.0 - 2026-11-02
 
 ### Added
 - An opening book in the Polyglot format. While the position is in it, `go` answers
@@ -26,8 +26,15 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
   file, for GUIs and other engines.
 - `scripts/match.sh` turns the engines' own books off, so that only its openings get
   played.
+- `scripts/attack-starts.py`: positions with the kings castled on opposite wings, taken
+  from the data of earlier generations, to start games of `datagen` from.
 
 ### Changed
+- A network trained on new data, `nets/net-009.bin`: the games of 1.5.0 with those of
+  1.1.1 and 0.10.0, 95 million positions, on the same network as net-008. 5 million of
+  them come from games that start with the kings castled on opposite wings, where the
+  network erred the most against Stockfish, at 10,000 nodes a move. It gives 1.19
+  times the scores of its data.
 - Faster on the same tree: `make_move` takes every kind of move through one path, and
   works the hash out once at the end; perft loops over the moves instead of an
   iterator of boards.
@@ -36,7 +43,14 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
   changes: macOS on Apple silicon already has pages of 16 KB.
 
 ### Measured
-- Bench: 26147 (unchanged).
+- Bench: 22792 (from 26147).
+- Strength: +31.3 ± 15.6 Elo at 10+0.1 against the same code with net-008, an SPRT
+  [0, 10] accepted after 836 games (234 wins, 159 losses, 443 draws).
+- Against Stockfish 19 at depth 18, on 2934 positions from the middle of our games, in
+  its centipawns: an error of 107 as a static evaluation, from 112 with net-008, and of
+  91 searching 5000 nodes, from 94. With the kings castled on opposite wings, 94 at
+  5000 nodes, from 112. The same training without the games of attacks measured the
+  same, and no match was played between the two.
 - On Linux, from the pull request: the prefetches of the search take 5.6% of its time
   instead of 11.8%, about 3% faster.
 
