@@ -66,7 +66,8 @@ seed and number of threads play the same games again.
 Measured with 0.8.1 on 10 threads, 5,000 nodes: about 2,600 positions per second (9
 million an hour), 89 kept per game, 65 bytes each. Results: 38% White wins, 21% draws,
 41% Black wins. 100 million positions, enough for a first network, take about 11 hours
-and 6.5 GB.
+and 6.5 GB. With 1.5.0 on 4 threads: 1,350 positions a second and 99 kept per game, or
+630 and 78 from the starts of attacks at 10,000 nodes.
 
 ## 3. The bullet format
 
@@ -166,17 +167,19 @@ in `trainer/`, and keeps its output in `trainer/checkpoints/<net id>.log`.
   its output by (`NETWORK_INFLATION`).
 
 On an M4 Pro, training goes at about 4.6 million positions a second: 30 passes over 10
-million positions take 70 seconds.
+million positions take 70 seconds, and over the 90 million of net-009, 10 minutes.
 
 ### Which data
 
 Every network trains on the games of the current version and of the two before it,
 each generation half from random openings and half from `popularpos_lichess_v3.epd`,
-in `data/<version>-random/` and `data/<version>-book/`. For net-006 and net-007:
+in `data/<version>-random/` and `data/<version>-book/`. From 1.5.0 on, a generation
+also has 5 million positions of attacks on the king, in `data/<version>-attack/`. For
+net-009:
 
 ```
-scripts/prepare-data.sh net-006 data/1.1.1-random data/1.1.1-book \
-    data/0.10.0-random data/0.10.0-book data/0.9.2-random data/0.9.2-book
+scripts/prepare-data.sh net-009 data/1.5.0-random data/1.5.0-book data/1.5.0-attack \
+    data/1.1.1-random data/1.1.1-book data/0.10.0-random data/0.10.0-book
 ```
 
 The labels of the older generations come from shallower searches of weaker versions,
@@ -186,6 +189,16 @@ Older games, like those of 0.8.2 with its hand-written evaluation, stay out. Nei
 the book nor the Syzygy tables go further than that: half the games from the book
 gained 28 Elo over random openings only, while endgames relabelled with the tables
 lost 10, the network learning wins of perfect play that the engine can't convert.
+
+The games of attacks start with the kings castled on opposite wings, as in 1.8% of the
+positions of the other games, and where the network erred the most against Stockfish.
+`scripts/attack-starts.py` takes such positions from the data of the two generations
+before, with both queens on, by move 25 and with `|score| <= 150`, about one a game,
+and adds those of `popularpos` and the ends of the lines of `books/aggressive.txt`:
+40,882 for 1.5.0, given to `datagen --book`. Their games search 10,000 nodes a move
+instead of 5,000: there, the result of the game is what corrects the network, and only
+if the attacks get played well. A quarter of their positions keep the kings on
+opposite wings.
 
 ### `net-001`
 
@@ -219,6 +232,25 @@ king on e4 is weak in the middlegame and strong in an endgame. It has 2% more we
 and costs nothing in speed. On the million positions of 1.2.0, 0.0771 against the
 result and 0.0046 against the score, a little better than net-007 in both, and it won
 by 24 Elo.
+
+### `net-009`
+
+net-008's network on the data of 0.10.0, 1.1.1 and 1.5.0 with the attacks of 1.5.0, 95
+million positions: it gives 1.19 times the scores of its data, and won by 31 Elo. On
+the million positions of 1.2.0, 0.0761 against the result and 0.0052 against the
+score. On 2934 positions from the middle of our games, against Stockfish 19 at depth
+18 and in its centipawns:
+
+| | net-008 | net-009 |
+|---|---|---|
+| static evaluation | 112 | 107 |
+| 5000 nodes | 94 | 91 |
+| 5000 nodes, kings on opposite wings | 112 | 94 |
+
+The same training without the attacks measured the same in all of them, and no match
+was played between the two: the gain of the new generation and that of the attacks
+can't be told apart. net-009's scores spread about 15% wider against Stockfish's than
+net-008's, so the margins of the search, in centipawns, prune a little more.
 
 ## 5. In the engine
 

@@ -10,9 +10,9 @@ use crate::{
     square::Square,
 };
 
-/// net-008 gives about 1.21x the scores it learned from, as half of what it learned is
+/// net-009 gives about 1.19x the scores it learned from, as half of what it learned is
 /// the result of the game
-const NETWORK_INFLATION: i32 = 121;
+const NETWORK_INFLATION: i32 = 119;
 
 /// For the side to move: the network, except in dead positions
 pub fn evaluate(board: &Board, accumulators: &Accumulators) -> Score {
