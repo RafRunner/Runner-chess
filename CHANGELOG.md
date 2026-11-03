@@ -8,6 +8,24 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.7.0 - 2026-11-02
+
+### Changed
+- The clock lasts the game instead of half of it: a move gets `time / 25 + increment x
+  25 / 4`, counting the increments to come, instead of three quarters of one. That's
+  more than an increment a move, so the clock runs down until two caps keep a reserve
+  of a few increments: no more than a quarter of the clock for the move, and a hard
+  stop at half of it. At 10+0.1, the first 20 moves get twice the time, and a game
+  ends with 0.8 seconds left instead of 5.4.
+
+### Measured
+- Bench: 22792 (unchanged).
+- Strength: +69.0 ± 19.8 Elo against 1.6.0 at 10+0.1, an SPRT [0, 10] accepted after
+  342 games (94 wins, 27 losses, 221 draws), none lost on time. The lowest clock of
+  any game was 0.13 seconds.
+- Against Stockfish at 60+0.6, 1.5.0 ended its games with 49% of the base time left,
+  and Stockfish with 6%.
+
 ## 1.6.0 - 2026-11-02
 
 ### Added
