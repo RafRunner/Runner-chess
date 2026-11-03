@@ -63,11 +63,15 @@ impl Budget {
             }
             (None, Some(time)) => {
                 let moves = limits.movestogo.unwrap_or(25);
-                let movetime = time / moves + limits.inc[us] * 3 / 4;
+                // more than an increment a move, so the clock runs down until the caps,
+                // which keep a reserve of a few increments
+                let movetime = (time / moves + limits.inc[us] * moves / 4).min(time / 4);
 
                 budget.soft = Some(start + movetime / Self::SOFT_FACTOR);
-                budget.hard =
-                    Some((start + movetime * 3).min(start + time.saturating_sub(MOVE_OVERHEAD)));
+                let hard = (movetime * 3)
+                    .min(time / 2)
+                    .min(time.saturating_sub(MOVE_OVERHEAD));
+                budget.hard = Some(start + hard);
 
                 budget.depth = limits.depth.unwrap_or(Score::MAX_PLY);
             }
@@ -209,6 +213,24 @@ mod tests {
                 "{time} {inc} {movestogo:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_low_clock_keeps_a_reserve() {
+        // the increments alone would ask for 625 ms of the 1 s left
+        let (budget, start) = budget(
+            Limits {
+                time: [Some(ms(1_000)); 2],
+                inc: [ms(100); 2],
+                ..Limits::default()
+            },
+            Color::White,
+        );
+        assert_eq!(
+            budget.soft,
+            Some(start + ms(1_000) / 4 / Budget::SOFT_FACTOR)
+        );
+        assert_eq!(budget.hard, Some(start + ms(500)));
     }
 
     #[test]
