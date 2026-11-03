@@ -708,6 +708,14 @@ These keep the nodes of the bench, so `hyperfine` on `bench search 17` decides t
   as net-007. `wdl = 0.25` predicts the results worse than net-006 (see `docs/nnue.md`).
 - **Endgames relabelled by the Syzygy tables**: -10.3 ± 12.8 Elo. The network learned
   wins of perfect play that the engine can't convert.
+- **Nodes for `datagen` by how sure the search is**, as the clock does: the soft limit
+  of 5000 nodes times `(1.5 - share) x 1.35` from depth 5, 6 or 7. On 10,000 positions
+  of 1.5.0, against searches of a million nodes, its labels erred by 3.39 points of
+  win probability at 9,800 nodes a position, where a fixed limit gives 3.38 at 9,600:
+  more nodes for the same labels. Two moves as good make the best move unsure, but not
+  the score. The fixed limits: 3.86 at 3,600 nodes, 3.50 at 7,000 (the soft 5,000 of
+  `datagen`) and 3.21 at 13,500. On the local branch `exp/node-budget`, with a `label`
+  command that prints the labels of `datagen` for a file of positions.
 - **Evaluation terms** (bishop pair, doubled, isolated and passed pawns, pawn shield
   and open files next to the king): +75 ± 28 Elo against 0.5.0 at 10+0.1, SPRT [0, 10]
   passed in 456 games. Kept out on purpose: the plan is to see how far search goes
