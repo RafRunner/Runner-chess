@@ -24,7 +24,7 @@ const _: () = assert!(HIDDEN_SIZE as i64 * (QA * QA) as i64 * MAX_OUTPUT_WEIGHT 
 
 macro_rules! network_name {
     () => {
-        "net-009"
+        "net-010"
     };
 }
 pub const NETWORK_NAME: &str = network_name!();
@@ -447,32 +447,33 @@ mod tests {
         );
     }
 
-    /// `trainer/checkpoints/net-009-evals.txt`, before quantising
+    /// `trainer/checkpoints/net-010-evals.txt`, before quantising
     const TRAINER_EVALS: [(&str, f32); 9] = [
-        (Board::STARTPOS, 49.3),
+        (Board::STARTPOS, 56.2),
         (
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
-            -21.0,
+            -34.8,
         ),
-        (KIWIPETE, -287.9),
+        (KIWIPETE, -175.3),
         (
             "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
-            51.5,
+            39.7,
         ),
         (
             "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/2N5/PPPP1PPP/R1BQKBNR b KQkq - 2 3",
-            51.5,
+            39.7,
         ),
-        ("4k3/8/8/8/8/8/PPP5/4K2R w K - 0 1", 2407.5),
-        ("4k2r/ppp5/8/8/8/8/8/4K3 b k - 0 1", 2407.5),
+        ("4k3/8/8/8/8/8/PPP5/4K2R w K - 0 1", 3354.3),
+        ("4k2r/ppp5/8/8/8/8/8/4K3 b k - 0 1", 3354.3),
         // output buckets 4 and 0
-        ("r4rk1/pp3ppp/8/8/8/8/PP3PPP/R4RK1 w - - 0 1", 39.3),
-        ("8/8/8/4k3/8/8/2BN4/4K3 w - - 0 1", 83.7),
+        ("r4rk1/pp3ppp/8/8/8/8/PP3PPP/R4RK1 w - - 0 1", 48.3),
+        ("8/8/8/4k3/8/8/2BN4/4K3 w - - 0 1", 147.2),
     ];
 
-    /// Rounding net-009's weights moves these positions by up to 17.5, in the won rook
-    /// endings. It depends on the network: net-006's moved by up to 2.7
-    const QUANTISATION_ERROR: f32 = 20.0;
+    /// Rounding net-010's weights moves these positions by up to 20.3, toward the side to
+    /// move in the openings, the bucket of the full board, and by 6.3 at most elsewhere.
+    /// It depends on the network: net-009's moved by up to 17.5, net-006's by 2.7
+    const QUANTISATION_ERROR: f32 = 25.0;
 
     #[test]
     fn the_output_matches_the_trainer() {

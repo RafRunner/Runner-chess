@@ -175,12 +175,14 @@ million positions take 70 seconds, and over the 90 million of net-009, 10 minute
 Every network trains on the games of the current version and of the two before it,
 each generation half from random openings and half from `popularpos_lichess_v3.epd`,
 in `data/<version>-random/` and `data/<version>-book/`. From 1.5.0 on, a generation
-also has 5 million positions of attacks on the king, in `data/<version>-attack/`. For
-net-009:
+also has positions of attacks on the king, in `data/<version>-attack/`. From 1.7.0 on,
+generations are played on Spot instances of AWS, with `infra/` (see its README), 90
+million positions for about 2.80 dollars and 6 hours: 39 million of random openings,
+39 of the book and 12 of attacks, in `infra/worker/jobs/1.7.0.json`. For net-010:
 
 ```
-scripts/prepare-data.sh net-009 data/1.5.0-random data/1.5.0-book data/1.5.0-attack \
-    data/1.1.1-random data/1.1.1-book data/0.10.0-random data/0.10.0-book
+scripts/prepare-data.sh net-010 data/1.7.0-random data/1.7.0-book data/1.7.0-attack \
+    data/1.5.0-random data/1.5.0-book data/1.5.0-attack data/1.1.1-random data/1.1.1-book
 ```
 
 The labels of the older generations come from shallower searches of weaker versions,
@@ -190,6 +192,8 @@ Older games, like those of 0.8.2 with its hand-written evaluation, stay out. Nei
 the book nor the Syzygy tables go further than that: half the games from the book
 gained 28 Elo over random openings only, while endgames relabelled with the tables
 lost 10, the network learning wins of perfect play that the engine can't convert.
+With 90 million positions of the new generation, the older ones still help: see
+net-010.
 
 The games of attacks start with the kings castled on opposite wings, as in 1.8% of the
 positions of the other games, and where the network erred the most against Stockfish.
@@ -252,6 +256,32 @@ The same training without the attacks measured the same in all of them, and no m
 was played between the two: the gain of the new generation and that of the attacks
 can't be told apart. net-009's scores spread about 15% wider against Stockfish's than
 net-008's, so the margins of the search, in centipawns, prune a little more.
+
+### `net-010`
+
+The first generation played on AWS, 90 million positions of 1.7.0, against the window
+of before, three networks of net-009's kind on:
+
+- net-010-a: the 90 million of 1.7.0 alone;
+- net-010-b: 30 million of them, with 1.5.0 and 1.1.1, the window as it was, 95 million;
+- net-010-c: all 90 million, with 1.5.0 and 1.1.1, 156 million.
+
+Against Stockfish 19 on the 2934 positions, in its centipawns, with the correlation,
+and on the million positions of 1.2.0 against the result:
+
+| | static evaluation | kings on opposite wings | 5000 nodes | opposite wings | 1.2.0 |
+|---|---|---|---|---|---|
+| net-009 | 107, 0.632 | 129 | 91, 0.667 | 94 | 0.0761 |
+| net-010-a | 99, 0.660 | 113 | 88, 0.683 | 100 | 0.0758 |
+| net-010-b | 103, 0.645 | 122 | 89, 0.680 | 93 | 0.0756 |
+| net-010-c | 99, 0.661 | 111 | 85, 0.690 | 91 | 0.0751 |
+
+The new generation alone makes the better static evaluation, and the old positions on
+top of it the better one with a search: they still help. Against the scores of 1.2.0,
+all three are further than net-009 (0.0071, 0.0061 and 0.0062, against 0.0052), as they
+learned from the searches of a much newer engine. net-010-c became net-010: it gives
+1.13 times the scores of its data, and won by 64 Elo. Its scores spread about 30% wider
+against Stockfish's than net-009's.
 
 ## 5. In the engine
 

@@ -10,9 +10,9 @@ use crate::{
     square::Square,
 };
 
-/// net-009 gives about 1.19x the scores it learned from, as half of what it learned is
+/// net-010 gives about 1.13x the scores it learned from, as half of what it learned is
 /// the result of the game
-const NETWORK_INFLATION: i32 = 119;
+const NETWORK_INFLATION: i32 = 113;
 
 /// For the side to move: the network, except in dead positions
 pub fn evaluate(board: &Board, accumulators: &Accumulators) -> Score {
@@ -147,11 +147,12 @@ mod tests {
 
     #[test]
     fn any_extra_piece_is_an_advantage() {
-        // with a pawn on the board, since a lone minor piece is a dead draw
+        // with a pawn each: against a lone pawn, a minor piece is a draw, which the
+        // network knows
         for piece in ["P", "N", "B", "R", "Q"] {
             assert_better(
-                &format!("4k3/7p/8/8/8/3{piece}4/8/4K3 w - - 0 1"),
-                "4k3/7p/8/8/8/8/8/4K3 w - - 0 1",
+                &format!("4k3/7p/8/8/8/3{piece}4/P7/4K3 w - - 0 1"),
+                "4k3/7p/8/8/8/8/P7/4K3 w - - 0 1",
             );
         }
     }
