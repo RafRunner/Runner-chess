@@ -5,3 +5,8 @@ profile.json.gz
 /data
 /trainer/target
 /trainer/checkpoints
+/infra/node_modules
+/infra/cdk.out
+/infra/.build
+# the VPC lookups, with the IDs of the account
+/infra/cdk.context.json

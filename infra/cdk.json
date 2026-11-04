@@ -1,0 +1,7 @@
+{
+  "app": "npx tsx bin/infra.ts",
+  "context": {
+    "ref": "1.7.0",
+    "seconds": 300
+  }
+}
