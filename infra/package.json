@@ -5,9 +5,11 @@
   "scripts": {
     "cdk": "cdk",
     "typecheck": "tsc --noEmit",
-    "bench": "tsx bench/run.ts"
+    "bench": "tsx bench/run.ts",
+    "datagen": "tsx datagen/run.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-auto-scaling": "^3.1161.0",
     "@aws-sdk/client-cloudformation": "^3.1161.0",
     "@aws-sdk/client-ec2": "^3.1161.0",
     "@aws-sdk/client-s3": "^3.1161.0",

@@ -1,12 +1,10 @@
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { CfnOutput, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Asset } from 'aws-cdk-lib/aws-s3-assets';
 import type { Construct } from 'constructs';
+import { lookupVpc, sourceArchive, userData } from './source.ts';
 
 export interface BenchStackProps extends StackProps {
   /** The VPC the instances run in, the default one of the region without it */
@@ -26,11 +24,7 @@ export class BenchStack extends Stack {
   constructor(scope: Construct, id: string, props: BenchStackProps) {
     super(scope, id, props);
 
-    const vpc = ec2.Vpc.fromLookup(this, 'Vpc', props.vpcId ? { vpcId: props.vpcId } : { isDefault: true });
-    // with a public address, the instances reach rustup and S3 without a NAT gateway
-    if (vpc.publicSubnets.length === 0) {
-      throw new Error(`${vpc.vpcId} has no public subnet`);
-    }
+    const vpc = lookupVpc(this, props.vpcId);
     const securityGroup = new ec2.SecurityGroup(this, 'NoInbound', { vpc });
 
     const results = new s3.Bucket(this, 'Results', {
@@ -55,16 +49,17 @@ export class BenchStack extends Stack {
       }),
     );
 
-    const script = readFileSync(join(import.meta.dirname, '..', 'bench', 'instance.sh'), 'utf8')
-      .replaceAll('@SOURCE@', source.s3ObjectUrl)
-      .replaceAll('@RESULTS@', `s3://${results.bucketName}`)
-      .replaceAll('@SECONDS@', String(props.seconds));
+    const script = userData('bench/instance.sh', {
+      SOURCE: source.s3ObjectUrl,
+      RESULTS: `s3://${results.bucketName}`,
+      SECONDS: String(props.seconds),
+    });
 
     const cpus = { Arm: ec2.AmazonLinuxCpuType.ARM_64, X86: ec2.AmazonLinuxCpuType.X86_64 };
     for (const [name, cpuType] of Object.entries(cpus)) {
       const template = new ec2.LaunchTemplate(this, `${name}Template`, {
         machineImage: ec2.MachineImage.latestAmazonLinux2023({ cpuType }),
-        userData: ec2.UserData.custom(script),
+        userData: script,
         role,
         securityGroup,
         requireImdsv2: true,
@@ -82,14 +77,4 @@ export class BenchStack extends Stack {
     new CfnOutput(this, 'Subnets', { value: vpc.publicSubnets.map((s) => s.subnetId).join(',') });
     new CfnOutput(this, 'ResultsBucket', { value: results.bucketName });
   }
-}
-
-/** The committed code of `ref`, as a tarball for the instances to build */
-function sourceArchive(ref: string): string {
-  const repo = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
-  const dir = join(repo, 'infra', '.build');
-  mkdirSync(dir, { recursive: true });
-  const file = join(dir, `runner-chess-${ref}.tar.gz`);
-  execFileSync('git', ['-C', repo, 'archive', '--format=tar.gz', '-o', file, ref]);
-  return file;
 }

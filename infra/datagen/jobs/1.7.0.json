@@ -1,0 +1,19 @@
+{
+  "name": "1.7.0",
+  "chunk": 250000,
+  "parts": [
+    { "name": "random", "positions": 39000000, "nodes": 5000 },
+    {
+      "name": "book",
+      "positions": 39000000,
+      "nodes": 5000,
+      "book": "engines/books/popularpos_lichess_v3.epd"
+    },
+    {
+      "name": "attack",
+      "positions": 12000000,
+      "nodes": 10000,
+      "book": "data/attack-starts-1.7.0.epd"
+    }
+  ]
+}

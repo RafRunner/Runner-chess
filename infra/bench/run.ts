@@ -19,6 +19,7 @@ import {
   type _InstanceType,
 } from '@aws-sdk/client-ec2';
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
+import { type Cell, table } from '../lib/table.ts';
 
 const STACK = 'RunnerChessBench';
 // 4 vCPUs each, 20 together, within the smallest Spot quotas: a vCPU makes as many
@@ -195,20 +196,27 @@ async function spotPrices(type: string): Promise<Map<string, number>> {
 }
 
 function report(runs: Run[]) {
-  console.log('\n| type | arch | vCPUs | bench | positions/s | per vCPU | Spot $/h | $ per 100M |');
-  console.log('|---|---|---|---|---|---|---|---|');
-  for (const run of runs) {
-    if (run.error || !run.positionsPerSecond) {
-      console.log(`| ${run.type} | ${run.arch} | ${run.vcpus} | ${run.error ?? 'no rate'} | | | | |`);
-      continue;
-    }
-    const bench = run.benchNodes === EXPECTED_BENCH ? `${run.benchNodes}` : `**${run.benchNodes}**`;
-    const perVcpu = run.positionsPerSecond / run.vcpus;
-    const cost = run.spotPrice && (run.spotPrice * 1e8) / (run.positionsPerSecond * 3600);
-    console.log(
-      `| ${run.type} | ${run.arch} | ${run.vcpus} | ${bench} | ${run.positionsPerSecond} | ` +
-        `${perVcpu.toFixed(0)} | ${run.spotPrice?.toFixed(4) ?? '?'} | ${cost ? cost.toFixed(2) : '?'} |`,
-    );
+  const measured = runs.filter((run) => !run.error && run.positionsPerSecond);
+  const rows: Cell[][] = measured.map((run) => {
+    const rate = run.positionsPerSecond!;
+    const bench =
+      run.benchNodes === EXPECTED_BENCH ? run.benchNodes : `${run.benchNodes}, not ${EXPECTED_BENCH}`;
+    const cost = run.spotPrice && (run.spotPrice * 1e8) / (rate * 3600);
+    return [
+      run.type,
+      run.arch,
+      run.vcpus,
+      bench,
+      rate,
+      Math.round(rate / run.vcpus),
+      run.spotPrice?.toFixed(4),
+      cost?.toFixed(2),
+    ];
+  });
+  const headers = ['type', 'arch', 'vCPUs', 'bench', 'positions/s', 'per vCPU', 'Spot $/h', '$ per 100M'];
+  console.log(`\n${table(headers, rows, ['bench', 'Spot $/h', '$ per 100M'])}`);
+  for (const run of runs.filter((run) => !measured.includes(run))) {
+    console.log(`${run.type}: ${run.error ?? 'no rate in its results'}`);
   }
 }
 

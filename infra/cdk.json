@@ -2,6 +2,9 @@
   "app": "npx tsx bin/infra.ts",
   "context": {
     "ref": "1.7.0",
-    "seconds": 300
+    "seconds": 300,
+    "bench": 22792,
+    "workerTypes": "c8g.4xlarge,c7g.4xlarge",
+    "maxWorkers": 2
   }
 }
