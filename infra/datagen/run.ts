@@ -1,13 +1,15 @@
 /**
  * The datagen workers of RunnerChessDatagen, from here:
  *
- *   npm run datagen -- start <job file> [--workers <n>] [--hours <n>]
+ *   npm run datagen -- start <job file> [--workers <n>] [--hours <n>] [--name <job>]
  *   npm run datagen -- status
  *   npm run datagen -- stop
  *   npm run datagen -- fetch [<job>]
  *
  * `start` uploads the books of the job and the job itself, with a deadline, and asks for
- * the workers, every one the group can have by default. `fetch` downloads every chunk of
+ * the workers, every one the group can have by default, unless the bucket already has
+ * every position of the job. `--name` gives the job of the file another name, and so
+ * other chunks. `fetch` downloads every chunk of
  * a job, the current one by default, into data/<job>-<part>/, as the text of datagen.
  */
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs';
@@ -78,7 +80,9 @@ async function main() {
     case 'fetch':
       return fetch(bucket, args[0] ?? (await readJob(bucket)).name);
     default:
-      console.error('usage: npm run datagen -- start <job file> [--workers <n>] [--hours <n>]');
+      console.error(
+        'usage: npm run datagen -- start <job file> [--workers <n>] [--hours <n>] [--name <job>]',
+      );
       console.error('       npm run datagen -- status | stop | fetch [<job>]');
       process.exitCode = 1;
   }
@@ -91,9 +95,24 @@ async function start(bucket: string, group: string, args: string[]) {
   }
   const option = (name: string) => {
     const i = args.indexOf(`--${name}`);
-    return i < 0 ? undefined : Number(args[i + 1]);
+    return i < 0 ? undefined : args[i + 1];
   };
   const job: Job = JSON.parse(readFileSync(file, 'utf8'));
+  job.name = option('name') ?? job.name;
+
+  // the workers would only build the engine and leave
+  const missing = [];
+  for (const part of job.parts) {
+    const played = sum(await list(bucket, `${job.name}/${part.name}/`));
+    if (played < part.positions) {
+      missing.push(part.name);
+    }
+  }
+  if (missing.length === 0) {
+    console.log(`${job.name} already has every position: give it another --name to play again`);
+    return;
+  }
+
   for (const part of job.parts) {
     if (part.book) {
       const key = basename(part.book);
@@ -107,12 +126,12 @@ async function start(bucket: string, group: string, args: string[]) {
       part.book = key;
     }
   }
-  const hours = option('hours') ?? 24;
+  const hours = Number(option('hours') ?? 24);
   job.until = new Date(Date.now() + hours * 3_600_000).toISOString();
   job.stop = false;
   await writeJob(bucket, job);
 
-  const workers = option('workers') ?? (await describeGroup(group)).MaxSize!;
+  const workers = Number(option('workers') ?? (await describeGroup(group)).MaxSize!);
   await desire(group, workers);
   console.log(`${job.name}: ${workers} workers until ${local(job.until)}`);
 }

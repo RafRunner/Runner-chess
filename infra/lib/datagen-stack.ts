@@ -65,7 +65,7 @@ export class DatagenStack extends Stack {
       machineImage: ec2.MachineImage.latestAmazonLinux2023({
         cpuType: ec2.AmazonLinuxCpuType.ARM_64,
       }),
-      userData: userData('datagen/instance.sh', {
+      userData: userData('datagen/worker.py', {
         SOURCE: source.s3ObjectUrl,
         BUCKET: data.bucketName,
         BENCH: String(props.bench),

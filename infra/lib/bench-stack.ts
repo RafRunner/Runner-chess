@@ -49,9 +49,9 @@ export class BenchStack extends Stack {
       }),
     );
 
-    const script = userData('bench/instance.sh', {
+    const script = userData('bench/instance.py', {
       SOURCE: source.s3ObjectUrl,
-      RESULTS: `s3://${results.bucketName}`,
+      RESULTS: results.bucketName,
       SECONDS: String(props.seconds),
     });
 

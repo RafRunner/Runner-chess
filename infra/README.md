@@ -3,6 +3,11 @@
 AWS for runner-chess, with the CDK in TypeScript. A project of its own, so the engine
 stays without dependencies.
 
+What runs on the instances is Python, for the Python 3.9 of Amazon Linux 2023, and is
+their whole user data: `bench/instance.py` and `datagen/worker.py`. Each installs boto3
+from the image's packages, and leaves with the AWS CLI of the image, which works even
+when boto3 didn't install.
+
 ## The benchmark of instances
 
 How many positions a second `datagen` makes on each kind of instance, and what 100
@@ -71,7 +76,7 @@ all the positions of yet, and uploads the chunk as `<job>/<part>/<seed>-<positio
 
 ```
 npx cdk deploy RunnerChessDatagen     # -c maxWorkers=<n> once the quota allows more
-npm run datagen -- start datagen/jobs/smoke.json --workers 1 --hours 1
+npm run datagen -- start datagen/jobs/smoke.json --workers 1 --hours 1 --name smoke-2
 npm run datagen -- status             # positions by part, rate, workers
 npm run datagen -- fetch              # into ../data/<job>-<part>/, resumes
 npm run datagen -- stop

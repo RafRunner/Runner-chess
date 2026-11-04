@@ -1,6 +1,6 @@
 /**
  * Launches a Spot instance of each type given, or of DEFAULT_TYPES, from the launch
- * templates of RunnerChessBench, waits for what bench/instance.sh leaves in S3, and
+ * templates of RunnerChessBench, waits for what bench/instance.py leaves in S3, and
  * prints how many positions a second each made and what 100 million would cost at the
  * Spot price of its zone, the cheapest one with capacity, when it was launched.
  *
