@@ -78,12 +78,13 @@ Checked in the source of `bulletformat` and `bullet-utils`.
 One position per line:
 
 ```
-<FEN> | <score> | <result>
+<FEN>|<score>|<result>
 ```
 
 - The line gets split on `|`; the score and the result are trimmed, and the FEN gets
-  split on whitespace. So the spaces around `|` are optional: `<FEN>|35|1.0` reads the
-  same. Anything after a third `|` is ignored.
+  split on whitespace. So spaces around `|` are optional: `datagen` writes none, 4 bytes
+  less a line, but the generations before 1.8 have them, as `<FEN> | 35 | 1.0`, which
+  reads the same. Anything after a third `|` is ignored.
 - From the FEN only the pieces and the side to move are read. Castling, en passant and
   the clocks are ignored, so a full FEN does no harm. Any side other than `b` counts as
   White.
@@ -98,7 +99,7 @@ Example, for a position with White to move, 35 centipawns better for White, in a
 White went on to win:
 
 ```
-r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3 | 35 | 1.0
+r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3|35|1.0
 ```
 
 ### Binary (`ChessBoard`, "bulletformat")

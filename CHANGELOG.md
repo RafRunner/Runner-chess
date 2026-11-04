@@ -8,6 +8,16 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## Unreleased
+
+### Changed
+- `datagen` writes its lines as `<FEN>|<centipawns>|<result>`, without the spaces around
+  `|`: 4 bytes less a line, about 6% of the text. bullet reads both, and so does
+  `scripts/attack-starts.py`.
+
+### Measured
+- Bench: 22792 (unchanged).
+
 ## 1.7.0 - 2026-11-02
 
 ### Changed

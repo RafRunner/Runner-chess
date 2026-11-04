@@ -44,8 +44,9 @@ def main(out, popularpos, aggressive, dirs):
         before = len(starts)
         previous = False
         for line in open(path):
-            fen, score, _ = line.split(" | ")
-            fields = fen.split(" ")
+            # with or without the spaces around | of the generations before 1.8
+            fen, score, _ = line.split("|")
+            fields = fen.split()
             current = (opposite_castling(fields[0]) and int(fields[5]) <= MAX_MOVE
                        and abs(int(score)) <= MAX_SCORE)
             if current and not previous:

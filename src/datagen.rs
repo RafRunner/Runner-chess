@@ -3,7 +3,7 @@
 //! score of its search and the result of the game, both from White's point of view:
 //!
 //! ```text
-//! <FEN> | <centipawns> | <1.0, 0.5 or 0.0>
+//! <FEN>|<centipawns>|<1.0, 0.5 or 0.0>
 //! ```
 
 use std::{
@@ -210,7 +210,7 @@ fn play_games(
             continue;
         };
         for (fen, score) in &game.positions {
-            writeln!(out, "{fen} | {score} | {}", game.result.as_bullet())?;
+            writeln!(out, "{fen}|{score}|{}", game.result.as_bullet())?;
         }
         out.flush()?;
 
