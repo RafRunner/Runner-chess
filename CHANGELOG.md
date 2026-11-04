@@ -8,15 +8,36 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
-## Unreleased
+## 1.8.0 - 2026-11-04
 
 ### Changed
+- A network trained on the first generation played on AWS, `nets/net-010.bin`: the
+  games of 1.7.0, 90 million positions, with those of 1.5.0 and 1.1.1, 156 million, on
+  the same network as net-009. It gives 1.13 times the scores of its data.
 - `datagen` writes its lines as `<FEN>|<centipawns>|<result>`, without the spaces around
   `|`: 4 bytes less a line, about 6% of the text. bullet reads both, and so does
   `scripts/attack-starts.py`.
 
+### Added
+- `infra/`, a CDK project for AWS: Spot workers that play datagen jobs and SPRTs, and
+  a benchmark of instances, in `infra/README.md`.
+
 ### Measured
-- Bench: 22792 (unchanged).
+- Bench: 22710 (from 22792).
+- Strength: +63.5 ± 21.9 Elo against 1.7.0 at 10+0.1, an SPRT [0, 10] accepted after
+  354 games (104 wins, 40 losses, 210 draws), and no pair of games lost twice.
+- Against Stockfish 19 at depth 18, on the 2934 positions, in its centipawns: an error
+  of 99 as a static evaluation, from 107 with net-009, and of 85 at 5000 nodes, from
+  91. The networks of the same generation alone, net-010-a, and of the window as
+  before, net-010-b, measured worse with a search: see `docs/nnue.md`.
+- Quantisation: rounding the weights moves the output by up to 20.3 centipawns on the
+  reference positions, all of it toward the side to move in the openings, the bucket of
+  the full board, and 6.3 at most elsewhere.
+- The test that an extra piece is an advantage gives both sides a pawn: net-010 knows
+  that a lone minor piece against a pawn is a draw, as it is.
+- Generating data on AWS, 4 vCPUs each, built for their own CPU: 194 positions a second
+  a vCPU on Graviton4, 154 on Graviton3, 219 on Zen 4, against 345 a core of the M4, and
+  2.13 dollars for 100 million on Graviton3 or 4 at Spot prices.
 
 ## 1.7.0 - 2026-11-02
 
