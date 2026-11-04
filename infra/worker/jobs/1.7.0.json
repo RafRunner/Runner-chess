@@ -1,8 +1,15 @@
 {
+  "kind": "datagen",
   "name": "1.7.0",
+  "source": "1.7.0",
+  "bench": 22792,
   "chunk": 250000,
   "parts": [
-    { "name": "random", "positions": 39000000, "nodes": 5000 },
+    {
+      "name": "random",
+      "positions": 39000000,
+      "nodes": 5000
+    },
     {
       "name": "book",
       "positions": 39000000,

@@ -2,11 +2,12 @@
 """The user data of every instance of the benchmark, on Amazon Linux 2023 and its
 Python 3.9.
 
-Builds the engine for its own CPU, runs the search bench, plays datagen on every vCPU
-for SECONDS seconds, leaves the results in s3://RESULTS/<run>/<instance type>/ and
-terminates the instance, after 45 minutes at most whatever happens.
+Builds the engine of its Source tag, a key in the bucket, for its own CPU, runs the
+search bench, plays datagen on every vCPU for SECONDS seconds, leaves the results in
+s3://BUCKET/bench/<Run tag>/<instance type>/ and terminates the instance, after 45
+minutes at most whatever happens.
 
-The values in @ come from lib/bench-stack.ts.
+The value in @ comes from lib/runner-chess-stack.ts.
 """
 import datetime
 import os
@@ -16,9 +17,8 @@ import traceback
 import urllib.request
 from pathlib import Path
 
-RESULTS = "@RESULTS@"
-SOURCE = "@SOURCE@"
-SECONDS = int("@SECONDS@")
+BUCKET = "@BUCKET@"
+SECONDS = 300
 
 WORK = Path("/opt/bench")
 LOG = WORK / "instance.log"
@@ -31,12 +31,12 @@ def main():
     out = None
     try:
         # the tag that bench/run.ts gives every instance it launches together
-        out = f"{imds('tags/instance/Run')}/{imds('instance-type')}"
+        out = f"bench/{imds('tags/instance/Run')}/{imds('instance-type')}"
         run("dnf", "install", "-y", "gcc", "python3-boto3")
         import boto3
 
         s3 = boto3.client("s3", region_name=imds("placement/region"))
-        engine = build(s3)
+        engine = build(s3, imds("tags/instance/Source"))
 
         run("lscpu", output="lscpu.txt")
         run(engine, "bench", "search", output="bench.txt")
@@ -48,25 +48,24 @@ def main():
             log(f"datagen stopped after {SECONDS} s")  # every game it finished is kept
 
         for name in ["lscpu.txt", "bench.txt", "datagen.txt"]:
-            s3.upload_file(name, RESULTS, f"{out}/{name}")
-        s3.put_object(Bucket=RESULTS, Key=f"{out}/done", Body=b"done\n")
+            s3.upload_file(name, BUCKET, f"{out}/{name}")
+        s3.put_object(Bucket=BUCKET, Key=f"{out}/done", Body=b"done\n")
     except Exception:
         log(traceback.format_exc())
     finally:
         # with the CLI of the image, which works even when boto3 didn't install
         if out:
-            subprocess.run(["aws", "s3", "cp", str(LOG), f"s3://{RESULTS}/{out}/instance.log"])
+            subprocess.run(["aws", "s3", "cp", str(LOG), f"s3://{BUCKET}/{out}/instance.log"])
         subprocess.run(["shutdown", "-h", "now"])
 
 
-def build(s3):
-    """The engine of the ref, built with `-C target-cpu=native`"""
+def build(s3, key):
+    """The engine of the sources at `key`, built with `-C target-cpu=native`"""
     env = dict(os.environ, HOME="/root")
     run("sh", "-c", "curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs"
         " | sh -s -- -y --profile minimal", env=env)
 
-    bucket, key = SOURCE.removeprefix("s3://").split("/", 1)
-    s3.download_file(bucket, key, "source.tar.gz")
+    s3.download_file(BUCKET, key, "source.tar.gz")
     with tarfile.open("source.tar.gz") as source:
         source.extractall("src")
     run("/root/.cargo/bin/cargo", "build", "--release", cwd="src",

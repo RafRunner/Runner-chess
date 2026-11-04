@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["bin", "lib", "bench", "datagen"]
+  "include": ["bin", "lib", "bench", "worker"]
 }

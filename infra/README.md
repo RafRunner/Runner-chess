@@ -3,40 +3,103 @@
 AWS for runner-chess, with the CDK in TypeScript. A project of its own, so the engine
 stays without dependencies.
 
-What runs on the instances is Python, for the Python 3.9 of Amazon Linux 2023, and is
-their whole user data: `bench/instance.py` and `datagen/worker.py`. Each installs boto3
-from the image's packages, and leaves with the AWS CLI of the image, which works even
-when boto3 didn't install.
+`RunnerChess` is the one stack, and holds nothing that costs while idle:
+
+- a bucket for all of it, which `cdk destroy` keeps: `sources/` the engines the
+  instances build, `books/`, `job.json`, `datagen/`, `sprt/`, `bench/` and `logs/`;
+- an Auto Scaling group of Spot workers, c8g.4xlarge or c7g.4xlarge, 2 at most for the
+  Spot quota of 32 vCPUs, empty until a job asks for them;
+- a launch template per architecture for the benchmark of instances.
+
+The instances run Python, for the Python 3.9 of Amazon Linux 2023, as their whole user
+data: `worker/worker.py` and `bench/instance.py`. Each installs boto3 from the image's
+packages, and leaves with the AWS CLI of the image, which works even when boto3 didn't
+install. They build the engine for their own CPU, from a tarball that the scripts here
+upload to `sources/`: the committed code of a git ref, or the working tree as it is,
+`worktree`, a network not committed yet included. A new version needs no deploy.
+
+```
+npm install
+npx cdk bootstrap               # once per account and region
+npx cdk deploy RunnerChess      # -c vpcId=<id>, -c maxWorkers=<n>, -c workerTypes=...
+```
+
+The instances run in the public subnets of an existing VPC, the default one of the
+region unless `-c vpcId=<id>` says another, so they reach rustup and S3 without a NAT
+gateway. The region is the one of the AWS profile, or `AWS_REGION`.
+
+## Jobs
+
+The workers play one job at a time, `job.json` in the bucket, which they read again as
+they go: `stop`, or the deadline that every job gets, 24 hours by default, empties the
+group, and so does a worker that fails, since the one that would replace it would fail
+the same way. Every worker's log goes to `logs/<instance>.log`. A job doesn't begin
+while workers still play another, unless `--force`.
+
+```
+npm run job -- datagen worker/jobs/smoke.json --workers 1 --hours 1 --name smoke-2
+npm run job -- sprt worktree 1.7.0 --engine-name net-010-c
+npm run job -- status
+npm run job -- fetch                    # the current job, or: fetch <job>
+npm run job -- stop
+```
+
+### datagen
+
+A job file, as in `worker/jobs/`, has the source of the engine and the node count of
+its `bench search`, which every worker checks, the size of a chunk, and parts, each
+with its positions, its nodes a move and maybe a book, a path from the repository. Every
+worker plays, chunk after chunk, the first part that the bucket doesn't have all the
+positions of yet, and uploads the chunk as
+`datagen/<job>/<part>/<seed>-<positions>.txt.zst`:
+
+- a worker reclaimed by Spot loses only the chunk it was playing, about a minute and a
+  half of 250,000 positions, and the group replaces it with another;
+- the seed comes from the instance and the chunk, so no two chunks play the same games;
+- when every part has its positions, each worker leaves the group, one fewer each time.
+
+`fetch` downloads the chunks into `../data/<job>-<part>/`, as the text of datagen, and
+resumes. A job whose positions the bucket already has doesn't start: `--name` plays the
+same file as another job.
+
+The smoke job ran on 2026-11-04 on a c7g.4xlarge: a chunk of 250,000 positions every 100
+seconds, the first one 3 minutes after the start, building included, and 14.5 bytes a
+position compressed. Spot reclaimed the worker in the middle of the chunk of the attacks,
+and the group launched another 2 seconds later, which built the engine again, played
+that chunk and left: 1,259,936 positions, none malformed.
+
+### sprt
+
+A match of fastchess on one worker, as `scripts/match.sh --sprt` plays here: the engine
+against the baseline, git refs or `worktree`, from `8moves_v3.pgn`, until the SPRT
+[0, 10] decides, or `--bounds`. The worker builds both engines and fastchess 1.8.2, the
+version of the repository's SPRTs, and plays as many games at once as it has vCPUs but
+one. The time control, 10+0.1 or `--tc`, is the one of this computer: the worker scales
+it by how many fewer nodes a second the baseline searches there than here, measured by
+`bench search 17` of `engines/runner-chess-<baseline>`, or given as `--reference-nps`.
+
+The state of fastchess, its games and its output go to `sprt/<job>/` every minute, and
+fastchess saves its state every 10 games: the worker that replaces a reclaimed one
+resumes the match from there, with the time control it started with. `status` shows
+the last results, and `fetch` brings the games and the output to
+`../engines/games/<job>.pgn` and `.log`.
 
 ## The benchmark of instances
 
 How many positions a second `datagen` makes on each kind of instance, and what 100
-million would cost at the current Spot price. `RunnerChessBench` holds what the
-instances need, and nothing that costs while idle: a security group, a bucket for the
-results, a role, and a launch template per architecture. The instances run in the
-public subnets of an existing VPC, the default one of the region unless `-c
-vpcId=<id>` says another, so they reach rustup and S3 without a NAT gateway.
-`bench/run.ts` launches them, a Spot instance of each type, and each one:
-
-1. builds the committed code of a tag, 1.7.0 by default, with `-C target-cpu=native`;
-2. runs `bench search`, whose node count must be the same as on every other CPU;
-3. plays `datagen` on all its vCPUs for 300 seconds, from random openings;
-4. leaves the results in the bucket and terminates itself, after 45 minutes at most
-   whatever happens.
+million would cost at the current Spot price. `bench/run.ts` launches a Spot instance of
+each type, outside the group, in the zone where its type is cheapest, and each one
+builds the engine, runs `bench search`, whose node count must be the same on every CPU,
+plays `datagen` on all its vCPUs for 300 seconds, leaves the results under `bench/` and
+terminates itself, after 45 minutes at most whatever happens.
 
 ```
-npm install
-npx cdk bootstrap                 # once per account and region
-npx cdk deploy RunnerChessBench   # -c vpcId=<id>, -c ref=<tag>, -c seconds=<n>
-npm run bench                     # or: npm run bench -- c7g.4xlarge c7a.4xlarge
-npx cdk destroy RunnerChessBench  # deletes the results too
+npm run bench                   # or: npm run bench -- --source 1.7.0 c7g.4xlarge c7a.4xlarge
 ```
 
-The region is the one of the AWS profile, or `AWS_REGION`: us-east-1, us-east-2 and
-us-west-2 have every type and the lowest Spot prices, and each instance goes to the zone
-where its type is cheapest. The default types, five of 4 vCPUs, take 20 vCPUs of the
-Spot quota at once ("All Standard ... Spot Instance Requests" in Service Quotas, 32 on
-an account that never asked for more). The table goes to the console, and every run to
+The default types, five of 4 vCPUs, take 20 vCPUs of the Spot quota at once ("All
+Standard ... Spot Instance Requests" in Service Quotas, 32 on an account that never
+asked for more). The table goes to the console, and every run to
 `.build/bench-<run>.json`.
 
 ### Results
@@ -56,37 +119,3 @@ cores make 345 positions a second each.
 Graviton3 and 4 cost the same for the positions, and Graviton4 makes them in 20% less
 time. Zen 4 is the fastest core, by 13% over Graviton4, for 51% more an hour.
 
-## The generation of data
-
-`RunnerChessDatagen` is an Auto Scaling group of Spot workers, c8g.4xlarge or
-c7g.4xlarge, 2 at most for the Spot quota of 32 vCPUs, empty until a job asks for them,
-and a bucket for the data, which `cdk destroy` keeps. A job, as in `datagen/jobs/`, has
-parts, each with its positions, its nodes a move and maybe a book, and the size of a
-chunk. Every worker builds the engine for its own CPU, checks the node count of `bench
-search`, and then, chunk after chunk, plays the first part that the bucket doesn't have
-all the positions of yet, and uploads the chunk as `<job>/<part>/<seed>-<positions>.txt.zst`:
-
-- a worker reclaimed by Spot loses only the chunk it was playing, about a minute and a
-  half of 250,000 positions, and the group replaces it with another;
-- the seed comes from the instance and the chunk, so no two chunks play the same games;
-- when every part has its positions, each worker leaves the group, one fewer each time;
-- the job is read again before every chunk: `stop`, or the deadline that `start` sets,
-  empties the group at the next one, and so does a worker that fails, whose log is in
-  `logs/<instance>.log` as every worker's.
-
-```
-npx cdk deploy RunnerChessDatagen     # -c maxWorkers=<n> once the quota allows more
-npm run datagen -- start datagen/jobs/smoke.json --workers 1 --hours 1 --name smoke-2
-npm run datagen -- status             # positions by part, rate, workers
-npm run datagen -- fetch              # into ../data/<job>-<part>/, resumes
-npm run datagen -- stop
-```
-
-The workers play the tag of `-c ref`, and `-c bench` is its node count. The books of a
-job are paths from the repository, uploaded by `start`.
-
-The smoke job ran on 2026-11-04 on a c7g.4xlarge: a chunk of 250,000 positions every 100
-seconds, the first one 3 minutes after the start, building included, and 14.5 bytes a
-position compressed. Spot reclaimed the worker in the middle of the chunk of the attacks,
-and the group launched another 2 seconds later, which built the engine again, played
-that chunk and left: 1,259,936 positions, none malformed.
