@@ -10,9 +10,11 @@ use crate::{
     square::Square,
 };
 
-/// net-010 gives about 1.13x the scores it learned from, as half of what it learned is
-/// the result of the game
-const NETWORK_INFLATION: i32 = 113;
+/// On the positions of 1.2.0, net-012 gives 1.07x their scores, as part of what it
+/// learned is the result of the game, and net-010 gave 1.12x for a divisor of 1.13: so
+/// this keeps the scale of 1.8.0. On its own data it gives 0.88x, as 1.8.0 labelled
+/// wider than the results agree with
+const NETWORK_INFLATION: i32 = 108;
 
 /// For the side to move: the network, except in dead positions
 pub fn evaluate(board: &Board, accumulators: &Accumulators) -> Score {

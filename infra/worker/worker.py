@@ -76,7 +76,7 @@ def main():
         if job["kind"] == "datagen":
             datagen(s3, job, instance)
         elif job["kind"] == "sprt":
-            sprt(s3, job)
+            sprt(s3, job, instance)
         elif job["kind"] == "prepare":
             prepare(s3, job, instance)
         else:
@@ -213,7 +213,7 @@ def chunks(s3, prefix):
 # sprt
 
 
-def sprt(s3, job):
+def sprt(s3, job, instance):
     """The match of the job, from where the state in the bucket left it, if anywhere"""
     prefix = f"sprt/{job['name']}"
     engine = build(s3, job["engine"]["sourceKey"], "engine")
@@ -253,6 +253,7 @@ def sprt(s3, job):
         for path in (state, games, out):
             if path.exists():
                 s3.upload_file(str(path), BUCKET, f"{prefix}/{path.name}")
+        upload_log(instance)
 
     with out.open("a") as output:
         log(" ".join(map(str, command)))

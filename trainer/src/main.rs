@@ -1,8 +1,13 @@
 //! Trains the networks of runner-chess with bullet, from this directory:
 //!
 //! ```text
-//! cargo r -r -- <data> <net id> [superbatches] [wdl]
+//! cargo r -r -- <data> <net id> [superbatches] [wdl] [--king-buckets] [--wing-outputs]
 //! ```
+//!
+//! `--king-buckets` gives the first layer a set of weights for each region of the own
+//! king, `KING_BUCKETS`, with the board mirrored to keep that king on files a to d, and
+//! trains it with a factoriser. `--wing-outputs` doubles the output buckets, for kings on
+//! the same wing or on opposite ones.
 //!
 //! `<data>` is a file made by `scripts/prepare-data.sh`. The checkpoints go to
 //! `checkpoints/<net id>-<superbatch>/`, where `quantised.bin` is the network the
@@ -13,8 +18,14 @@
 use std::{fs, path::Path};
 
 use bullet::{
-    game::{inputs::Chess768, outputs::MaterialCount},
-    nn::optimiser::AdamW,
+    game::{
+        inputs::{Chess768, ChessBucketsMirrored},
+        outputs::MaterialCount,
+    },
+    nn::{
+        InitSettings, Shape,
+        optimiser::{AdamW, AdamWParams},
+    },
     trainer::{
         save::SavedFormat,
         schedule::{TrainingSchedule, TrainingSteps, lr, wdl},
@@ -22,14 +33,9 @@ use bullet::{
     },
     value::{ValueTrainerBuilder, loader::DirectSequentialDataLoader},
 };
-
-// the engine's inference has to match these
-const HIDDEN_SIZE: usize = 256;
-/// The output layer of a position is the one of its bucket: (pieces - 2) / 4
-const OUTPUT_BUCKETS: usize = 8;
-const SCALE: i32 = 400;
-const QA: i16 = 255;
-const QB: i16 = 64;
+use trainer::{
+    HIDDEN_SIZE, INPUT_BUCKETS, KING_BUCKETS, MaterialAndWings, OUTPUT_BUCKETS, QA, QB, SCALE,
+};
 
 const BATCH_SIZE: usize = 16_384;
 /// A position in bullet's binary format
@@ -53,10 +59,13 @@ const REFERENCE_FENS: [&str; 9] = [
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let king_buckets = args.iter().any(|a| a == "--king-buckets");
+    let wing_outputs = args.iter().any(|a| a == "--wing-outputs");
+    let args: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
     let (data, net_id) = match &args[..] {
         [data, net_id, ..] => (data.as_str(), net_id.as_str()),
         _ => {
-            eprintln!("usage: cargo r -r -- <data> <net id> [superbatches] [wdl]");
+            eprintln!("usage: cargo r -r -- <data> <net id> [superbatches] [wdl] [--king-buckets] [--wing-outputs]");
             std::process::exit(1);
         }
     };
@@ -65,33 +74,6 @@ fn main() {
 
     let positions = fs::metadata(data).expect("the data file").len() / POSITION_BYTES;
     let batches_per_superbatch = (positions as usize / BATCH_SIZE).max(1);
-
-    let mut trainer = ValueTrainerBuilder::default()
-        .dual_perspective()
-        .optimiser(AdamW)
-        .inputs(Chess768)
-        .output_buckets(MaterialCount::<OUTPUT_BUCKETS>)
-        .save_format(&[
-            SavedFormat::id("l0w").round().quantise::<i16>(QA),
-            SavedFormat::id("l0b").round().quantise::<i16>(QA),
-            // a bucket's weights next to each other, as the engine reads them
-            SavedFormat::id("l1w")
-                .round()
-                .quantise::<i16>(QB)
-                .transpose(),
-            SavedFormat::id("l1b").round().quantise::<i16>(QA * QB),
-        ])
-        // the target is wdl * result + (1 - wdl) * sigmoid(score / SCALE)
-        .loss_fn(|output, target| output.sigmoid().squared_error(target))
-        .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
-            let l0 = builder.new_affine("l0", 768, HIDDEN_SIZE);
-            let l1 = builder.new_affine("l1", 2 * HIDDEN_SIZE, OUTPUT_BUCKETS);
-
-            let stm_hidden = l0.forward(stm_inputs).screlu();
-            let ntm_hidden = l0.forward(ntm_inputs).screlu();
-            l1.forward(stm_hidden.concat(ntm_hidden))
-                .select(output_buckets)
-        });
 
     let initial_lr = 0.001;
     let schedule = TrainingSchedule {
@@ -113,24 +95,97 @@ fn main() {
         },
         save_rate: 10,
     };
-
     let settings = LocalSettings {
         threads: 2,
         test_set: None,
         output_directory: CHECKPOINTS,
         batch_queue_size: 32,
     };
-
     let loader = DirectSequentialDataLoader::new(&[data]);
-    trainer.run(&schedule, &settings, &loader);
 
-    let evals: String = REFERENCE_FENS
-        .iter()
-        .map(|fen| {
-            let centipawns = trainer.eval_raw_output(fen)[0] * SCALE as f32;
-            format!("{fen} | {centipawns:.1}\n")
-        })
-        .collect();
+    // the builder's types change with the inputs and the outputs, hence a macro
+    macro_rules! train {
+        ($inputs:expr, $buckets:expr, $outputs:expr, $output_buckets:expr) => {{
+            let input_buckets: usize = $buckets;
+            let mut trainer = ValueTrainerBuilder::default()
+                .dual_perspective()
+                .optimiser(AdamW)
+                .inputs($inputs)
+                .output_buckets($outputs)
+                .save_format(&[
+                    // the factoriser added to every bucket
+                    SavedFormat::id("l0w")
+                        .transform(move |store, weights| {
+                            if input_buckets == 1 {
+                                return weights;
+                            }
+                            let factoriser = store.get("l0f").values.f32().repeat(input_buckets);
+                            weights.into_iter().zip(factoriser).map(|(a, b)| a + b).collect()
+                        })
+                        .round()
+                        .quantise::<i16>(QA),
+                    SavedFormat::id("l0b").round().quantise::<i16>(QA),
+                    // a bucket's weights next to each other, as the engine reads them
+                    SavedFormat::id("l1w")
+                        .round()
+                        .quantise::<i16>(QB)
+                        .transpose(),
+                    SavedFormat::id("l1b").round().quantise::<i16>(QA * QB),
+                ])
+                // the target is wdl * result + (1 - wdl) * sigmoid(score / SCALE)
+                .loss_fn(|output, target| output.sigmoid().squared_error(target))
+                .build(|builder, stm_inputs, ntm_inputs, output_buckets| {
+                    let mut l0 = builder.new_affine("l0", 768 * input_buckets, HIDDEN_SIZE);
+                    if input_buckets > 1 {
+                        let l0f = builder.new_weights("l0f", Shape::new(HIDDEN_SIZE, 768), InitSettings::Zeroed);
+                        l0.weights = l0.weights + l0f.repeat(input_buckets);
+                    }
+                    let l1 = builder.new_affine("l1", 2 * HIDDEN_SIZE, $output_buckets);
+
+                    let stm_hidden = l0.forward(stm_inputs).screlu();
+                    let ntm_hidden = l0.forward(ntm_inputs).screlu();
+                    l1.forward(stm_hidden.concat(ntm_hidden))
+                        .select(output_buckets)
+                });
+            if input_buckets > 1 {
+                // a bucket's weights and the factoriser's add up, and must stay in the
+                // usual bounds together
+                let clipping = AdamWParams {
+                    max_weight: 0.99,
+                    min_weight: -0.99,
+                    ..Default::default()
+                };
+                trainer.optimiser.set_params_for_weight("l0w", clipping);
+                trainer.optimiser.set_params_for_weight("l0f", clipping);
+            }
+
+            trainer.run(&schedule, &settings, &loader);
+            REFERENCE_FENS
+                .iter()
+                .map(|fen| {
+                    let centipawns = trainer.eval_raw_output(fen)[0] * SCALE as f32;
+                    format!("{fen} | {centipawns:.1}\n")
+                })
+                .collect::<String>()
+        }};
+    }
+
+    let evals = match (king_buckets, wing_outputs) {
+        (false, false) => train!(Chess768, 1, MaterialCount::<OUTPUT_BUCKETS>, OUTPUT_BUCKETS),
+        (false, true) => train!(Chess768, 1, MaterialAndWings, 2 * OUTPUT_BUCKETS),
+        (true, false) => train!(
+            ChessBucketsMirrored::new(KING_BUCKETS),
+            INPUT_BUCKETS,
+            MaterialCount::<OUTPUT_BUCKETS>,
+            OUTPUT_BUCKETS
+        ),
+        (true, true) => train!(
+            ChessBucketsMirrored::new(KING_BUCKETS),
+            INPUT_BUCKETS,
+            MaterialAndWings,
+            2 * OUTPUT_BUCKETS
+        ),
+    };
     print!("{evals}");
     fs::write(
         Path::new(CHECKPOINTS).join(format!("{net_id}-evals.txt")),

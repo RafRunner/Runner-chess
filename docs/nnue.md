@@ -140,17 +140,28 @@ its own, so the engine stays without dependencies, and pins bullet to a commit.
 
 ```
 scripts/prepare-data.sh <name> <.txt files or directories>...   # data/<name>.data
-scripts/train.sh data/<name>.data <net id> [superbatches] [wdl]
+scripts/train.sh data/<name>.data <net id> [superbatches] [wdl] [--king-buckets] [--wing-outputs]
 ```
 
-`scripts/train.sh` runs `cargo r -r -- ../data/<name>.data <net id> [superbatches] [wdl]`
-in `trainer/`, and keeps its output in `trainer/checkpoints/<net id>.log`.
+`scripts/train.sh` runs `cargo r -r -- ../data/<name>.data <net id> [superbatches] [wdl]
+[flags]` in `trainer/`, and keeps its output in `trainer/checkpoints/<net id>.log`.
+net-012 came from `scripts/train.sh data/net-011.data net-012 30 0.3 --king-buckets`.
 
 - **Network**: `(768 -> 256)x2 -> 1x8` with SCReLU, as bullet's `examples/simple`
   with the output buckets of its `progression/2_output_buckets`: 8 output layers, and
   each position uses the one of its bucket, `(pieces - 2) / 4`, from the kings alone to
   the full board. The weights of the hidden layer are quantised by `QA = 255`, those of
-  the output by `QB = 64`, and the eval scale is 400.
+  the output by `QB = 64`, and the eval scale is 400. The shape is in
+  `trainer/src/lib.rs`, which `validate` shares.
+- **`--king-buckets`**: `(768x4hm -> 256)x2`, bullet's `ChessBucketsMirrored` as in its
+  `progression/3_input_buckets`: each view mirrors the board to keep its own king on
+  files a to d, and has a first layer for each of 4 regions of it, `KING_BUCKETS`:
+  castled in the corner (a and b), at home in the middle (c and d), on the second rank,
+  further up. A factoriser, weights shared by the 4 and added to each when saving, lets
+  a bucket learn only how it differs; with it, a bucket's weights and the factoriser's
+  get clipped to ±0.99, so that their sum stays in the usual ±1.98.
+- **`--wing-outputs`**: 16 output buckets, the 8 of material for the kings on the same
+  wing, a to d or e to h, and 8 more for kings on opposite wings. Measured neutral.
 - **Schedule**: every superbatch is one pass over the data, 30 by default, with the
   learning rate decaying as a cosine from 0.001 to 0.001 x 0.3^5. The target is
   `wdl x result + (1 - wdl) x sigmoid(score / 400)`, with `wdl = 0.5` by default.
@@ -162,10 +173,18 @@ in `trainer/`, and keeps its output in `trainer/checkpoints/<net id>.log`.
   of a few positions, in `f32`, for the engine's inference to be compared with.
 - **Backend**: Metal by default, `--no-default-features --features cuda` on NVIDIA.
 - bullet doesn't implement a validation set yet: it prints a warning when given one.
-  `cargo r -r --bin validate -- checkpoints/<net id>-30 ../data/<name>.data` gives the
-  loss of a network on any data, and how many times bigger its scores are than the
-  data's. On the network's own training data, that's the inflation the engine divides
-  its output by (`NETWORK_INFLATION`).
+  `cargo r -r --bin validate -- checkpoints/<net id>-30 ../data/<name>.data [flags]`
+  gives the loss of a network on any data, against the result and against the score
+  apart, and how many times bigger its scores are than the data's, from which the
+  engine's `NETWORK_INFLATION` comes. It reads `quantised.bin`, the network the engine
+  plays, since `raw.bin` lacks the factoriser; with `--fen <fen>` instead of the data,
+  it gives one position's score, to check the engine's inference against.
+- **Validation data**: `data/validation-1.8.0.data`, 4 million positions of 1.8.0 that
+  no network trained on, played on AWS as the job `val-1.8.0` and prepared there (25%
+  of attacks, against 13% in a generation: the parts were smaller than 4 workers'
+  chunks). Next to the loss on 2 million positions of the network's own training data,
+  it says how much a network learned by heart. `data/validation-1.2.0.data`, a million
+  positions of 1.2.0, gives the scale of a network against fixed scores.
 
 On an M4 Pro, training goes at about 4.6 million positions a second: 30 passes over 10
 million positions take 70 seconds, and over the 90 million of net-009, 10 minutes.
@@ -293,12 +312,95 @@ learned from the searches of a much newer engine. net-010-c became net-010: it g
 1.13 times the scores of its data, and won by 64 Elo. Its scores spread about 30% wider
 against Stockfish's than net-009's.
 
+### `net-011`
+
+The first window of 200 million positions of one generation: the 203 million of 1.8.0,
+played on AWS in 6 hours 22 minutes, with the 91 million of 1.7.0 and the 35 million of
+1.5.0, 329 million, against the 203 million of 1.8.0 alone:
+
+| | static evaluation | kings on opposite wings | 5000 nodes | opposite wings | 1.2.0 |
+|---|---|---|---|---|---|
+| net-010 | 99, 0.661 | 111 | 85, 0.690 | 91 | 0.0751 |
+| net-011, 329 million | 92, 0.685 | 102 | 82, 0.710 | 84 | 0.0735 |
+| 1.8.0 alone, 203 million | 95, 0.676 | 109 | 82, 0.705 | 85 | 0.0732 |
+
+The older generations still helped: against 1.8.0, net-011 won by 35 Elo (+35.2 ± 15.3,
+654 games), the network of 1.8.0 alone by 14 (+13.8 ± 16.7 in 580 games, stopped). Yet
+twice the data of net-010 barely moved the loss of training, 0.02057 against 0.02013:
+256 neurons on one set of inputs is about as much as these networks learn from it.
+
+On its own data, net-011 gives 0.90 times the scores, the first network under 1: the
+searches of 1.8.0, with net-010's wider scale, label wider than the results agree with.
+On the fixed million positions of 1.2.0 it gives 1.12 times, as net-010, so the engine
+keeps dividing by 1.13.
+
+### What next: a bigger network
+
+From the cheapest to the dearest, what gives the network more to learn with:
+
+1. **Horizontal mirroring**: every view seen with its own king on files a to d, the
+   board mirrored otherwise. No new weights: what the network learns of one wing serves
+   the other. The accumulator of a view gets refreshed when its king crosses the middle,
+   seldom. The ground for king buckets.
+2. **Output buckets by where the kings are**: the 8 buckets of material twice, kings on
+   the same wing or on opposite ones, 16 output layers. Only the output grows, so the
+   engine stays as fast and no accumulator changes; aimed at the opposite wings, where
+   the error against Stockfish is still the largest. Little new capacity.
+3. **Input buckets by the square of the king**: a first layer for each region of the own
+   king, mirrored, 4 of them for a start. Where engines gain the most once data
+   abounds, at the cost of a refresh of the view whose king changes region. Trained with
+   a factoriser, weights shared by every bucket and added to each when saving, so that a
+   bucket only learns how it differs and 329 million positions are enough; it costs
+   nothing at inference.
+4. **A wider hidden layer**, 384 or 512 neurons: the simplest change to the trainer, and
+   nodes a second lost about in proportion, some 30 to 40% at 512. At 512, the sum of the
+   output layer no longer fits an `i32` with output weights up to 127 (512 x 255² x 127
+   > 2³¹): they would have to stay under 63, or be summed otherwise.
+5. **More layers**, as `-> 16 -> 32 -> 1`: what the strongest engines play, and the most
+   work, of quantisation and inference, wanting more data again.
+
+2 and 3 were tried first, each against net-011 on its 329 million positions: see
+net-012.
+
+### `net-012`
+
+net-011's 329 million positions, against net-011, with the losses of `validate` on
+validation-1.8.0 (total, against the result, against the score), the gap between it
+and 2 million positions of the training data, and the error against Stockfish at 5000
+nodes:
+
+| | validation-1.8.0 | gap | 5000 nodes | against net-011 |
+|---|---|---|---|---|
+| net-011 | 0.02103, 0.06877, 0.00648 | 0.00047 | 82, 0.710 | |
+| wing outputs | 0.02106, 0.06875, 0.00655 | 0.00048 | 80, 0.715 | +4.6 ± 20.8, 300 games, stopped |
+| 4 king buckets | 0.02087, 0.06818, 0.00675 | 0.00100 | 75, 0.754 | 0.0 ± 22.6, 342 games, stopped |
+| net-011, wdl 0.3 | 0.02131, 0.07047, 0.00533 | 0.00048 | | |
+| 4 king buckets, wdl 0.3 | 0.02088, 0.06974, 0.00521 | 0.00078 | 77, 0.740 | +27.4 ± 13.7, H1 in 888 games |
+
+The output buckets by wing changed nothing. The king buckets fitted the data far
+better, and doubled the gap: with half the target the result of the game, which ~89
+positions of a game share, their capacity went to learning the results of these games,
+and they fitted the score of the search, what the search plays on, worse than net-011.
+With `wdl = 0.3`, the score weighs more, and the error against it fell by a fifth.
+Lowering `wdl` alone does most of that; the buckets on top improve both parts, and won
+by 31.9 ± 14.2 against net-011 with `wdl = 0.3` (H1 in 700 games). Against 1.8.0,
+net-012 won by 86 Elo (+86.4 ± 24.6, 320 games on AWS), at some 5 to 7% fewer nodes a
+second.
+
+Other engines that document it found 4 mirrored buckets neutral at 150 million
+positions and worth it from about 300 million, and use 1 to 3 billion for 8 or 10:
+the gap of net-012 says more data would help it too.
+
 ## 5. In the engine
 
 - **Inputs**: for each side's view, `(own piece ? 0 : 384) + 64 x kind + square`, with
   the kinds in the order P N B R Q K and the square from a1 = 0, flipped (`^ 56`) for
-  Black's view.
+  Black's view. With king buckets, `768 x bucket + (input ^ 7)` when the view's king
+  is on files e to h, `^ 7` mirroring the file, and the bucket that of its king's
+  square seen from its side.
 - **Accumulator**: for each view, the bias plus the column of every input on the board.
+  A move that takes a view's king into another bucket, or across the middle, refreshes
+  that view from the board, rarely enough not to need a cache.
 - **Output**, for the side to move:
   `(sum(screlu(us) x w[b][..256]) + sum(screlu(them) x w[b][256..])) / QA + bias[b]`,
   times the scale, divided by `QA x QB`, where `screlu(x) = clamp(x, 0, QA)^2` and `b`

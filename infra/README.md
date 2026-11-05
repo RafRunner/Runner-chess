@@ -67,6 +67,10 @@ positions of yet, and uploads the chunk as
 - the seed comes from the instance and the chunk, so no two chunks play the same games;
 - when every part has its positions, each worker leaves the group, one fewer each time.
 
+A worker that starts a chunk plays it to the end, so a part overshoots by up to a chunk
+for each worker: `val-1.8.0.json`, 2 million positions in parts of a few chunks, got 4
+million on 4 workers. Small jobs want `--workers 1`.
+
 `fetch` downloads the chunks into `../data/<job>-<part>/`, as the text of datagen, and
 resumes. A job whose positions the bucket already has doesn't start: `--name` plays the
 same file as another job.

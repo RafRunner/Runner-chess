@@ -341,7 +341,7 @@ impl<'search> Searcher<'search> {
     }
 
     fn enter(&mut self, parent: &Board, child: &NodeInfo<'_>, mv: Option<Move>) {
-        self.accumulators.push(parent, mv);
+        self.accumulators.push(parent, child.board, mv);
         self.push_hash(child.board.hash());
     }
 
@@ -751,7 +751,8 @@ mod tests {
         // Nxa8 follows, which standing pat on the static eval would miss. The pawns keep
         // the knight from being a dead draw afterwards
         for fen in both_colors("r3k3/2N4p/8/8/8/8/7P/7K b - - 0 1") {
-            assert!(static_eval(&board(&fen)) > Score::new(100), "{fen}");
+            // a network may see some of the fork, but not all
+            assert!(static_eval(&board(&fen)) > Score::DRAW, "{fen}");
             assert!(node_score(&fen, 0) < Score::new(-100), "{fen}");
         }
     }
