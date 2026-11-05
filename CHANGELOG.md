@@ -8,6 +8,48 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.9.0 - 2026-11-05
+
+### Changed
+- A network with king buckets, `nets/net-012.bin`, `(768x4hm -> 256)x2 -> 1x8`: each
+  view mirrors the board to keep its own king on files a to d, and has a first layer
+  for each of 4 regions of it, castled in the corner, at home in the middle, on the
+  second rank, further up. A view refreshes when its king changes region. Trained with
+  a factoriser on 329 million positions, the 203 million of 1.8.0 played on AWS with
+  those of 1.7.0 and 1.5.0, and with `wdl = 0.3`, the score of the search weighing more
+  than the result of the game. The engine divides its output by 1.08, from 1.13, to keep
+  the scale of 1.8.0.
+
+### Added
+- The trainer's `--king-buckets` and `--wing-outputs`, and the engine's `KING_BUCKETS`
+  and `WING_OUTPUTS`; `validate` reads `quantised.bin`, takes the same flags, and gives
+  one position's score with `--fen`.
+- `data/validation-1.8.0.data`, 4 million positions of 1.8.0 that no network trained on.
+- `infra/`: a prepare job that makes the training data on a worker, `prepare` and
+  `fetch` for it, and `upload` for generations played here; the worker's user data goes
+  gzipped, past the 16 KB limit, and its log reaches the bucket during an SPRT too.
+
+### Measured
+- Bench: 22463 (from 22710).
+- Strength: +86.4 ± 24.6 Elo against 1.8.0, an SPRT [0, 10] accepted after 320 games
+  (114 wins, 36 losses, 170 draws) on a c7g.4xlarge at 20.4+0.20, 10+0.1 here scaled by
+  its speed.
+- Along the way, at 10+0.1 here: net-011, the same data on net-010's network, +35.2 ±
+  15.3 against 1.8.0 (654 games); net-012 +27.4 ± 13.7 against net-011 (888 games), and
+  +31.9 ± 14.2 against net-011 trained with `wdl = 0.3`, the gain of the buckets alone
+  (700 games).
+- Tried and left out: 16 output buckets by the wings of the kings, +4.6 ± 20.8 in 300
+  games; the king buckets with `wdl = 0.5`, 0.0 ± 22.6 in 342 games; the 203 million
+  positions of 1.8.0 alone, +13.8 ± 16.7 against 1.8.0 in 580 games. See
+  `docs/nnue.md`.
+- Against Stockfish 19 at depth 18, on the 2934 positions: an error of 90 as a static
+  evaluation, from 99, and of 77 at 5000 nodes, from 85. On validation-1.8.0, an error
+  against the score of the search of 0.00521, from net-011's 0.00648.
+- Quantisation moves the output by up to 10.1 centipawns on the reference positions,
+  from 20.3; the test allows 1% of the score in the won endgames.
+- A search test's threshold on the static evaluation of a fork became "above a draw":
+  net-012 sees some of the fork already.
+
 ## 1.8.0 - 2026-11-04
 
 ### Changed
