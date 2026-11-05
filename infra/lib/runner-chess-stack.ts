@@ -1,10 +1,10 @@
-import { CfnOutput, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
+import { CfnOutput, RemovalPolicy, Stack, type StackProps, Tags } from 'aws-cdk-lib';
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import type { Construct } from 'constructs';
-import { lookupVpc, userData } from './stack-helpers.ts';
+import { gzippedUserData, lookupVpc, userData } from './stack-helpers.ts';
 
 export interface RunnerChessStackProps extends StackProps {
   /** The VPC the instances run in, the default one of the region without it */
@@ -19,7 +19,8 @@ export interface RunnerChessStackProps extends StackProps {
  * Everything of runner-chess on AWS, and nothing that costs while idle:
  *
  * - a bucket for all of it, which outlives the stack: the sources the instances build,
- *   books, the job, the data of datagen, the state of SPRTs and the benchmarks;
+ *   books, the job, the data of datagen, the training data prepared from it, the state
+ *   of SPRTs and the benchmarks;
  * - an empty group of Spot workers, that play the job of `job.json` when
  *   `worker/run.ts` asks for them, and empty the group again when it ends, by its
  *   deadline at the latest, or when one of them fails;
@@ -57,12 +58,29 @@ export class RunnerChessStack extends Stack {
       machineImage: ec2.MachineImage.latestAmazonLinux2023({
         cpuType: ec2.AmazonLinuxCpuType.ARM_64,
       }),
-      userData: userData('worker/worker.py', { BUCKET: bucket.bucketName }),
       role: workerRole,
       securityGroup,
       requireImdsv2: true,
+      // the worker reads its Bucket tag
+      instanceMetadataTags: true,
       instanceInitiatedShutdownBehavior: ec2.InstanceInitiatedShutdownBehavior.TERMINATE,
+      // a prepare job holds its data twice, 20 GB for 325 million positions
+      blockDevices: [
+        {
+          deviceName: '/dev/xvda',
+          volume: ec2.BlockDeviceVolume.ebs(64, {
+            volumeType: ec2.EbsDeviceVolumeType.GP3,
+            deleteOnTermination: true,
+          }),
+        },
+      ],
     });
+
+    // gzipped, and so without the bucket's name in it, which a tag gives instead
+    (workerTemplate.node.defaultChild as ec2.CfnLaunchTemplate).addPropertyOverride(
+      'LaunchTemplateData.UserData',
+      gzippedUserData('worker/worker.py'),
+    );
 
     // no desired capacity here, or every deploy would reset it
     const workers = new autoscaling.AutoScalingGroup(this, 'Workers', {
@@ -82,6 +100,7 @@ export class RunnerChessStack extends Stack {
         },
       },
     });
+    Tags.of(workers).add('Bucket', bucket.bucketName);
     // a policy of its own: in the role's default one, the group would depend on itself
     new iam.Policy(this, 'LeaveTheGroup', {
       roles: [workerRole],

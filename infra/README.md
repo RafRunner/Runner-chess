@@ -6,9 +6,11 @@ stays without dependencies.
 `RunnerChess` is the one stack, and holds nothing that costs while idle:
 
 - a bucket for all of it, which `cdk destroy` keeps: `sources/` the engines the
-  instances build, `books/`, `job.json`, `datagen/`, `sprt/`, `bench/` and `logs/`;
-- an Auto Scaling group of Spot workers, c8g.4xlarge or c7g.4xlarge, 2 at most for the
-  Spot quota of 32 vCPUs, empty until a job asks for them;
+  instances build, `books/`, `job.json`, `datagen/`, `prepared/`, `sprt/`, `bench/` and
+  `logs/`;
+- an Auto Scaling group of Spot workers, c8g, m8g, c7g or m7g.4xlarge, where the m ones
+  are the same Graviton4 and 3 with more memory, 4 at most for a Spot quota of 64 vCPUs,
+  empty until a job asks for them;
 - a launch template per architecture for the benchmark of instances.
 
 The instances run Python, for the Python 3.9 of Amazon Linux 2023, as their whole user
@@ -17,6 +19,11 @@ packages, and leaves with the AWS CLI of the image, which works even when boto3 
 install. They build the engine for their own CPU, from a tarball that the scripts here
 upload to `sources/`: the committed code of a git ref, or the working tree as it is,
 `worktree`, a network not committed yet included. A new version needs no deploy.
+
+User data has 16 KB at most, which `worker/worker.py` is past: the stack gives it
+gzipped, which cloud-init decompresses, and so without the bucket's name written in it,
+the worker reads its `Bucket` tag instead. A worker has a disk of 64 GB, for the data a
+prepare job holds twice.
 
 ```
 npm install
@@ -39,6 +46,8 @@ while workers still play another, unless `--force`.
 ```
 npm run job -- datagen worker/jobs/smoke.json --workers 1 --hours 1 --name smoke-2
 npm run job -- sprt worktree 1.7.0 --engine-name net-010-c
+npm run job -- prepare net-011 1.8.0 1.7.0 1.5.0
+npm run job -- upload 1.5.0 ../data/1.5.0-random ../data/1.5.0-book
 npm run job -- status
 npm run job -- fetch                    # the current job, or: fetch <job>
 npm run job -- stop
@@ -67,6 +76,29 @@ seconds, the first one 3 minutes after the start, building included, and 14.5 by
 position compressed. Spot reclaimed the worker in the middle of the chunk of the attacks,
 and the group launched another 2 seconds later, which built the engine again, played
 that chunk and left: 1,259,936 positions, none malformed.
+
+### prepare
+
+The training data of `../trainer/`, on one worker, as `../scripts/prepare-data.sh`
+makes it here: the chunks of the datagen jobs given, or of parts of them as
+`<job>/<part>`, each converted to bullet's binary format by the `bullet-utils` of the
+commit `../trainer/Cargo.toml` names, put together and shuffled in memory, into
+`prepared/<name>.data`, with `prepared/<name>.json` telling how many positions it has.
+It takes twice the data on disk and 4/3 of it in memory, which a worker of 32 GB has for
+up to 750 million positions. A worker reclaimed in the middle loses all of it, and the
+one that replaces it starts over. The deadline is 3 hours, unless `--hours`.
+
+`fetch <name>` downloads it into `../data/<name>.data`, and resumes: only the data the
+trainer reads comes here, 32 bytes a position, and not the text it was made from, twice
+as big, nor the copy of it that shuffling takes.
+
+`upload <job> <directories>...` stores datagen played here, the `.txt` files of
+`../data/<job>-<part>/` directories, as the chunks of the datagen job `<job>`, for
+`prepare` to take as any other. It skips the files already there.
+
+The smoke job, prepared on 2026-11-04 on a c7g.4xlarge, took a minute from the start,
+`bullet-utils` built in 9 seconds: the same 1,259,936 positions as converting their text
+here at once, in another order.
 
 ### sprt
 

@@ -185,6 +185,16 @@ scripts/prepare-data.sh net-010 data/1.7.0-random data/1.7.0-book data/1.7.0-att
     data/1.5.0-random data/1.5.0-book data/1.5.0-attack data/1.1.1-random data/1.1.1-book
 ```
 
+The text of the generations stays in the bucket of `infra/`, and a worker can prepare
+the data there too, so that only the shuffled data the trainer reads comes here, 32
+bytes a position, against some 3 times as much on disk to prepare it here:
+
+```
+cd infra
+npm run job -- prepare net-011 1.8.0 1.7.0 1.5.0
+npm run job -- fetch net-011    # data/net-011.data
+```
+
 The labels of the older generations come from shallower searches of weaker versions,
 but more positions still helped: 60 million positions of 0.10.0 and 0.9.2 beat 30
 million of 0.10.0 alone by 83 Elo, and adding the 30 million of 0.9.1 was better still.

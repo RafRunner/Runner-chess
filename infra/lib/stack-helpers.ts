@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import type { Construct } from 'constructs';
 
@@ -12,6 +13,14 @@ export function userData(path: string, values: Record<string, string>): ec2.User
     script = script.replaceAll(`@${key}@`, value);
   }
   return ec2.UserData.custom(script);
+}
+
+/**
+ * A script of infra/ gzipped, in base64, as the user data of a launch template takes it:
+ * cloud-init runs it decompressed, and so a script past the 16 KB of user data fits
+ */
+export function gzippedUserData(path: string): string {
+  return gzipSync(readFileSync(join(infra, path)), { level: 9 }).toString('base64');
 }
 
 /** The VPC to run in, the default one of the region without `vpcId` */

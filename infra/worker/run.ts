@@ -5,6 +5,8 @@
  *   npm run job -- sprt <engine> <baseline> [--tc 10+0.1] [--bounds 0,10] [--hours <n>]
  *       [--name <job>] [--engine-name <name>] [--baseline-name <name>]
  *       [--reference-nps <n>] [--force]
+ *   npm run job -- prepare <name> <datagen job or <job>/<part>>... [--hours <n>] [--force]
+ *   npm run job -- upload <datagen job> <directories>...
  *   npm run job -- status
  *   npm run job -- stop
  *   npm run job -- fetch [<job>]
@@ -22,23 +24,37 @@
  * searches than the baseline does here, `engines/runner-chess-<baseline>`, or than
  * `--reference-nps`.
  *
+ * `prepare` makes the training data of trainer/ on one worker, as
+ * scripts/prepare-data.sh does here: the chunks of the datagen jobs given, or of parts
+ * of them, converted by the bullet-utils of the commit trainer/ builds with and
+ * shuffled, into prepared/<name>.data.
+ *
+ * `upload` stores the .txt files of data/<job>-<part>/ directories, datagen played
+ * here, as the chunks of the datagen job <job>, for `prepare` to take. It skips the
+ * files already there, so it can resume.
+ *
  * `fetch` downloads the chunks of a datagen job, the current one by default, into
- * data/<job>-<part>/ as the text of datagen, or the games and the output of an SPRT
- * into engines/games/<job>.pgn and .log.
+ * data/<job>-<part>/ as the text of datagen, prepared data into data/<name>.data, or
+ * the games and the output of an SPRT into engines/games/<job>.pgn and .log. It
+ * resumes.
  */
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   createWriteStream,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { createZstdDecompress } from 'node:zlib';
+import { promisify } from 'node:util';
+import { createZstdDecompress, zstdCompress } from 'node:zlib';
 import {
   AutoScalingClient,
   DescribeAutoScalingGroupsCommand,
@@ -46,6 +62,7 @@ import {
 } from '@aws-sdk/client-auto-scaling';
 import {
   GetObjectCommand,
+  HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
@@ -58,6 +75,8 @@ import { type Cell, table } from '../lib/table.ts';
 const RATE_WINDOW_MS = 30 * 60_000;
 /** The depth of `bench search` whose nodes a second compare the speed of two CPUs */
 const NPS_DEPTH = 17;
+/** A position in bullet's binary format */
+const POSITION_BYTES = 32;
 /** A date and time of here, as 2026-11-04 00:12:19 */
 const local = (date: string | Date) => new Date(date).toLocaleString('sv-SE');
 
@@ -102,6 +121,13 @@ type Job = {
       referenceNps: number;
       npsDepth: number;
     }
+  | {
+      kind: 'prepare';
+      /** Datagen jobs of the bucket, or parts of them as <job>/<part> */
+      sources: string[];
+      /** The commit of bullet that trainer/ builds with, for its bullet-utils */
+      bullet: string;
+    }
 );
 
 const s3 = new S3Client({});
@@ -128,6 +154,10 @@ async function main() {
       return datagen(bucket, group, positional[0], option);
     case 'sprt':
       return sprt(bucket, group, positional, option);
+    case 'prepare':
+      return prepare(bucket, group, positional, option);
+    case 'upload':
+      return upload(bucket, positional);
     case 'status':
       return status(bucket, group);
     case 'stop': {
@@ -203,6 +233,87 @@ async function sprt(bucket: string, group: string, sources: string[], option: Op
   await begin(bucket, group, job, 1, option);
 }
 
+async function prepare(bucket: string, group: string, args: string[], option: Option) {
+  const [name, ...sources] = args;
+  if (!name || sources.length === 0) {
+    throw new Error('prepare needs a name and datagen jobs');
+  }
+  if (await head(bucket, `prepared/${name}.data`)) {
+    console.log(`prepared/${name}.data is there already: fetch ${name}`);
+    return;
+  }
+  const overlapping = sources.find((s) => sources.some((t) => t.startsWith(`${s}/`)));
+  if (overlapping) {
+    throw new Error(`${overlapping} and one of its parts would give their positions twice`);
+  }
+
+  const rows: Cell[][] = [];
+  for (const source of sources) {
+    const chunks = await list(bucket, `datagen/${source}/`);
+    if (chunks.length === 0) {
+      throw new Error(`no chunks in datagen/${source}/`);
+    }
+    rows.push([source, chunks.length, sum(chunks)]);
+  }
+  const total = (i: number) => rows.reduce((n, row) => n + (row[i] as number), 0);
+  rows.push(['total', total(1), total(2)]);
+  console.log(`${table(['source', 'chunks', 'positions'], rows)}\n`);
+
+  const job: Job = { kind: 'prepare', name, sources, bullet: bulletCommit() };
+  await begin(bucket, group, job, 1, option, 3);
+}
+
+/** The commit of bullet in trainer/Cargo.toml */
+function bulletCommit(): string {
+  const manifest = readFileSync(join(repo, 'trainer', 'Cargo.toml'), 'utf8');
+  return /^bullet = .*\brev = "([0-9a-f]+)"/m.exec(manifest)![1];
+}
+
+async function upload(bucket: string, args: string[]) {
+  const [name, ...dirs] = args;
+  if (!name || dirs.length === 0) {
+    throw new Error('upload needs a datagen job and directories');
+  }
+  const compress = promisify(zstdCompress);
+  const rows: Cell[][] = [];
+  for (const dir of dirs) {
+    const base = basename(dir);
+    if (!base.startsWith(`${name}-`)) {
+      throw new Error(`${dir} is no directory of ${name}, as data/${name}-<part>/`);
+    }
+    const part = base.slice(name.length + 1);
+    const prefix = `datagen/${name}/${part}/`;
+    const there = new Set(
+      (await list(bucket, prefix)).map((c) => basename(c.Key!).replace(/-\d+\.txt\.zst$/, '')),
+    );
+    const files = readdirSync(dir).filter((file) => file.endsWith('.txt')).sort();
+    let uploaded = 0;
+    let positions = 0;
+    for (const file of files) {
+      const stem = file.replace(/\.txt$/, '');
+      const text = readFileSync(join(dir, file));
+      const lines = countLines(text);
+      positions += lines;
+      if (there.has(stem)) {
+        continue;
+      }
+      const key = `${prefix}${stem}-${lines}.txt.zst`;
+      await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: await compress(text) }));
+      uploaded++;
+    }
+    rows.push([part, files.length, uploaded, positions]);
+  }
+  console.log(table(['part', 'files', 'uploaded', 'positions'], rows));
+}
+
+function countLines(text: Buffer): number {
+  let lines = 0;
+  for (let i = text.indexOf(10); i >= 0; i = text.indexOf(10, i + 1)) {
+    lines++;
+  }
+  return lines;
+}
+
 /** The nodes a second of the baseline here, at the depth the workers measure them */
 function referenceNps(baseline: string): number {
   const engine = join(repo, 'engines', `runner-chess-${baseline}`);
@@ -214,12 +325,19 @@ function referenceNps(baseline: string): number {
 }
 
 /** The job in the bucket with a deadline, and its workers, unless another job has some */
-async function begin(bucket: string, group: string, job: Job, workers: number, option: Option) {
+async function begin(
+  bucket: string,
+  group: string,
+  job: Job,
+  workers: number,
+  option: Option,
+  defaultHours = 24,
+) {
   const running = (await describeGroup(group)).Instances ?? [];
   if (running.length > 0 && !process.argv.includes('--force')) {
     throw new Error(`${running.length} workers still play ${(await readJob(bucket)).name}`);
   }
-  const hours = Number(option('hours') ?? 24);
+  const hours = Number(option('hours') ?? defaultHours);
   job.until = new Date(Date.now() + hours * 3_600_000).toISOString();
   job.stop = false;
   await writeJob(bucket, job);
@@ -245,6 +363,18 @@ async function status(bucket: string, group: string) {
     }
     const headers = ['part', 'positions', 'of', 'done', 'chunks', 'per second', 'to go'];
     console.log(table(headers, rows, ['done', 'to go']));
+  } else if (job.kind === 'prepare') {
+    console.log(`${job.sources.join(', ')} into prepared/${job.name}.data`);
+    const summary = await readText(bucket, `prepared/${job.name}.json`);
+    if (summary) {
+      const { positions, malformed } = JSON.parse(summary);
+      console.log(`done: ${positions.toLocaleString('en-US')} positions, ${malformed} malformed`);
+    }
+    for (const worker of (await describeGroup(group)).Instances ?? []) {
+      const log = (await readText(bucket, `logs/${worker.InstanceId}.log`)) ?? '';
+      console.log(`\n${worker.InstanceId}, the end of its log:`);
+      console.log(log.trimEnd().split('\n').slice(-3).join('\n'));
+    }
   } else {
     console.log(`${job.engine.name} against ${job.baseline.name}, ${job.tc} here`);
     const results = (await readText(bucket, `sprt/${job.name}/fastchess.log`)) ?? '';
@@ -285,6 +415,10 @@ async function fetch(bucket: string, name: string | undefined) {
     console.log(`the games and the output of ${name} in engines/games/`);
     return;
   }
+  const prepared = await head(bucket, `prepared/${name}.data`);
+  if (prepared) {
+    return fetchPrepared(bucket, name, prepared.ContentLength!);
+  }
 
   // a fetch skips the chunks already here, so it can resume
   const chunks = await list(bucket, `datagen/${name}/`);
@@ -309,12 +443,47 @@ async function fetch(bucket: string, name: string | undefined) {
   );
 }
 
-/** Uploads a book of the repository under books/, and gives its name there */
+/** prepared/<name>.data into data/<name>.data, from where an interrupted fetch left it */
+async function fetchPrepared(bucket: string, name: string, size: number) {
+  const out = join(repo, 'data', `${name}.data`);
+  const part = `${out}.part`;
+  if (existsSync(out)) {
+    console.log(`${out} is there already`);
+    return;
+  }
+  let fetched = existsSync(part) ? statSync(part).size : 0;
+  if (fetched < size) {
+    const response = await s3.send(
+      new GetObjectCommand({ Bucket: bucket, Key: `prepared/${name}.data`, Range: `bytes=${fetched}-` }),
+    );
+    const body = response.Body as Readable;
+    const gigabytes = (bytes: number) => (bytes / 2 ** 30).toFixed(1);
+    let shown = 0;
+    body.on('data', (chunk: Buffer) => {
+      fetched += chunk.length;
+      if (fetched - shown >= 2 ** 30) {
+        shown = fetched;
+        console.log(`${gigabytes(fetched)} of ${gigabytes(size)} GB`);
+      }
+    });
+    await pipeline(body, createWriteStream(part, { flags: 'a' }));
+  }
+  if (statSync(part).size !== size) {
+    throw new Error(`${part} has ${statSync(part).size} bytes, not ${size}`);
+  }
+  renameSync(part, out);
+  console.log(`${(size / POSITION_BYTES).toLocaleString('en-US')} positions in ${out}`);
+}
+
+/** Uploads a book of the repository under books/, unless there already, and gives its name there */
 async function uploadBook(bucket: string, path: string): Promise<string> {
   const name = basename(path);
-  await s3.send(
-    new PutObjectCommand({ Bucket: bucket, Key: `books/${name}`, Body: readFileSync(join(repo, path)) }),
-  );
+  const book = readFileSync(join(repo, path));
+  // the ETag of an object put at once is its MD5
+  const md5 = `"${createHash('md5').update(book).digest('hex')}"`;
+  if ((await head(bucket, `books/${name}`))?.ETag !== md5) {
+    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: `books/${name}`, Body: book }));
+  }
   return name;
 }
 
@@ -331,6 +500,17 @@ async function writeJob(bucket: string, job: Job) {
       ContentType: 'application/json',
     }),
   );
+}
+
+async function head(bucket: string, key: string) {
+  try {
+    return await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+  } catch (e) {
+    if ((e as Error).name === 'NotFound') {
+      return undefined;
+    }
+    throw e;
+  }
 }
 
 async function readText(bucket: string, key: string): Promise<string | undefined> {

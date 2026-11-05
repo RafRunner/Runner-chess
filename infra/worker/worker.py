@@ -10,26 +10,34 @@ is one of:
   and the group replaces it;
 - sprt: a match of fastchess between two engines, until the SPRT decides, with its
   state uploaded to sprt/<job>/ every minute, from where the worker that replaces a
-  reclaimed one resumes it.
+  reclaimed one resumes it;
+- prepare: the training data of the trainer, the chunks of some datagen jobs converted
+  to bullet's binary format and shuffled, uploaded as prepared/<job>.data. A worker
+  reclaimed in the middle loses it all, and the one that replaces it starts over.
 
 The engines are built for the CPU of the worker, from the sources the job names. A job
 that is stopped or past its deadline empties the group, and so does any failure, since
 the worker that would replace this one would fail the same way.
 
-The value in @ comes from lib/runner-chess-stack.ts.
+The bucket is the worker's Bucket tag, from lib/runner-chess-stack.ts, which gives this
+script gzipped: user data has 16 KB at most.
 """
 import datetime
 import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tarfile
+import time
 import traceback
+import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-BUCKET = "@BUCKET@"
+BUCKET = None
 WORK = Path("/opt/worker")
 LOG = WORK / "worker.log"
 # the commit of the fastchess the SPRTs of the repository played with, 1.8.2
@@ -42,16 +50,21 @@ class Stopped(Exception):
 
 
 def main():
+    global BUCKET
     WORK.mkdir(parents=True, exist_ok=True)
     os.chdir(WORK)
     instance = region = group = None
     try:
         instance = imds("instance-id")
         region = imds("placement/region")
+        BUCKET = tag("Bucket")
         run("dnf", "install", "-y", "gcc", "gcc-c++", "make", "git", "zstd", "python3-boto3")
         import boto3
+        from botocore.config import Config
 
-        s3 = boto3.client("s3", region_name=region)
+        # a connection for each of the chunks a prepare job downloads at once
+        s3 = boto3.client("s3", region_name=region,
+                          config=Config(max_pool_connections=os.cpu_count() + 4))
         autoscaling = boto3.client("autoscaling", region_name=region)
         found = autoscaling.describe_auto_scaling_instances(InstanceIds=[instance])
         group = found["AutoScalingInstances"][0]["AutoScalingGroupName"]
@@ -59,10 +72,13 @@ def main():
         run("sh", "-c", "curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs"
             " | sh -s -- -y --profile minimal", env=dict(os.environ, HOME="/root"))
         job = read_job(s3)
+        shut_down_after(job["until"])
         if job["kind"] == "datagen":
             datagen(s3, job, instance)
         elif job["kind"] == "sprt":
             sprt(s3, job)
+        elif job["kind"] == "prepare":
+            prepare(s3, job, instance)
         else:
             raise RuntimeError(f"a job of an unknown kind, {job['kind']}")
 
@@ -85,12 +101,24 @@ def main():
 def read_job(s3, playing=None):
     """The job, unless it is stopped, past its deadline, or another than `playing`"""
     job = json.loads(s3.get_object(Bucket=BUCKET, Key="job.json")["Body"].read())
-    until = datetime.datetime.fromisoformat(job["until"].replace("Z", "+00:00"))
-    if job.get("stop") or datetime.datetime.now(datetime.timezone.utc) >= until:
+    if job.get("stop") or datetime.datetime.now(datetime.timezone.utc) >= deadline(job["until"]):
         raise Stopped(f"the job {job['name']} is stopped or past its deadline")
     if playing and (job["kind"], job["name"]) != (playing["kind"], playing["name"]):
         raise Stopped(f"the job is now {job['name']}, not {playing['name']}")
     return job
+
+
+def deadline(until):
+    return datetime.datetime.fromisoformat(until.replace("Z", "+00:00"))
+
+
+def shut_down_after(until):
+    """Shuts the worker down a quarter of an hour past the deadline, even if a step of
+    the job hangs: the worker that replaces it finds the job past its deadline, and
+    empties the group"""
+    left = deadline(until) - datetime.datetime.now(datetime.timezone.utc)
+    minutes = max(0, int(left.total_seconds() // 60)) + 15
+    subprocess.run(["shutdown", "-h", f"+{minutes}"], check=True)
 
 
 def build(s3, key, name):
@@ -168,12 +196,18 @@ def datagen(s3, job, instance):
 
 def played(s3, prefix):
     """The positions of a part so far, from the names of its chunks"""
-    total = 0
+    return sum(positions for _, positions in chunks(s3, prefix))
+
+
+def chunks(s3, prefix):
+    """The keys of the chunks under `prefix`, with their positions, from their names"""
+    found = []
     for page in s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET, Prefix=prefix):
         for chunk in page.get("Contents", []):
-            found = re.search(r"-(\d+)\.txt\.zst$", chunk["Key"])
-            total += int(found.group(1)) if found else 0
-    return total
+            positions = re.search(r"-(\d+)\.txt\.zst$", chunk["Key"])
+            if positions:
+                found.append((chunk["Key"], int(positions.group(1))))
+    return found
 
 
 # sprt
@@ -263,6 +297,106 @@ def scaled_tc(tc, reference_nps, nps):
     return f"{base * scale:.1f}+{increment * scale:.2f}"
 
 
+# prepare
+
+# a position in bullet's binary format
+POSITION_BYTES = 32
+
+
+def prepare(s3, job, instance):
+    """The chunks of the sources of the job, every one converted on its own, put
+    together, shuffled in memory and uploaded"""
+    key = f"prepared/{job['name']}.data"
+    if exists(s3, key):
+        log(f"{key} is there already")
+        return
+    utils = build_bullet_utils(job["bullet"])
+    found = [c for source in job["sources"] for c in chunks(s3, f"datagen/{source}/")]
+    expected = sum(positions for _, positions in found)
+    log(f"{len(found)} chunks, {expected} positions")
+    upload_log(instance)
+
+    data = expected * POSITION_BYTES
+    # the chunks put together, and the same shuffled
+    if shutil.disk_usage(WORK).free < 2 * data + 2**30:
+        raise RuntimeError(f"no room for twice {data} bytes")
+    memory = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    if memory * 3 // 4 < data:
+        raise RuntimeError(f"no memory to shuffle {data} bytes")
+
+    parts = WORK / "parts"
+    parts.mkdir(exist_ok=True)
+
+    def convert(numbered):
+        number, (chunk, _) = numbered
+        text, converted = parts / f"{number}.txt", parts / f"{number}.data"
+        s3.download_file(BUCKET, chunk, f"{text}.zst")
+        subprocess.run(["zstd", "-q", "-d", "--rm", "-f", f"{text}.zst"], check=True)
+        out = subprocess.run(
+            [utils, "convert", "--from", "text", "--input", text, "--output", converted],
+            capture_output=True, text=True, check=True,
+        ).stdout
+        text.unlink()
+        return converted, out.count("error parsing")
+
+    with ThreadPoolExecutor(os.cpu_count()) as pool:
+        converted = list(pool.map(convert, enumerate(found)))
+    malformed = sum(errors for _, errors in converted)
+    log(f"converted, {malformed} lines malformed")
+    upload_log(instance)
+    read_job(s3, playing=job)
+
+    together, shuffled = WORK / "together.data", WORK / "shuffled.data"
+    with together.open("wb") as out:
+        for part, _ in converted:
+            with part.open("rb") as chunk:
+                shutil.copyfileobj(chunk, out)
+            part.unlink()
+    positions = together.stat().st_size // POSITION_BYTES
+    run(utils, "shuffle", "--input", together, "--output", shuffled,
+        "--mem-used-mb", str(memory * 3 // 4 // 2**20))
+    together.unlink()
+    log(f"shuffled {positions} positions")
+    upload_log(instance)
+    read_job(s3, playing=job)
+
+    from boto3.s3.transfer import TransferConfig
+
+    # parts of 64 MB, as a file has 10,000 of them at most
+    s3.upload_file(str(shuffled), BUCKET, key,
+                   Config=TransferConfig(multipart_chunksize=64 * 2**20))
+    summary = {
+        "sources": job["sources"],
+        "chunks": len(found),
+        "expected": expected,
+        "positions": positions,
+        "malformed": malformed,
+    }
+    s3.put_object(Bucket=BUCKET, Key=f"prepared/{job['name']}.json",
+                  Body=json.dumps(summary, indent=2) + "\n")
+    log(f"{positions} positions in {key}")
+
+
+def build_bullet_utils(commit):
+    run("git", "clone", "--filter=blob:none", "https://github.com/jw1912/bullet.git")
+    run("git", "checkout", commit, cwd="bullet")
+    run(CARGO, "build", "--release", "--package", "bullet-utils", cwd="bullet",
+        env=dict(os.environ, HOME="/root"))
+    return WORK / "bullet/target/release/bullet-utils"
+
+
+def exists(s3, key):
+    from botocore.exceptions import ClientError
+
+    try:
+        s3.head_object(Bucket=BUCKET, Key=key)
+        return True
+    except ClientError as error:
+        if error.response["Error"]["Code"] in ("404", "NoSuchKey"):
+            return False
+        raise
+
+
 def download_if_there(s3, key, path):
     from botocore.exceptions import ClientError
 
@@ -301,6 +435,18 @@ def imds(path):
         f"{url}/meta-data/{path}", headers={"X-aws-ec2-metadata-token": token}
     )
     return urllib.request.urlopen(request, timeout=5).read().decode()
+
+
+def tag(key):
+    """A tag of the worker, which the group may give it a little after the start"""
+    for _ in range(12):
+        try:
+            return imds(f"tags/instance/{key}")
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+            time.sleep(10)
+    raise RuntimeError(f"no {key} tag")
 
 
 def run(*command, **options):

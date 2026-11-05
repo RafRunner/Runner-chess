@@ -1,7 +1,7 @@
 {
   "app": "npx tsx bin/infra.ts",
   "context": {
-    "workerTypes": "c8g.4xlarge,c7g.4xlarge",
-    "maxWorkers": 2
+    "workerTypes": "c8g.4xlarge,m8g.4xlarge,c7g.4xlarge,m7g.4xlarge",
+    "maxWorkers": 4
   }
 }
