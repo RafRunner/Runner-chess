@@ -1,7 +1,6 @@
 use std::{
     io::{self, Write},
     mem,
-    time::Instant,
 };
 
 use crate::{
@@ -63,10 +62,11 @@ impl Searcher<'_> {
                 .find(|r| Some(r.mv) == best_move)
                 .map_or(0, |r| r.nodes);
             let best_share = best_nodes as f64 / self.nodes.max(1) as f64;
-            if self
-                .budget
-                .soft_reached(depth, self.nodes, best_share, Instant::now())
-            {
+            // pondering, it goes on until `ponderhit` or `stop`
+            if self.clock().is_some_and(|now| {
+                self.budget
+                    .soft_reached(depth, self.nodes, best_share, now)
+            }) {
                 break;
             }
         }

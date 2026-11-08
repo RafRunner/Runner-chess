@@ -14,10 +14,10 @@ use crate::{
     board::{Board, FenParseError, movegen::IllegalMoveError},
     book::{Book, BookError},
     chess_move::{AbstractMove, Move, MoveParseError},
-    eval::NETWORK_NAME,
+    eval::{EvalNoise, NETWORK_NAME},
     piece::Color,
     rng::Rng,
-    search::{Budget, Limits, MoveOrdering, Searcher, TranspositionTable},
+    search::{Budget, Limits, MoveOrdering, Ponder, Searcher, TranspositionTable},
     zobrist::ZobristHash,
 };
 
@@ -73,6 +73,7 @@ pub enum Control {
 /// The size of the table, unless the `Hash` option says otherwise
 const HASH_MB: usize = 64;
 const MAX_HASH_MB: usize = 65_536;
+const MAX_EVAL_NOISE: i16 = 50;
 
 /// The standard output, a line at a time: `write_fmt` locks it once for the whole line,
 /// so the lines of the search thread and of the main one never get mixed
@@ -117,6 +118,12 @@ pub struct Uci<W> {
     infinite: bool,
     /// Set by `stop` and `quit` to end the search early
     stop: Arc<AtomicBool>,
+    /// The clock of a `go ponder`, which `ponderhit` starts
+    ponder: Arc<Ponder>,
+    /// When the search running got its `go`
+    search_start: Instant,
+    /// The `EvalNoise` option, in centipawns, and the seed of this game
+    eval_noise: EvalNoise,
     /// The engine's own book, or the one of the `BookFile` option. None if that one
     /// didn't open.
     book: Option<Book>,
@@ -136,7 +143,7 @@ impl Default for Uci<Stdout> {
 
 impl<W: Write + Clone + Send + 'static> Uci<W> {
     pub fn new(out: W) -> Self {
-        Self {
+        let mut uci = Self {
             board: Board::startpos(),
             history: Vec::new(),
             search_memory: Some((TranspositionTable::new(HASH_MB), MoveOrdering::new())),
@@ -144,6 +151,12 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             search: None,
             infinite: false,
             stop: Arc::new(AtomicBool::new(false)),
+            ponder: Arc::new(Ponder::default()),
+            search_start: Instant::now(),
+            eval_noise: EvalNoise {
+                seed: 0,
+                amplitude: 0,
+            },
             book: Some(Book::builtin()),
             own_book: false,
             book_rng: Rng(SystemTime::now()
@@ -151,7 +164,9 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                 .map_or(0, |since| since.as_nanos() as u64)),
             out,
             debug: false,
-        }
+        };
+        uci.eval_noise.seed = uci.book_rng.next_u64();
+        uci
     }
 
     pub fn board(&self) -> &Board {
@@ -189,6 +204,12 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                 )?;
                 writeln!(self.out, "option name OwnBook type check default false")?;
                 writeln!(self.out, "option name BookFile type string default <empty>")?;
+                // the GUI decides whether to ponder, the engine only has to follow
+                writeln!(self.out, "option name Ponder type check default false")?;
+                writeln!(
+                    self.out,
+                    "option name EvalNoise type spin default 0 min 0 max {MAX_EVAL_NOISE}"
+                )?;
                 writeln!(self.out, "info string {NETWORK_NAME}")?;
                 writeln!(self.out, "uciok")?;
             }
@@ -216,6 +237,8 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                 let (tt, ordering) = self.search_memory_mut();
                 tt.clear();
                 ordering.clear();
+                // another game, other noise
+                self.eval_noise.seed = self.book_rng.next_u64();
             }
             "position" => {
                 let args: Vec<&str> = tokens.collect();
@@ -239,6 +262,7 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                 }
             }
             "stop" => self.stop_search()?,
+            "ponderhit" => self.ponder_hit(),
             "setoption" => {
                 let args: Vec<&str> = tokens.collect();
                 self.set_option(&args)?;
@@ -339,6 +363,13 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             let book = Book::open(&path).map_err(|e| UciError::Book(path.clone(), e))?;
             writeln!(self.out, "info string book {path}, {} entries", book.len())?;
             self.book = Some(book);
+        } else if name.eq_ignore_ascii_case("evalnoise") {
+            self.eval_noise.amplitude = value
+                .and_then(|value| value.parse::<i16>().ok())
+                .filter(|noise| (0..=MAX_EVAL_NOISE).contains(noise))
+                .ok_or_else(|| {
+                    UciError::UnexpectedArgs(format!("EvalNoise goes from 0 to {MAX_EVAL_NOISE}"))
+                })?;
         } else if name.eq_ignore_ascii_case("hash") {
             let megabytes = value
                 .and_then(|value| value.parse::<usize>().ok())
@@ -392,9 +423,11 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
     }
 
     /// `go [wtime <ms>] [btime <ms>] [winc <ms>] [binc <ms>] [movestogo <n>] [depth <n>]
-    /// [movetime <ms>] [nodes <n>] [infinite]`: plays the book's move if it has one, or
-    /// else starts a search in its own thread, with a copy of the game, and the table and
-    /// the ordering, which come back in `wait_search`
+    /// [movetime <ms>] [nodes <n>] [infinite] [ponder]`: plays the book's move if it has
+    /// one, or else starts a search in its own thread, with a copy of the game, and the
+    /// table and the ordering, which come back in `wait_search`. A `go ponder` searches
+    /// the position after the move it expects the opponent to play, its clock held until
+    /// `ponderhit`, and writes no `bestmove` before that or `stop`
     fn go_search(&mut self, args: &[&str], start: Instant) -> Result<(), UciError> {
         let limits = parse_go(args)?;
         if let Some(mv) = self.book_move(&limits) {
@@ -412,29 +445,49 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             .expect("no search is running, so the values are here");
         let infinite = limits.infinite;
         let stop = Arc::clone(&self.stop);
+        let ponder = limits.ponder.then(|| Arc::clone(&self.ponder));
+        let noise = self.eval_noise;
         let mut out = self.out.clone();
 
-        // before the thread starts, so that a `stop` right after can't get lost
+        // before the thread starts, so that a `stop` or a `ponderhit` right after can't get
+        // lost
         stop.store(false, Ordering::Relaxed);
+        if let Some(ponder) = &ponder {
+            ponder.start();
+        }
+        self.search_start = start;
         self.search = Some(thread::spawn(move || {
-            let result = search_and_report(
-                &board,
-                &history,
-                budget,
-                &mut memory,
-                &stop,
+            let search = Search {
+                board: &board,
+                history: &history,
+                stop: &stop,
                 infinite,
-                &mut out,
-            );
+                ponder: ponder.as_deref(),
+                noise,
+            };
+            let result = search.run(budget, &mut memory, &mut out);
             (memory, result)
         }));
         self.infinite = infinite;
         Ok(())
     }
 
+    /// The opponent played the move the search was pondering on: from now on, it plays on
+    /// its own clock
+    fn ponder_hit(&mut self) {
+        if let Some(search) = &self.search
+            && self.ponder.is_pondering()
+        {
+            self.ponder.hit(self.search_start.elapsed());
+            // in case it already finished and waits for this to write its `bestmove`
+            search.thread().unpark();
+        }
+    }
+
     fn book_move(&mut self, limits: &Limits) -> Option<Move> {
-        // an analysis (infinite) wants the search's opinion, not the book's
-        if self.own_book && !limits.infinite {
+        // an analysis (infinite) wants the search's opinion, not the book's, and a
+        // `bestmove` while pondering would get played
+        if self.own_book && !limits.infinite && !limits.ponder {
             self.book
                 .as_ref()
                 .and_then(|book| book.pick(&self.board, &mut self.book_rng))
@@ -454,13 +507,17 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
         let Some(search) = self.search.take() else {
             return Ok(());
         };
-        // the GUI should have sent `stop`, but an infinite search would never end
-        if self.infinite {
+        // the GUI should have sent `stop`, but an infinite search would never end, nor a
+        // pondering one
+        if self.infinite || self.ponder.is_pondering() {
             self.stop.store(true, Ordering::Relaxed);
         }
         // in case it already finished and waits for `stop` to write its `bestmove`
         search.thread().unpark();
-        match search.join() {
+        let joined = search.join();
+        // a pondering search that `stop` ended leaves no ponder behind
+        self.ponder.end();
+        match joined {
             Ok((values, result)) => {
                 self.search_memory = Some(values);
                 result.map_err(UciError::Io)
@@ -482,29 +539,58 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
     }
 }
 
-/// The search and its `bestmove`, which only gets written if every `info` could be.
-/// After an `infinite` one, only once `stop` comes, even if the search ended before.
-fn search_and_report(
-    board: &Board,
-    history: &[ZobristHash],
-    budget: Budget,
-    (tt, ordering): &mut SearchMemory,
-    stop: &AtomicBool,
+/// What the search thread of a `go` gets
+struct Search<'a> {
+    board: &'a Board,
+    history: &'a [ZobristHash],
+    stop: &'a AtomicBool,
     infinite: bool,
-    out: &mut impl Write,
-) -> io::Result<()> {
-    let best = Searcher::new(budget, tt, ordering)
-        .stopped_by(stop)
-        .search_root(board, history, out)?;
-    // `wait_search` unparks this thread after setting `stop`
-    while infinite && !stop.load(Ordering::Relaxed) {
-        thread::park();
+    ponder: Option<&'a Ponder>,
+    noise: EvalNoise,
+}
+
+impl Search<'_> {
+    /// The search and its `bestmove`, which only gets written if every `info` could be.
+    /// After an `infinite` one, only once `stop` comes, even if the search ended before,
+    /// and after a pondering one, once `stop` or `ponderhit` comes.
+    fn run(
+        &self,
+        budget: Budget,
+        (tt, ordering): &mut SearchMemory,
+        out: &mut impl Write,
+    ) -> io::Result<()> {
+        let mut searcher = Searcher::new(budget, tt, ordering).stopped_by(self.stop);
+        if let Some(ponder) = self.ponder {
+            searcher = searcher.pondering(ponder);
+        }
+        if self.noise.amplitude > 0 {
+            searcher = searcher.with_eval_noise(self.noise);
+        }
+        let best = searcher.search_root(self.board, self.history, out)?;
+
+        // `wait_search` and `ponder_hit` unpark this thread
+        while (self.infinite || self.ponder.is_some_and(Ponder::is_pondering))
+            && !self.stop.load(Ordering::Relaxed)
+        {
+            thread::park();
+        }
+        match best {
+            Some(mv) => match ponder_move(self.board, mv, tt) {
+                Some(reply) => writeln!(out, "bestmove {mv} ponder {reply}")?,
+                None => writeln!(out, "bestmove {mv}")?,
+            },
+            None => writeln!(out, "bestmove 0000")?,
+        }
+        out.flush()
     }
-    match best {
-        Some(mv) => writeln!(out, "bestmove {mv}")?,
-        None => writeln!(out, "bestmove 0000")?,
-    }
-    out.flush()
+}
+
+/// The reply the search expects to `best`, for the GUI to ponder on: the move of the
+/// table after it, if it has one and it's legal there
+fn ponder_move(board: &Board, best: Move, tt: &TranspositionTable) -> Option<Move> {
+    let after = board.make_legal_move(best)?;
+    let reply = tt.probe(after.hash())?.best_move?;
+    after.make_legal_move(reply).map(|_| reply)
 }
 
 /// `bench` runs perft on fixed positions, `bench search [depth]` searches them.
@@ -532,8 +618,8 @@ fn run_bench(args: &[&str], out: &mut impl Write) -> Result<(), UciError> {
     Ok(())
 }
 
-/// Parses the arguments of a searching `go`. Anything not supported yet (`ponder`,
-/// `searchmoves`, `mate`) is ignored, so the GUI still gets a move.
+/// Parses the arguments of a searching `go`. Anything not supported yet (`searchmoves`,
+/// `mate`) is ignored, so the GUI still gets a move.
 fn parse_go(args: &[&str]) -> Result<Limits, UciError> {
     let mut limits = Limits::default();
     let mut args = args.iter();
@@ -558,6 +644,7 @@ fn parse_go(args: &[&str]) -> Result<Limits, UciError> {
             "binc" => limits.inc[Color::Black] = millis(number()?),
             "nodes" => limits.nodes = Some(number()?.max(1) as u64),
             "infinite" => limits.infinite = true,
+            "ponder" => limits.ponder = true,
             _ => (),
         }
     }
@@ -633,6 +720,14 @@ mod tests {
         );
         assert!(
             out.contains("option name Hash type spin default 64 min 1 max 65536\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("option name Ponder type check default false\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("option name EvalNoise type spin default 0 min 0 max 50\n"),
             "{out}"
         );
         // which network plays, as GUIs show the info strings to the user
@@ -816,8 +911,10 @@ mod tests {
     /// The move of the `bestmove` line, which must come last.
     fn bestmove(out: &str) -> &str {
         let last = out.lines().last().unwrap_or_default();
-        last.strip_prefix("bestmove ")
-            .unwrap_or_else(|| panic!("no bestmove at the end of {out}"))
+        let rest = last
+            .strip_prefix("bestmove ")
+            .unwrap_or_else(|| panic!("no bestmove at the end of {out}"));
+        rest.split_whitespace().next().unwrap_or_default()
     }
 
     #[test]
@@ -1082,6 +1179,139 @@ mod tests {
             }
         );
         assert_eq!(parse_go(&[]).unwrap(), Limits::default());
+        assert_eq!(
+            parse_go(&["ponder", "wtime", "1000"]).unwrap(),
+            Limits {
+                time: [Some(ms(1_000)), None],
+                ponder: true,
+                ..Limits::default()
+            }
+        );
+    }
+
+    // ponder
+
+    /// Polls `uci`'s output until a `bestmove` shows up, for up to `limit`
+    fn wait_for_bestmove(uci: &Uci<SharedBuffer>, limit: Duration) -> Option<String> {
+        let start = Instant::now();
+        let mut out = String::new();
+        while start.elapsed() < limit {
+            out.push_str(&uci.out.take());
+            if out.contains("bestmove") {
+                return Some(out);
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
+    #[test]
+    fn a_pondering_search_writes_its_bestmove_only_after_ponderhit() {
+        let mut uci = uci();
+        run(&mut uci, "position startpos moves e2e4").unwrap();
+        // a search that ends by itself long before the `ponderhit`
+        uci.handle("go ponder depth 2").unwrap();
+        thread::sleep(Duration::from_millis(100));
+        assert!(!uci.out.take().contains("bestmove"));
+
+        let (_, out) = run(&mut uci, "ponderhit").unwrap();
+        bestmove(&out);
+        assert!(!uci.ponder.is_pondering());
+    }
+
+    #[test]
+    fn pondering_ignores_the_clock_until_ponderhit() {
+        let mut uci = uci();
+        run(&mut uci, "position startpos moves e2e4").unwrap();
+        // a second on the clock gives a move a few tens of milliseconds, 120 at most
+        uci.handle("go ponder wtime 1000 btime 1000").unwrap();
+        thread::sleep(Duration::from_millis(400));
+        assert!(!uci.out.take().contains("bestmove"), "it stopped pondering by itself");
+
+        uci.handle("ponderhit").unwrap();
+        let hit = Instant::now();
+        let out = wait_for_bestmove(&uci, Duration::from_secs(2)).expect("a bestmove after the ponderhit");
+        // the budget counts from the `ponderhit`, not from the `go`
+        assert!(hit.elapsed() < Duration::from_millis(500), "{:?}", hit.elapsed());
+        bestmove(&out);
+        uci.wait_search().unwrap();
+    }
+
+    #[test]
+    fn stop_while_pondering_answers_at_once() {
+        let mut uci = uci();
+        run(&mut uci, "position startpos moves e2e4").unwrap();
+        uci.handle("go ponder wtime 100000 btime 100000").unwrap();
+        thread::sleep(Duration::from_millis(50));
+
+        let (_, out) = run(&mut uci, "stop").unwrap();
+        let parsed = AbstractMove::from_uci(bestmove(&out)).unwrap();
+        assert!(uci.board().resolve_move(parsed).is_ok(), "{out}");
+        // and the next search isn't held
+        assert!(!uci.ponder.is_pondering());
+        let (_, out) = run(&mut uci, "go depth 2").unwrap();
+        bestmove(&out);
+    }
+
+    #[test]
+    fn ponderhit_without_pondering_does_nothing() {
+        let mut uci = uci();
+        let (_, out) = run(&mut uci, "ponderhit").unwrap();
+        assert_eq!(out, "");
+    }
+
+    #[test]
+    fn bestmove_names_the_reply_to_ponder_on() {
+        let mut uci = uci();
+        let (_, out) = run(&mut uci, "go depth 6").unwrap();
+        let last = out.lines().last().unwrap();
+        let [_, best, "ponder", reply] = last.split_whitespace().collect::<Vec<_>>()[..] else {
+            panic!("no ponder move in {last}");
+        };
+        let (_, after) = uci
+            .board()
+            .resolve_move(AbstractMove::from_uci(best).unwrap())
+            .unwrap();
+        assert!(after.resolve_move(AbstractMove::from_uci(reply).unwrap()).is_ok(), "{last}");
+    }
+
+    #[test]
+    fn the_book_doesnt_answer_a_go_ponder() {
+        let mut uci = uci();
+        let path = e4_book("book-ponder");
+        run(&mut uci, &format!("setoption name BookFile value {path}")).unwrap();
+        run(&mut uci, "setoption name OwnBook value true").unwrap();
+        uci.out.take();
+
+        uci.handle("go ponder depth 1").unwrap();
+        thread::sleep(Duration::from_millis(50));
+        assert!(!uci.out.take().contains("bestmove"));
+        let (_, out) = run(&mut uci, "stop").unwrap();
+        assert!(!out.contains("book move"), "{out}");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    // eval noise
+
+    #[test]
+    fn eval_noise_is_an_option_within_bounds() {
+        let mut uci = uci();
+        run(&mut uci, "setoption name EvalNoise value 5").unwrap();
+        assert_eq!(uci.eval_noise.amplitude, 5);
+        for wrong in ["51", "-1", "lots"] {
+            assert!(run(&mut uci, &format!("setoption name EvalNoise value {wrong}")).is_err());
+        }
+        assert_eq!(uci.eval_noise.amplitude, 5);
+    }
+
+    #[test]
+    fn every_game_gets_its_own_noise() {
+        let mut uci = uci();
+        let seed = uci.eval_noise.seed;
+        run(&mut uci, "position startpos moves e2e4").unwrap();
+        assert_eq!(uci.eval_noise.seed, seed);
+        run(&mut uci, "ucinewgame").unwrap();
+        assert_ne!(uci.eval_noise.seed, seed);
     }
 
     #[test]
@@ -1256,7 +1486,7 @@ mod tests {
     fn the_book_options_are_announced() {
         let (_, out) = run(&mut uci(), "uci").unwrap();
         assert!(
-            out.contains("option name OwnBook type check default true\n"),
+            out.contains("option name OwnBook type check default false\n"),
             "{out}"
         );
         assert!(
@@ -1271,6 +1501,7 @@ mod tests {
         let path = e4_book("book-plays");
         let (_, out) = run(&mut uci, &format!("setoption name BookFile value {path}")).unwrap();
         assert_eq!(out, format!("info string book {path}, 1 entries\n"));
+        run(&mut uci, "setoption name OwnBook value true").unwrap();
 
         let (_, out) = run(&mut uci, "go wtime 1000 btime 1000").unwrap();
         assert_eq!(out, "info string book move e2e4\nbestmove e2e4\n");
@@ -1312,8 +1543,13 @@ mod tests {
     /// 1.e4 with white, the Sicilian, 1...e5 or the Caro-Kann against it, and the King's
     /// Indian against 1.d4
     #[test]
-    fn the_engine_plays_its_own_book_by_default() {
+    fn the_engine_plays_its_own_book_once_turned_on() {
         let mut uci = Uci::new(SharedBuffer::default());
+        // rating lists play from their own books, so it starts turned off
+        let (_, out) = run(&mut uci, "go depth 1").unwrap();
+        assert!(out.starts_with("info depth 1 "), "{out}");
+
+        run(&mut uci, "setoption name OwnBook value true").unwrap();
         for (position, expected) in [
             ("startpos", &["e2e4"][..]),
             ("startpos moves e2e4", &["c7c5", "e7e5", "c7c6"]),

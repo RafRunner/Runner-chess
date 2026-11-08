@@ -16,6 +16,30 @@ use crate::{
 /// wider than the results agree with
 const NETWORK_INFLATION: i32 = 108;
 
+/// The `EvalNoise` option: a number in `[-amplitude, amplitude]` added to the static
+/// evaluations, so that the engine doesn't play every game the same. It comes from the
+/// position's hash and a seed: the same position gets the same one throughout a game,
+/// as the table and the transpositions expect, and another seed in the next game
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalNoise {
+    pub seed: u64,
+    pub amplitude: i16,
+}
+
+impl EvalNoise {
+    /// `score`, of `board`, moved by its noise. Mates and draws stay as they are
+    pub fn apply(self, board: &Board, score: Score) -> Score {
+        if self.amplitude == 0 || score.is_mate() || score == Score::DRAW {
+            return score;
+        }
+        // the high bits of a multiplicative hash, which mix all of the key
+        let mixed = (board.hash().raw() ^ self.seed).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let span = 2 * self.amplitude as u64 + 1;
+        let noise = ((mixed >> 32) % span) as i16 - self.amplitude;
+        Score::new(i32::from(score.centipawns().expect("not a mate")) + i32::from(noise))
+    }
+}
+
 /// For the side to move: the network, except in dead positions
 pub fn evaluate(board: &Board, accumulators: &Accumulators) -> Score {
     let eval = || Score::new(accumulators.evaluate(board) * 100 / NETWORK_INFLATION);
@@ -112,6 +136,40 @@ fn bishop_and_knight_mate(board: &Board) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_noise_of_a_position_stays_within_its_amplitude() {
+        let noise = EvalNoise { seed: 7, amplitude: 5 };
+        let mut seen = std::collections::HashSet::new();
+        for (_, board) in Board::startpos().legal_successors() {
+            let moved = noise.apply(&board, Score::new(40)).centipawns().unwrap() - 40;
+            assert!((-5..=5).contains(&moved), "{moved}");
+            seen.insert(moved);
+        }
+        assert!(seen.len() > 3, "barely any noise: {seen:?}");
+    }
+
+    #[test]
+    fn a_position_keeps_its_noise_and_another_seed_changes_it() {
+        let noise = |seed| EvalNoise { seed, amplitude: 5 };
+        let boards: Vec<Board> = Board::startpos().legal_successors().map(|(_, b)| b).collect();
+        let scores = |seed| -> Vec<Score> {
+            boards.iter().map(|b| noise(seed).apply(b, Score::new(40))).collect()
+        };
+        assert_eq!(scores(1), scores(1));
+        assert_ne!(scores(1), scores(2));
+    }
+
+    #[test]
+    fn noise_leaves_mates_draws_and_a_zero_amplitude_alone() {
+        let board = Board::startpos();
+        let noise = EvalNoise { seed: 3, amplitude: 50 };
+        for score in [Score::mate_in(3), Score::mated_in(4), Score::DRAW] {
+            assert_eq!(noise.apply(&board, score), score);
+        }
+        let silent = EvalNoise { seed: 3, amplitude: 0 };
+        assert_eq!(silent.apply(&board, Score::new(40)), Score::new(40));
+    }
     use crate::test_utils::{PERFT_POSITIONS, board, both_colors, mirror_fen, static_eval};
 
     /// The same position with the other side to move.

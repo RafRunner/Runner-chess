@@ -8,7 +8,7 @@ mod ordering;
 mod root;
 mod tt;
 
-pub use limits::{Budget, Limits};
+pub use limits::{Budget, Limits, Ponder};
 pub use ordering::MoveOrdering;
 pub use tt::TranspositionTable;
 
@@ -25,7 +25,7 @@ use tt::{Bound, Entry};
 use crate::{
     board::Board,
     chess_move::Move,
-    eval::{self, AccumulatorStack, Accumulators},
+    eval::{self, AccumulatorStack, Accumulators, EvalNoise},
     score::Score,
     zobrist::ZobristHash,
 };
@@ -62,6 +62,10 @@ pub struct Searcher<'search> {
     stopped: bool,
     /// Set from another thread when the GUI sends `stop`
     stop: Option<&'search AtomicBool>,
+    /// The clock of a search on the opponent's time
+    ponder: Option<&'search Ponder>,
+    /// Added to every static evaluation
+    noise: Option<EvalNoise>,
 }
 
 impl<'search> Searcher<'search> {
@@ -89,6 +93,8 @@ impl<'search> Searcher<'search> {
             null_ply: None,
             stopped: false,
             stop: None,
+            ponder: None,
+            noise: None,
         }
     }
 
@@ -98,6 +104,27 @@ impl<'search> Searcher<'search> {
             stop: Some(stop),
             ..self
         }
+    }
+
+    /// A search on the opponent's time, whose clock `ponder` holds until `ponderhit`
+    pub fn pondering(self, ponder: &'search Ponder) -> Self {
+        Self {
+            ponder: Some(ponder),
+            ..self
+        }
+    }
+
+    pub fn with_eval_noise(self, noise: EvalNoise) -> Self {
+        Self {
+            noise: Some(noise),
+            ..self
+        }
+    }
+
+    /// The time the budget's deadlines get compared with: none while pondering
+    fn clock(&self) -> Option<Instant> {
+        let now = Instant::now();
+        self.ponder.map_or(Some(now), |ponder| ponder.clock(now))
     }
 
     /// How many positions the searches so far have visited.
@@ -370,7 +397,9 @@ impl<'search> Searcher<'search> {
 
     /// `node` has to be the current one, whose accumulators are on top
     fn evaluate(&self, node: NodeInfo<'_>) -> Score {
-        eval::evaluate(node.board, self.current_accumulators())
+        let score = eval::evaluate(node.board, self.current_accumulators());
+        self.noise
+            .map_or(score, |noise| noise.apply(node.board, score))
     }
 
     fn check_hard_budget(&mut self) -> bool {
@@ -384,7 +413,10 @@ impl<'search> Searcher<'search> {
             self.stopped = true
         }
         if self.nodes.is_multiple_of(2048)
-            && (self.budget.hard.is_some_and(|hard| Instant::now() >= hard)
+            && (self
+                .budget
+                .hard
+                .is_some_and(|hard| self.clock().is_some_and(|now| now >= hard))
                 || self.stop.is_some_and(|stop| stop.load(Ordering::Relaxed)))
         {
             self.stopped = true;

@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::{Duration, Instant},
+};
 
 use crate::{piece::Color, score::Score};
 
@@ -15,6 +18,50 @@ pub struct Limits {
     pub nodes: Option<u64>,
     /// Search until `stop`, whatever the clock says
     pub infinite: bool,
+    /// On the opponent's time, see [`Ponder`]
+    pub ponder: bool,
+}
+
+/// The clock of a search on the opponent's time, `go ponder`: it doesn't count until
+/// `ponderhit`, and from then on the budget's deadlines count from there, as if the
+/// search had started then
+#[derive(Debug, Default)]
+pub struct Ponder {
+    pondering: AtomicBool,
+    /// From the `go` to the `ponderhit`, in nanoseconds
+    hit_after: AtomicU64,
+}
+
+impl Ponder {
+    pub fn start(&self) {
+        self.hit_after.store(0, Ordering::SeqCst);
+        self.pondering.store(true, Ordering::SeqCst);
+    }
+
+    /// The opponent played the move pondered on, `after` the `go`
+    pub fn hit(&self, after: Duration) {
+        self.hit_after
+            .store(after.as_nanos() as u64, Ordering::SeqCst);
+        self.pondering.store(false, Ordering::SeqCst);
+    }
+
+    /// The search ended, by `stop` maybe, before any `ponderhit`
+    pub fn end(&self) {
+        self.pondering.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_pondering(&self) -> bool {
+        self.pondering.load(Ordering::SeqCst)
+    }
+
+    /// What the budget compares its deadlines with at `now`: nothing while pondering,
+    /// then `now` moved back by the time spent pondering
+    pub fn clock(&self, now: Instant) -> Option<Instant> {
+        if self.is_pondering() {
+            return None;
+        }
+        Some(now - Duration::from_nanos(self.hit_after.load(Ordering::SeqCst)))
+    }
 }
 
 const DEFAULT_DEPTH: u32 = 7;
@@ -134,6 +181,26 @@ mod tests {
         search::tests::{Searched, search},
         test_utils::{MATED, STALEMATED, board},
     };
+
+    #[test]
+    fn a_ponder_holds_the_clock_until_the_hit() {
+        let ponder = Ponder::default();
+        let now = Instant::now();
+        assert_eq!(ponder.clock(now), Some(now), "no ponder, no offset");
+
+        ponder.start();
+        assert!(ponder.is_pondering());
+        assert_eq!(ponder.clock(now), None);
+
+        // a second pondering: the deadlines count a second later
+        ponder.hit(Duration::from_secs(1));
+        assert!(!ponder.is_pondering());
+        assert_eq!(ponder.clock(now), Some(now - Duration::from_secs(1)));
+
+        ponder.start();
+        ponder.end();
+        assert_eq!(ponder.clock(now), Some(now));
+    }
 
     fn ms(millis: u64) -> Duration {
         Duration::from_millis(millis)
