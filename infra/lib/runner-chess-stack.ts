@@ -1,4 +1,4 @@
-import { CfnOutput, RemovalPolicy, Stack, type StackProps, Tags } from 'aws-cdk-lib';
+import { CfnOutput, Duration, RemovalPolicy, Stack, type StackProps, Tags } from 'aws-cdk-lib';
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -37,6 +37,11 @@ export class RunnerChessStack extends Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       removalPolicy: RemovalPolicy.RETAIN,
+      lifecycleRules: [
+        // training data, which a prepare job makes again from datagen/ in minutes
+        { prefix: 'prepared/', expiration: Duration.days(30) },
+        { abortIncompleteMultipartUploadAfter: Duration.days(1) },
+      ],
     });
     // Session Manager, to look inside an instance
     const ssm = iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore');

@@ -6,8 +6,9 @@ stays without dependencies.
 `RunnerChess` is the one stack, and holds nothing that costs while idle:
 
 - a bucket for all of it, which `cdk destroy` keeps: `sources/` the engines the
-  instances build, `books/`, `job.json`, `datagen/`, `prepared/`, `sprt/`, `bench/` and
-  `logs/`;
+  instances build, `books/`, `job.json`, `datagen/`, `prepared/`, `validation/`,
+  `sprt/`, `bench/` and `logs/`. What is in `prepared/` expires after 30 days, since a
+  prepare job makes it again from `datagen/`; validation sets live in `validation/`;
 - an Auto Scaling group of Spot workers, c8g, m8g, c7g or m7g.4xlarge, where the m ones
   are the same Graviton4 and 3 with more memory, 4 at most for a Spot quota of 64 vCPUs,
   empty until a job asks for them;
