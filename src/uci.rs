@@ -13,7 +13,7 @@ use crate::{
     bench::{self, BENCH, BenchError, SEARCH_BENCH, SEARCH_BENCH_DEPTH},
     board::{Board, FenParseError, movegen::IllegalMoveError},
     book::{Book, BookError},
-    chess_move::{AbstractMove, MoveParseError},
+    chess_move::{AbstractMove, Move, MoveParseError},
     eval::NETWORK_NAME,
     piece::Color,
     rng::Rng,
@@ -145,7 +145,7 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             infinite: false,
             stop: Arc::new(AtomicBool::new(false)),
             book: Some(Book::builtin()),
-            own_book: true,
+            own_book: false,
             book_rng: Rng(SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| since.as_nanos() as u64)),
@@ -187,7 +187,7 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                     self.out,
                     "option name Hash type spin default {HASH_MB} min 1 max {MAX_HASH_MB}"
                 )?;
-                writeln!(self.out, "option name OwnBook type check default true")?;
+                writeln!(self.out, "option name OwnBook type check default false")?;
                 writeln!(self.out, "option name BookFile type string default <empty>")?;
                 writeln!(self.out, "info string {NETWORK_NAME}")?;
                 writeln!(self.out, "uciok")?;
@@ -397,18 +397,12 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
     /// the ordering, which come back in `wait_search`
     fn go_search(&mut self, args: &[&str], start: Instant) -> Result<(), UciError> {
         let limits = parse_go(args)?;
-        // an analysis wants the search's opinion, not the book's
-        if self.own_book && !limits.infinite {
-            let book_move = self
-                .book
-                .as_ref()
-                .and_then(|book| book.pick(&self.board, &mut self.book_rng));
-            if let Some(mv) = book_move {
-                writeln!(self.out, "info string book move {mv}")?;
-                writeln!(self.out, "bestmove {mv}")?;
-                return Ok(());
-            }
+        if let Some(mv) = self.book_move(&limits) {
+            writeln!(self.out, "info string book move {mv}")?;
+            writeln!(self.out, "bestmove {mv}")?;
+            return Ok(());
         }
+
         let budget = Budget::new(&limits, self.board.side_to_move(), start);
 
         let (board, history) = (self.board.clone(), self.history.clone());
@@ -436,6 +430,17 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
         }));
         self.infinite = infinite;
         Ok(())
+    }
+
+    fn book_move(&mut self, limits: &Limits) -> Option<Move> {
+        // an analysis (infinite) wants the search's opinion, not the book's
+        if self.own_book && !limits.infinite {
+            self.book
+                .as_ref()
+                .and_then(|book| book.pick(&self.board, &mut self.book_rng))
+        } else {
+            None
+        }
     }
 
     /// Asks the search to end, if one is running, and waits for its `bestmove`

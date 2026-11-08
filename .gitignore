@@ -10,3 +10,5 @@ profile.json.gz
 /infra/.build
 # the VPC lookups, with the IDs of the account
 /infra/cdk.context.json
+
+.DS_Store
