@@ -43,6 +43,8 @@ pub struct Searcher<'search> {
     completed_depth: u32,
     /// The score of the last iteration that finished
     completed_score: Option<Score>,
+    /// The best move of the last iteration that finished, which a variety may not play
+    completed_best: Option<Move>,
     /// The positions of the game before the root, then the line being searched
     hashes: Vec<ZobristHash>,
     /// The network's hidden layer along the line being searched, the current node's last
@@ -91,6 +93,7 @@ impl<'search> Searcher<'search> {
             seldepth: 0,
             completed_depth: 0,
             completed_score: None,
+            completed_best: None,
             hashes: Vec::with_capacity(100 + Score::MAX_PLY as usize),
             accumulators: AccumulatorStack::new(Score::MAX_PLY as usize),
             static_evals: vec![None; Score::MAX_PLY as usize + 1],
@@ -163,6 +166,11 @@ impl<'search> Searcher<'search> {
     /// finished: an interrupted one only has a bound
     pub fn score(&self) -> Option<Score> {
         self.completed_score
+    }
+
+    /// The best move of the last iteration that finished, whatever a variety plays
+    pub fn best_move(&self) -> Option<Move> {
+        self.completed_best
     }
 
     fn push_hash(&mut self, hash: ZobristHash) {

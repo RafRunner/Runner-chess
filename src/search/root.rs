@@ -56,6 +56,7 @@ impl Searcher<'_> {
             }
             self.completed_depth = depth;
             self.completed_score = Some(best_score);
+            self.completed_best = best_move;
             self.print_info_line(out, depth, best_move, best_score, "")?;
 
             // the share of the nodes that the best move took tells how sure the search is

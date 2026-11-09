@@ -172,6 +172,9 @@ def datagen(s3, job, instance):
             return
 
         options = ["--book", fetch_book(s3, part["book"])] if "book" in part else []
+        if "variety" in part:
+            options += ["--variety", str(part["variety"]),
+                        "--variety-plies", str(part.get("varietyPlies", 20))]
         chunk += 1
         # 60 bits of the worker and the chunk: no two chunks play the same games
         seed = int(hashlib.sha256(f"{instance}-{chunk}".encode()).hexdigest()[:15], 16)

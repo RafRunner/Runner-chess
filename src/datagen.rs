@@ -21,12 +21,13 @@ use crate::{
     piece::Color,
     rng::Rng,
     score::Score,
-    search::{Budget, MoveOrdering, Searcher, TranspositionTable},
+    search::{Budget, MoveOrdering, Searcher, TranspositionTable, Variety},
     zobrist::ZobristHash,
 };
 
 const USAGE: &str = "usage: runner-chess datagen <dir> [--threads <n>] [--positions <n>] \
-                     [--nodes <n>] [--seed <n>] [--book <epd>]";
+                     [--nodes <n>] [--seed <n>] [--book <epd>] [--variety <cp>] \
+                     [--variety-plies <n>]";
 
 /// Random moves at the start of every game, one more half of the time, so that either
 /// side can be the one to move first after them
@@ -53,13 +54,23 @@ const HARD_NODES_FACTOR: u64 = 10;
 const HASH_MB: usize = 16;
 const REPORT_EVERY: Duration = Duration::from_secs(10);
 
+/// How every game gets played
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Play {
+    /// The soft node limit of the search of every move
+    nodes: u64,
+    /// `--variety`: in the first `variety_plies` plies after the opening, one of the
+    /// moves within this many centipawns of the best, at random
+    variety: Option<i16>,
+    variety_plies: usize,
+}
+
 struct Config {
     dir: PathBuf,
     threads: usize,
     /// Between all the threads, which stop starting games once they get there
     positions: u64,
-    /// The soft node limit of the search of every move
-    nodes: u64,
+    play: Play,
     seed: u64,
     /// EPD positions to start the games from, instead of the starting position
     book: Option<PathBuf>,
@@ -77,7 +88,11 @@ impl Config {
             dir: PathBuf::from(dir),
             threads: thread::available_parallelism().map_or(1, |n| n.get()),
             positions: 1_000_000,
-            nodes: 5_000,
+            play: Play {
+                nodes: 5_000,
+                variety: None,
+                variety_plies: 20,
+            },
             seed: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |time| time.as_nanos() as u64),
@@ -92,7 +107,11 @@ impl Config {
             match option.as_str() {
                 "--threads" => config.threads = number()?.max(1) as usize,
                 "--positions" => config.positions = number()?,
-                "--nodes" => config.nodes = number()?.max(1),
+                "--nodes" => config.play.nodes = number()?.max(1),
+                "--variety" => {
+                    config.play.variety = Some(number()?.clamp(1, i16::MAX as u64) as i16);
+                }
+                "--variety-plies" => config.play.variety_plies = number()? as usize,
                 "--seed" => config.seed = number()?,
                 "--book" => {
                     let path = args
@@ -129,7 +148,7 @@ pub fn run(args: &[String]) -> io::Result<()> {
     println!(
         "datagen: {} threads, {} nodes per move, {} positions, seed {}, {}, into {}",
         config.threads,
-        config.nodes,
+        config.play.nodes,
         config.positions,
         config.seed,
         match book.len() {
@@ -206,7 +225,7 @@ fn play_games(
     let mut ordering = MoveOrdering::new();
 
     while progress.positions.load(Ordering::Relaxed) < config.positions {
-        let Some(game) = play_game(&mut rng, book, &mut tt, &mut ordering, config.nodes) else {
+        let Some(game) = play_game(&mut rng, book, &mut tt, &mut ordering, config.play) else {
             continue;
         };
         for (fen, score) in &game.positions {
@@ -261,7 +280,7 @@ fn play_game(
     book: &[Board],
     tt: &mut TranspositionTable,
     ordering: &mut MoveOrdering,
-    nodes: u64,
+    play: Play,
 ) -> Option<Game> {
     let (mut board, mut history) = random_opening(rng, book)?;
     tt.clear();
@@ -281,13 +300,22 @@ fn play_game(
         }
 
         let budget = Budget::depth(Some(Score::MAX_PLY))
-            .with_soft_nodes(nodes)
-            .with_nodes(nodes * HARD_NODES_FACTOR);
+            .with_soft_nodes(play.nodes)
+            .with_nodes(play.nodes * HARD_NODES_FACTOR);
         let mut searcher = Searcher::new(budget, tt, ordering);
-        let best = searcher
+        if let Some(margin) = play.variety
+            && history.len() - opening_plies < play.variety_plies
+        {
+            searcher = searcher.with_variety(Variety {
+                margin,
+                rng: Rng(rng.next_u64()),
+            });
+        }
+        let played = searcher
             .search_root(&board, &history, &mut io::sink())
             .expect("the sink takes everything");
-        let (Some(mv), Some(score)) = (best, searcher.score()) else {
+        let (Some(mv), Some(best), Some(score)) = (played, searcher.best_move(), searcher.score())
+        else {
             unreachable!("the game goes on, and the first iteration always finishes");
         };
         let white = white_score(&board, score);
@@ -295,8 +323,9 @@ fn play_game(
         if history.len() == opening_plies && beyond(white, MAX_OPENING_SCORE) {
             return None;
         }
+        // the best move, not the one a variety plays, tells whether the position is quiet
         if !board.is_in_check(board.side_to_move())
-            && mv.is_quiet()
+            && best.is_quiet()
             && let Some(centipawns) = white.centipawns()
         {
             positions.push((board.to_fen(), centipawns));
@@ -461,13 +490,42 @@ mod tests {
         assert_eq!(white_score(&black_to_move, score), -score);
     }
 
+    const PLAY_200: Play = Play {
+        nodes: 200,
+        variety: None,
+        variety_plies: 20,
+    };
+
+    /// The first game of `seed` that the opening doesn't throw away
+    fn first_game(seed: u64, play: Play) -> Game {
+        let mut rng = Rng(seed);
+        let (mut tt, mut ordering) = (TranspositionTable::new(1), MoveOrdering::new());
+        (0..10)
+            .find_map(|_| play_game(&mut rng, &[], &mut tt, &mut ordering, play))
+            .expect("not every opening is lost")
+    }
+
+    #[test]
+    fn a_variety_plays_other_games_and_keeps_quiet_positions() {
+        let varied = Play {
+            variety: Some(40),
+            ..PLAY_200
+        };
+        let differ = (1..6)
+            .filter(|&seed| {
+                first_game(seed, varied).positions != first_game(seed, PLAY_200).positions
+            })
+            .count();
+        assert!(differ >= 3, "{differ} of 5 games changed");
+        for (fen, _) in &first_game(1, varied).positions {
+            let position = board(fen);
+            assert!(!position.is_in_check(position.side_to_move()), "{fen}");
+        }
+    }
+
     #[test]
     fn a_game_keeps_only_quiet_positions_after_the_opening() {
-        let mut rng = Rng(1);
-        let (mut tt, mut ordering) = (TranspositionTable::new(1), MoveOrdering::new());
-        let game = (0..10)
-            .find_map(|_| play_game(&mut rng, &[], &mut tt, &mut ordering, 200))
-            .expect("not every opening is lost");
+        let game = first_game(1, PLAY_200);
 
         assert!(!game.positions.is_empty());
         for (fen, _) in &game.positions {
@@ -584,8 +642,19 @@ mod tests {
 
         let config = parse(&["data", "--threads", "3", "--nodes", "800", "--seed", "9"]).unwrap();
         assert_eq!(
-            (config.threads, config.nodes, config.seed, config.positions),
+            (
+                config.threads,
+                config.play.nodes,
+                config.seed,
+                config.positions
+            ),
             (3, 800, 9, 1_000_000)
+        );
+        assert_eq!(config.play.variety, None);
+        let config = parse(&["data", "--variety", "40", "--variety-plies", "12"]).unwrap();
+        assert_eq!(
+            (config.play.variety, config.play.variety_plies),
+            (Some(40), 12)
         );
         assert_eq!(config.book, None);
         let config = parse(&["data", "--book", "book.epd"]).unwrap();

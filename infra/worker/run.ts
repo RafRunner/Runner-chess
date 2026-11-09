@@ -86,6 +86,9 @@ interface Part {
   nodes: number;
   /** A path from the repository here, a key under books/ in the bucket */
   book?: string;
+  /** datagen's --variety, in centipawns, for the first varietyPlies plies (20) */
+  variety?: number;
+  varietyPlies?: number;
 }
 
 interface Engine {
