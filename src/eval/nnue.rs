@@ -117,7 +117,13 @@ impl Accumulators {
     /// Writes into `child` these accumulators, of `parent_board`, changed by `update` into
     /// those of `child_board`, in one pass over each view: reading the parent and the
     /// columns once is most of the cost. A view whose king changes bucket starts over
-    fn update_into(&self, update: Update, child: &mut Self, parent_board: &Board, child_board: &Board) {
+    fn update_into(
+        &self,
+        update: Update,
+        child: &mut Self,
+        parent_board: &Board,
+        child_board: &Board,
+    ) {
         for view in Color::ALL {
             let king = KingView::new(child_board, view);
             if king != KingView::new(parent_board, view) {
@@ -459,19 +465,40 @@ mod tests {
             flip,
         };
         // castled on either wing, the same bucket, mirrored on the king's
-        assert_eq!(view("6k1/8/8/8/8/8/8/6K1 w - - 0 1", Color::White), at(0, 7));
-        assert_eq!(view("1k6/8/8/8/8/8/8/1K6 w - - 0 1", Color::White), at(0, 0));
+        assert_eq!(
+            view("6k1/8/8/8/8/8/8/6K1 w - - 0 1", Color::White),
+            at(0, 7)
+        );
+        assert_eq!(
+            view("1k6/8/8/8/8/8/8/1K6 w - - 0 1", Color::White),
+            at(0, 0)
+        );
         // Black's from its own side
-        assert_eq!(view("6k1/8/8/8/8/8/8/6K1 w - - 0 1", Color::Black), at(0, 7));
-        assert_eq!(view("4k3/8/8/8/8/8/8/3K4 w - - 0 1", Color::White), at(1, 0));
-        assert_eq!(view("4k3/8/8/8/8/8/8/3K4 w - - 0 1", Color::Black), at(1, 7));
-        assert_eq!(view("8/4k3/8/8/8/8/4K3/8 w - - 0 1", Color::White), at(2, 7));
+        assert_eq!(
+            view("6k1/8/8/8/8/8/8/6K1 w - - 0 1", Color::Black),
+            at(0, 7)
+        );
+        assert_eq!(
+            view("4k3/8/8/8/8/8/8/3K4 w - - 0 1", Color::White),
+            at(1, 0)
+        );
+        assert_eq!(
+            view("4k3/8/8/8/8/8/8/3K4 w - - 0 1", Color::Black),
+            at(1, 7)
+        );
+        assert_eq!(
+            view("8/4k3/8/8/8/8/4K3/8 w - - 0 1", Color::White),
+            at(2, 7)
+        );
         assert_eq!(view("8/8/8/3k4/8/8/8/K7 b - - 0 1", Color::Black), at(3, 0));
     }
 
     #[test]
     fn a_king_view_mirrors_the_file_of_an_input() {
-        let mirrored = KingView { first: 768, flip: 7 };
+        let mirrored = KingView {
+            first: 768,
+            flip: 7,
+        };
         let knight = Piece::new(Color::White, PieceKind::Knight);
         // the knight on g1 seen as if on b1, in the second bucket
         assert_eq!(

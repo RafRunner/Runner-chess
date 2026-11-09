@@ -27,9 +27,9 @@ pub struct EvalNoise {
 }
 
 impl EvalNoise {
-    /// `score`, of `board`, moved by its noise. Mates and draws stay as they are
+    /// `score`, of `board`, moved by its noise. Mates and dead positions stay as they are
     pub fn apply(self, board: &Board, score: Score) -> Score {
-        if self.amplitude == 0 || score.is_mate() || score == Score::DRAW {
+        if self.amplitude == 0 || score.is_mate() || board_state(board) == BoardState::Dead {
             return score;
         }
         // the high bits of a multiplicative hash, which mix all of the key
@@ -139,7 +139,10 @@ mod tests {
 
     #[test]
     fn the_noise_of_a_position_stays_within_its_amplitude() {
-        let noise = EvalNoise { seed: 7, amplitude: 5 };
+        let noise = EvalNoise {
+            seed: 7,
+            amplitude: 5,
+        };
         let mut seen = std::collections::HashSet::new();
         for (_, board) in Board::startpos().legal_successors() {
             let moved = noise.apply(&board, Score::new(40)).centipawns().unwrap() - 40;
@@ -152,22 +155,48 @@ mod tests {
     #[test]
     fn a_position_keeps_its_noise_and_another_seed_changes_it() {
         let noise = |seed| EvalNoise { seed, amplitude: 5 };
-        let boards: Vec<Board> = Board::startpos().legal_successors().map(|(_, b)| b).collect();
+        let boards: Vec<Board> = Board::startpos()
+            .legal_successors()
+            .map(|(_, b)| b)
+            .collect();
         let scores = |seed| -> Vec<Score> {
-            boards.iter().map(|b| noise(seed).apply(b, Score::new(40))).collect()
+            boards
+                .iter()
+                .map(|b| noise(seed).apply(b, Score::new(40)))
+                .collect()
         };
         assert_eq!(scores(1), scores(1));
         assert_ne!(scores(1), scores(2));
     }
 
     #[test]
-    fn noise_leaves_mates_draws_and_a_zero_amplitude_alone() {
+    fn noise_leaves_mates_dead_positions_and_a_zero_amplitude_alone() {
         let board = Board::startpos();
-        let noise = EvalNoise { seed: 3, amplitude: 50 };
-        for score in [Score::mate_in(3), Score::mated_in(4), Score::DRAW] {
+        let noise = EvalNoise {
+            seed: 3,
+            amplitude: 50,
+        };
+        for score in [Score::mate_in(3), Score::mated_in(4)] {
             assert_eq!(noise.apply(&board, score), score);
         }
-        let silent = EvalNoise { seed: 3, amplitude: 0 };
+        let dead = Board::from_fen("8/8/4k3/8/8/3NK3/8/8 w - - 0 1").unwrap();
+        assert_eq!(noise.apply(&dead, Score::DRAW), Score::DRAW);
+        // a live position the network scores 0 gets its noise like any other
+        let moved = (0..20)
+            .map(|seed| {
+                EvalNoise {
+                    seed,
+                    amplitude: 50,
+                }
+                .apply(&board, Score::DRAW)
+            })
+            .filter(|&score| score != Score::DRAW)
+            .count();
+        assert!(moved > 10, "{moved}");
+        let silent = EvalNoise {
+            seed: 3,
+            amplitude: 0,
+        };
         assert_eq!(silent.apply(&board, Score::new(40)), Score::new(40));
     }
     use crate::test_utils::{PERFT_POSITIONS, board, both_colors, mirror_fen, static_eval};

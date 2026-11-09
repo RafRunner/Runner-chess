@@ -8,13 +8,16 @@ use crate::{
     board::Board,
     chess_move::Move,
     score::Score,
-    search::{MovePicker, NodeInfo, Outcome, Searcher},
+    search::{MovePicker, NodeInfo, Outcome, Searcher, tt::Bound},
     zobrist::ZobristHash,
 };
 
 /// A move of the root, with the nodes its searches took in every iteration so far
+#[derive(Debug, Clone)]
 struct RootMove {
     mv: Move,
+    score: Score,
+    bound: Bound,
     nodes: u64,
 }
 
@@ -63,15 +66,98 @@ impl Searcher<'_> {
                 .map_or(0, |r| r.nodes);
             let best_share = best_nodes as f64 / self.nodes.max(1) as f64;
             // pondering, it goes on until `ponderhit` or `stop`
-            if self.clock().is_some_and(|now| {
-                self.budget
-                    .soft_reached(depth, self.nodes, best_share, now)
-            }) {
+            if self
+                .clock()
+                .is_some_and(|now| self.budget.soft_reached(depth, self.nodes, best_share, now))
+            {
                 break;
             }
         }
 
+        // an iteration cut short has scores of two depths
+        if let (Some(best), Some(margin), false) = (
+            best_move,
+            self.variety.as_ref().map(|v| v.margin).filter(|&m| m > 0),
+            self.stopped,
+        ) {
+            return Ok(Some(self.close_move(board, best, margin, &root_moves)));
+        }
+
         Ok(best_move)
+    }
+
+    /// One of the moves within `margin` of the best of the last iteration, at random. The
+    /// ones with an exact score weigh by how close they are; those that only have an
+    /// upper bound, which may be far above their score, by half the margin once a null
+    /// window at the floor shows they pass it. Mates leave the best move as it is
+    fn close_move(
+        &mut self,
+        board: &Board,
+        best_move: Move,
+        margin: i16,
+        root_moves: &[RootMove],
+    ) -> Move {
+        let Some(best) = self.completed_score.and_then(Score::centipawns) else {
+            return best_move;
+        };
+        let (best, margin) = (i32::from(best), i32::from(margin));
+        let floor = Score::new(best - margin);
+
+        let mut candidates = Vec::new();
+        let mut total: i32 = 0;
+        for root in root_moves {
+            let Some(distance) = root.score.centipawns().map(|s| best - i32::from(s)) else {
+                continue;
+            };
+            if distance >= margin {
+                continue;
+            }
+            match root.bound {
+                Bound::Exact => {
+                    let weight = margin - distance;
+                    total += weight;
+                    candidates.push((root.mv, weight));
+                }
+                Bound::Upper if self.passes(board, root.mv, floor) => {
+                    let weight = margin / 2;
+                    total += weight;
+                    candidates.push((root.mv, weight));
+                }
+                _ => (),
+            }
+        }
+
+        let mut pick = self
+            .variety
+            .as_mut()
+            .expect("close move without variety")
+            .rng
+            .below(total as usize) as i32;
+        candidates
+            .into_iter()
+            .find(|&(_, weight)| {
+                pick -= weight;
+                pick < 0
+            })
+            .map_or(best_move, |(mv, _)| mv)
+    }
+
+    /// Whether `mv` scores above `floor`, searched as deep as in the last iteration on a
+    /// null window there. Not if the search had to stop
+    fn passes(&mut self, board: &Board, mv: Move, floor: Score) -> bool {
+        if self.stopped {
+            return false;
+        }
+
+        let next = board.make_move(mv);
+        let gives_check = next.is_in_check(next.side_to_move());
+        let at_floor = NodeInfo::new(board, self.completed_depth, 0, floor, floor + 1);
+        let score = self.search_child(
+            board,
+            at_floor.scout_child(&next, 0, -floor - 1, gives_check),
+            Some(mv),
+        );
+        !self.stopped && score > floor
     }
 
     /// The score of the root at `depth`, on a narrow window around the score of the last
@@ -142,12 +228,22 @@ impl Searcher<'_> {
         {
             let gives_check = next.is_in_check(next.side_to_move());
             let before = self.nodes;
+            let searched_against = root.alpha;
             let score = self.search_move(root, mv, idx, &next, gives_check);
 
             let spent = self.nodes - before;
             match root_nodes.iter_mut().find(|r| r.mv == mv) {
-                Some(r) => r.nodes += spent,
-                None => root_nodes.push(RootMove { mv, nodes: spent }),
+                Some(r) => {
+                    r.nodes += spent;
+                    r.score = score;
+                    r.bound = Bound::new(score, searched_against, root.beta);
+                }
+                None => root_nodes.push(RootMove {
+                    mv,
+                    nodes: spent,
+                    score,
+                    bound: Bound::new(score, searched_against, root.beta),
+                }),
             }
 
             if self.stopped {
@@ -199,8 +295,9 @@ impl Searcher<'_> {
 mod tests {
     use super::*;
     use crate::{
+        rng::Rng,
         search::{
-            Budget,
+            Budget, MoveOrdering, TranspositionTable, Variety,
             tests::{Searched, best_move, search},
         },
         test_utils::{KIWIPETE, MATE_IN_ONE, MATED, board},
@@ -349,5 +446,74 @@ mod tests {
 
         let out = output("k7/2K5/8/8/8/8/8/7R b - - 0 1", 3);
         assert!(out.contains(" score mate -1 "), "{out}");
+    }
+
+    // variety
+
+    /// The move a search of `fen` to `depth` plays with a `Variety` of `margin`, drawn
+    /// from `seed`
+    fn varied(fen: &str, depth: u32, margin: i16, seed: u64) -> String {
+        let (mut tt, mut ordering) = (TranspositionTable::new(1), MoveOrdering::new());
+        let variety = Variety {
+            margin,
+            rng: Rng(seed),
+        };
+        Searcher::new(Budget::depth(Some(depth)), &mut tt, &mut ordering)
+            .with_variety(variety)
+            .search_root(&board(fen), &[], &mut io::sink())
+            .unwrap()
+            .expect("a move")
+            .to_uci()
+    }
+
+    #[test]
+    fn a_clearly_best_move_is_always_drawn() {
+        // Qxd5 takes a queen for nothing: every other move is far worse
+        let fen = "4k3/8/8/3q4/8/8/8/3QK3 w - - 0 1";
+        for seed in 0..20 {
+            assert_eq!(varied(fen, 5, 50, seed), "d1d5", "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn a_mate_is_played_whatever_the_margin() {
+        for seed in 0..10 {
+            assert_eq!(varied(MATE_IN_ONE, 3, 1200, seed), "a1a8", "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn the_same_seed_draws_the_same_move() {
+        assert_eq!(
+            varied(Board::STARTPOS, 6, 40, 7),
+            varied(Board::STARTPOS, 6, 40, 7)
+        );
+    }
+
+    #[test]
+    fn close_moves_share_the_draw_and_stay_close() {
+        let (depth, margin) = (6, 40);
+        let root = board(Board::STARTPOS);
+        let best = search(&root, &[], Budget::depth(Some(depth)))
+            .score
+            .and_then(Score::centipawns)
+            .unwrap();
+        // each move on its own, as deep, and the gaps of separate searches allowed for
+        let score_of = |uci: &str| {
+            let (_, next) = root
+                .resolve_move(crate::chess_move::AbstractMove::from_uci(uci).unwrap())
+                .unwrap();
+            let child = search(&next, &[root.hash()], Budget::depth(Some(depth - 1)));
+            -child.score.and_then(Score::centipawns).unwrap()
+        };
+
+        let drawn: std::collections::HashSet<String> = (0..30)
+            .map(|seed| varied(Board::STARTPOS, depth, margin, seed))
+            .collect();
+        assert!(drawn.len() > 1, "always {drawn:?}");
+        for mv in &drawn {
+            let score = score_of(mv);
+            assert!(score > best - margin - 30, "{mv}: {score} against {best}");
+        }
     }
 }

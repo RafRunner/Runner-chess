@@ -40,8 +40,9 @@ impl Ponder {
 
     /// The opponent played the move pondered on, `after` the `go`
     pub fn hit(&self, after: Duration) {
+        // never 0, which `was_hit` reads as no hit
         self.hit_after
-            .store(after.as_nanos() as u64, Ordering::SeqCst);
+            .store((after.as_nanos() as u64).max(1), Ordering::SeqCst);
         self.pondering.store(false, Ordering::SeqCst);
     }
 
@@ -52,6 +53,11 @@ impl Ponder {
 
     pub fn is_pondering(&self) -> bool {
         self.pondering.load(Ordering::SeqCst)
+    }
+
+    /// The opponent played the move pondered on
+    pub fn was_hit(&self) -> bool {
+        !self.is_pondering() && self.hit_after.load(Ordering::SeqCst) > 0
     }
 
     /// What the budget compares its deadlines with at `now`: nothing while pondering,

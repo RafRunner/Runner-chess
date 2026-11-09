@@ -26,6 +26,7 @@ use crate::{
     board::Board,
     chess_move::Move,
     eval::{self, AccumulatorStack, Accumulators, EvalNoise},
+    rng::Rng,
     score::Score,
     zobrist::ZobristHash,
 };
@@ -66,6 +67,16 @@ pub struct Searcher<'search> {
     ponder: Option<&'search Ponder>,
     /// Added to every static evaluation
     noise: Option<EvalNoise>,
+    /// Plays one of the moves close to the best instead of it
+    variety: Option<Variety>,
+}
+
+/// The `Variety` option: instead of the best move, one of those within `margin`
+/// centipawns of it, drawn with `rng`
+#[derive(Debug, Clone)]
+pub(crate) struct Variety {
+    pub(crate) margin: i16,
+    pub(crate) rng: Rng,
 }
 
 impl<'search> Searcher<'search> {
@@ -95,6 +106,7 @@ impl<'search> Searcher<'search> {
             stop: None,
             ponder: None,
             noise: None,
+            variety: None,
         }
     }
 
@@ -114,11 +126,26 @@ impl<'search> Searcher<'search> {
         }
     }
 
+    pub(crate) fn with_variety(self, variety: Variety) -> Self {
+        Self {
+            variety: Some(variety),
+            ..self
+        }
+    }
+
     pub fn with_eval_noise(self, noise: EvalNoise) -> Self {
         Self {
             noise: Some(noise),
             ..self
         }
+    }
+
+    /// After a `ponderhit`, whether the time from the `go`, pondering included, is past
+    /// what the move was meant to take: the iterations already done answer, rather than
+    /// one that started deep while pondering and would run to the hard limit
+    fn pondered_enough(&self) -> bool {
+        self.ponder.is_some_and(Ponder::was_hit)
+            && self.budget.soft.is_some_and(|soft| Instant::now() >= soft)
     }
 
     /// The time the budget's deadlines get compared with: none while pondering
@@ -417,6 +444,7 @@ impl<'search> Searcher<'search> {
                 .budget
                 .hard
                 .is_some_and(|hard| self.clock().is_some_and(|now| now >= hard))
+                || self.pondered_enough()
                 || self.stop.is_some_and(|stop| stop.load(Ordering::Relaxed)))
         {
             self.stopped = true;

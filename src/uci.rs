@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
     eval::{EvalNoise, NETWORK_NAME},
     piece::Color,
     rng::Rng,
-    search::{Budget, Limits, MoveOrdering, Ponder, Searcher, TranspositionTable},
+    search::{Budget, Limits, MoveOrdering, Ponder, Searcher, TranspositionTable, Variety},
     zobrist::ZobristHash,
 };
 
@@ -74,6 +74,7 @@ pub enum Control {
 const HASH_MB: usize = 64;
 const MAX_HASH_MB: usize = 65_536;
 const MAX_EVAL_NOISE: i16 = 50;
+const MAX_VARIETY: i16 = 1200;
 
 /// The standard output, a line at a time: `write_fmt` locks it once for the whole line,
 /// so the lines of the search thread and of the main one never get mixed
@@ -124,6 +125,8 @@ pub struct Uci<W> {
     search_start: Instant,
     /// The `EvalNoise` option, in centipawns, and the seed of this game
     eval_noise: EvalNoise,
+    /// The `Variety` option, in centipawns: 0 plays the best move
+    variety: i16,
     /// The engine's own book, or the one of the `BookFile` option. None if that one
     /// didn't open.
     book: Option<Book>,
@@ -157,11 +160,10 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                 seed: 0,
                 amplitude: 0,
             },
+            variety: 0,
             book: Some(Book::builtin()),
             own_book: false,
-            book_rng: Rng(SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |since| since.as_nanos() as u64)),
+            book_rng: Rng::with_time_seed(),
             out,
             debug: false,
         };
@@ -203,6 +205,10 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                     "option name Hash type spin default {HASH_MB} min 1 max {MAX_HASH_MB}"
                 )?;
                 writeln!(self.out, "option name OwnBook type check default false")?;
+                writeln!(
+                    self.out,
+                    "option name Variety type spin default 0 min 0 max {MAX_VARIETY}"
+                )?;
                 writeln!(self.out, "option name BookFile type string default <empty>")?;
                 // the GUI decides whether to ponder, the engine only has to follow
                 writeln!(self.out, "option name Ponder type check default false")?;
@@ -387,6 +393,13 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             // the old table goes first, so that both never take the memory at once
             drop(tt);
             self.search_memory = Some((TranspositionTable::new(megabytes), ordering));
+        } else if name.eq_ignore_ascii_case("variety") {
+            self.variety = value
+                .and_then(|value| value.parse::<i16>().ok())
+                .filter(|variety| (0..=MAX_VARIETY).contains(variety))
+                .ok_or_else(|| {
+                    UciError::UnexpectedArgs(format!("Variety goes from 0 to {MAX_VARIETY}"))
+                })?;
         }
         Ok(())
     }
@@ -447,6 +460,10 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
         let stop = Arc::clone(&self.stop);
         let ponder = limits.ponder.then(|| Arc::clone(&self.ponder));
         let noise = self.eval_noise;
+        let variety = (self.variety > 0).then(|| Variety {
+            margin: self.variety,
+            rng: Rng(self.book_rng.next_u64()),
+        });
         let mut out = self.out.clone();
 
         // before the thread starts, so that a `stop` or a `ponderhit` right after can't get
@@ -464,6 +481,7 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
                 infinite,
                 ponder: ponder.as_deref(),
                 noise,
+                variety,
             };
             let result = search.run(budget, &mut memory, &mut out);
             (memory, result)
@@ -547,6 +565,7 @@ struct Search<'a> {
     infinite: bool,
     ponder: Option<&'a Ponder>,
     noise: EvalNoise,
+    variety: Option<Variety>,
 }
 
 impl Search<'_> {
@@ -554,7 +573,7 @@ impl Search<'_> {
     /// After an `infinite` one, only once `stop` comes, even if the search ended before,
     /// and after a pondering one, once `stop` or `ponderhit` comes.
     fn run(
-        &self,
+        self,
         budget: Budget,
         (tt, ordering): &mut SearchMemory,
         out: &mut impl Write,
@@ -565,6 +584,9 @@ impl Search<'_> {
         }
         if self.noise.amplitude > 0 {
             searcher = searcher.with_eval_noise(self.noise);
+        }
+        if let Some(variety) = self.variety {
+            searcher = searcher.with_variety(variety);
         }
         let best = searcher.search_root(self.board, self.history, out)?;
 
@@ -586,11 +608,15 @@ impl Search<'_> {
 }
 
 /// The reply the search expects to `best`, for the GUI to ponder on: the move of the
-/// table after it, if it has one and it's legal there
+/// table after it, if it has one among the legal moves there, as an entry of another
+/// position with the same hash may have any move
 fn ponder_move(board: &Board, best: Move, tt: &TranspositionTable) -> Option<Move> {
     let after = board.make_legal_move(best)?;
     let reply = tt.probe(after.hash())?.best_move?;
-    after.make_legal_move(reply).map(|_| reply)
+    after
+        .legal_successors()
+        .any(|(mv, _)| mv == reply)
+        .then_some(reply)
 }
 
 /// `bench` runs perft on fixed positions, `bench search [depth]` searches them.
@@ -728,6 +754,10 @@ mod tests {
         );
         assert!(
             out.contains("option name EvalNoise type spin default 0 min 0 max 50\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("option name Variety type spin default 0 min 0 max 1200\n"),
             "{out}"
         );
         // which network plays, as GUIs show the info strings to the user
@@ -1226,13 +1256,22 @@ mod tests {
         // a second on the clock gives a move a few tens of milliseconds, 120 at most
         uci.handle("go ponder wtime 1000 btime 1000").unwrap();
         thread::sleep(Duration::from_millis(400));
-        assert!(!uci.out.take().contains("bestmove"), "it stopped pondering by itself");
+        assert!(
+            !uci.out.take().contains("bestmove"),
+            "it stopped pondering by itself"
+        );
 
         uci.handle("ponderhit").unwrap();
         let hit = Instant::now();
-        let out = wait_for_bestmove(&uci, Duration::from_secs(2)).expect("a bestmove after the ponderhit");
-        // the budget counts from the `ponderhit`, not from the `go`
-        assert!(hit.elapsed() < Duration::from_millis(500), "{:?}", hit.elapsed());
+        let out = wait_for_bestmove(&uci, Duration::from_secs(2))
+            .expect("a bestmove after the ponderhit");
+        // pondered longer than the move was meant to take: it answers at once, rather
+        // than finish an iteration that started deep while pondering
+        assert!(
+            hit.elapsed() < Duration::from_millis(100),
+            "{:?}",
+            hit.elapsed()
+        );
         bestmove(&out);
         uci.wait_search().unwrap();
     }
@@ -1272,7 +1311,12 @@ mod tests {
             .board()
             .resolve_move(AbstractMove::from_uci(best).unwrap())
             .unwrap();
-        assert!(after.resolve_move(AbstractMove::from_uci(reply).unwrap()).is_ok(), "{last}");
+        assert!(
+            after
+                .resolve_move(AbstractMove::from_uci(reply).unwrap())
+                .is_ok(),
+            "{last}"
+        );
     }
 
     #[test]
@@ -1302,6 +1346,29 @@ mod tests {
             assert!(run(&mut uci, &format!("setoption name EvalNoise value {wrong}")).is_err());
         }
         assert_eq!(uci.eval_noise.amplitude, 5);
+    }
+
+    #[test]
+    fn variety_is_an_option_within_bounds() {
+        let mut uci = uci();
+        run(&mut uci, "setoption name Variety value 30").unwrap();
+        assert_eq!(uci.variety, 30);
+        for wrong in ["1201", "-1", "some"] {
+            assert!(run(&mut uci, &format!("setoption name Variety value {wrong}")).is_err());
+        }
+        assert_eq!(uci.variety, 30);
+    }
+
+    #[test]
+    fn a_search_with_variety_plays_a_legal_move() {
+        for variety in [0, 30] {
+            let mut uci = uci();
+            run(&mut uci, &format!("setoption name Variety value {variety}")).unwrap();
+            run(&mut uci, "position startpos moves e2e4").unwrap();
+            let (_, out) = run(&mut uci, "go depth 5").unwrap();
+            let parsed = AbstractMove::from_uci(bestmove(&out)).unwrap();
+            assert!(uci.board().resolve_move(parsed).is_ok(), "{variety}: {out}");
+        }
     }
 
     #[test]

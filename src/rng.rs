@@ -1,6 +1,17 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Debug, Clone)]
 pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
+    pub(crate) fn with_time_seed() -> Self {
+        Self(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos() as u64),
+        )
+    }
+
     pub(crate) fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut z = self.0;
