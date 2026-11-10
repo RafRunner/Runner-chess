@@ -1,0 +1,15 @@
+{
+  "kind": "datagen",
+  "name": "variety",
+  "source": "46a09fb",
+  "bench": 22463,
+  "chunk": 250000,
+  "parts": [
+    { "name": "plain-random", "positions": 17400000, "nodes": 5000 },
+    { "name": "plain-book", "positions": 17400000, "nodes": 5000, "openings": "engines/books/popularpos_lichess_v3.epd" },
+    { "name": "plain-attack", "positions": 5200000, "nodes": 10000, "openings": "data/attack-starts-1.8.0.epd" },
+    { "name": "variety-random", "positions": 17400000, "nodes": 5000, "variety": 40 },
+    { "name": "variety-book", "positions": 17400000, "nodes": 5000, "openings": "engines/books/popularpos_lichess_v3.epd", "variety": 40 },
+    { "name": "variety-attack", "positions": 5200000, "nodes": 10000, "openings": "data/attack-starts-1.8.0.epd", "variety": 40 }
+  ]
+}

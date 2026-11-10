@@ -140,12 +140,12 @@ def bench(engine, depth=None):
     return nodes, nps
 
 
-def fetch_book(s3, name):
-    book = WORK / "books" / name
-    if not book.exists():
-        book.parent.mkdir(exist_ok=True)
-        s3.download_file(BUCKET, f"books/{name}", str(book))
-    return book
+def fetch_openings(s3, name):
+    openings = WORK / "openings" / name
+    if not openings.exists():
+        openings.parent.mkdir(exist_ok=True)
+        s3.download_file(BUCKET, f"openings/{name}", str(openings))
+    return openings
 
 
 # datagen
@@ -171,7 +171,7 @@ def datagen(s3, job, instance):
         if part is None:
             return
 
-        options = ["--book", fetch_book(s3, part["book"])] if "book" in part else []
+        options = ["--openings", fetch_openings(s3, part["openings"])] if "openings" in part else []
         if "variety" in part:
             options += ["--variety", str(part["variety"]),
                         "--variety-plies", str(part.get("varietyPlies", 20))]
@@ -222,7 +222,7 @@ def sprt(s3, job, instance):
     engine = build(s3, job["engine"]["sourceKey"], "engine")
     baseline = build(s3, job["baseline"]["sourceKey"], "baseline")
     fastchess = build_fastchess()
-    book = fetch_book(s3, job["book"])
+    openings = fetch_openings(s3, job["openings"])
 
     match = WORK / "sprt"
     match.mkdir(exist_ok=True)
@@ -242,7 +242,7 @@ def sprt(s3, job, instance):
             "-engine", f"cmd={engine}", f"name={job['engine']['name']}",
             "-engine", f"cmd={baseline}", f"name={job['baseline']['name']}",
             "-each", f"tc={tc}", "option.OwnBook=false",
-            "-openings", f"file={book}", "format=pgn", "order=random",
+            "-openings", f"file={openings}", "format=pgn", "order=random",
             "-rounds", "5000", "-games", "2", "-repeat",
             # a core for fastchess and the system
             "-concurrency", str(os.cpu_count() - 1),

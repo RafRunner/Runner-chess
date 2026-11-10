@@ -19,7 +19,7 @@ export interface RunnerChessStackProps extends StackProps {
  * Everything of runner-chess on AWS, and nothing that costs while idle:
  *
  * - a bucket for all of it, which outlives the stack: the sources the instances build,
- *   books, the job, the data of datagen, the training data prepared from it, the state
+ *   openings, the job, the data of datagen, the training data prepared from it, the state
  *   of SPRTs and the benchmarks;
  * - an empty group of Spot workers, that play the job of `job.json` when
  *   `worker/run.ts` asks for them, and empty the group again when it ends, by its

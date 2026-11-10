@@ -23,7 +23,7 @@ How the training data gets generated, and the format bullet expects.
 
 ```
 runner-chess datagen <dir> [--threads <n>] [--positions <n>] [--nodes <n>] [--seed <n>]
-                      [--book <epd>]
+                      [--openings <epd>] [--variety <cp>] [--variety-plies <n>]
 ```
 
 | Option | Default |
@@ -32,7 +32,9 @@ runner-chess datagen <dir> [--threads <n>] [--positions <n>] [--nodes <n>] [--se
 | `--positions` | 1,000,000, between all threads; each one stops starting games once they get there |
 | `--nodes` | 5,000, the soft limit of every search, with a hard one 10 times higher |
 | `--seed` | from the clock, printed at the start |
-| `--book` | none: the games start from random openings |
+| `--openings` | none: the games start from random moves; an EPD file of positions to start from, as fastchess's `-openings format=epd` |
+| `--variety` | none: in the first `--variety-plies` plies after the opening, one of the moves within this many centipawns of the best, at random |
+| `--variety-plies` | 20 |
 
 The games are played inside the process, without UCI, and written to
 `<dir>/<version>-<seed>-<thread>.txt`. The files of another run never get written over:
@@ -42,9 +44,9 @@ seed and number of threads play the same games again.
 - **Threads**: each with its own table (16 MB) and ordering, both cleared before every
   game, and its own random numbers (splitmix64), seeded from `--seed`.
 - **Openings**: 8 or 9 random legal moves from the starting position, so that either
-  side can be the first to move after them. With `--book`, 1 or 2 random moves from a
-  random position of the book instead, since a game from a book position the book
-  also has a few moves later would play the same moves. A game whose first search
+  side can be the first to move after them. With `--openings`, 1 or 2 random moves from a
+  random position of the file instead, since a game from a position the file also has
+  a few moves later would play the same moves. A game whose first search
   finds `|score| > 400` gets thrown away.
 - **Moves**: the best move of the search; the score of the last iteration that
   finished labels the position.
@@ -229,7 +231,7 @@ positions of the other games, and where the network erred the most against Stock
 `scripts/attack-starts.py` takes such positions from the data of the two generations
 before, with both queens on, by move 25 and with `|score| <= 150`, about one a game,
 and adds those of `popularpos` and the ends of the lines of `books/aggressive.txt`:
-40,882 for 1.5.0, given to `datagen --book`. Their games search 10,000 nodes a move
+40,882 for 1.5.0, given to `datagen --openings`. Their games search 10,000 nodes a move
 instead of 5,000: there, the result of the game is what corrects the network, and only
 if the attacks get played well. A quarter of their positions keep the kings on
 opposite wings.

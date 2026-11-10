@@ -26,15 +26,15 @@ use crate::{
 };
 
 const USAGE: &str = "usage: runner-chess datagen <dir> [--threads <n>] [--positions <n>] \
-                     [--nodes <n>] [--seed <n>] [--book <epd>] [--variety <cp>] \
+                     [--nodes <n>] [--seed <n>] [--openings <epd>] [--variety <cp>] \
                      [--variety-plies <n>]";
 
 /// Random moves at the start of every game, one more half of the time, so that either
 /// side can be the one to move first after them
 const RANDOM_PLIES: usize = 8;
-/// After a book position: the searches being deterministic, a game from a position
-/// the book also has a few moves later would otherwise play the same moves again
-const BOOK_RANDOM_PLIES: usize = 1;
+/// After an opening of `--openings`: the searches being deterministic, a game from a
+/// position the file also has a few moves later would otherwise play the same moves again
+const OPENING_RANDOM_PLIES: usize = 1;
 /// An opening already won for one side gets thrown away
 const MAX_OPENING_SCORE: i32 = 400;
 /// A side this far ahead for `WIN_PLIES` plies in a row wins
@@ -73,7 +73,7 @@ struct Config {
     play: Play,
     seed: u64,
     /// EPD positions to start the games from, instead of the starting position
-    book: Option<PathBuf>,
+    openings: Option<PathBuf>,
 }
 
 impl Config {
@@ -96,7 +96,7 @@ impl Config {
             seed: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |time| time.as_nanos() as u64),
-            book: None,
+            openings: None,
         };
         while let Some(option) = args.next() {
             let mut number = || {
@@ -113,11 +113,11 @@ impl Config {
                 }
                 "--variety-plies" => config.play.variety_plies = number()? as usize,
                 "--seed" => config.seed = number()?,
-                "--book" => {
+                "--openings" => {
                     let path = args
                         .next()
-                        .ok_or_else(|| format!("--book expects a file\n{USAGE}"))?;
-                    config.book = Some(PathBuf::from(path));
+                        .ok_or_else(|| format!("--openings expects a file\n{USAGE}"))?;
+                    config.openings = Some(PathBuf::from(path));
                 }
                 _ => return Err(format!("unknown option {option}\n{USAGE}")),
             }
@@ -133,10 +133,11 @@ impl Config {
 /// number of threads play the same games again.
 pub fn run(args: &[String]) -> io::Result<()> {
     let config = Config::parse(args).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let book = match &config.book {
-        Some(path) => read_book(path)?,
-        None => Vec::new(),
-    };
+    let openings = config
+        .openings
+        .as_deref()
+        .map(Openings::from_epd)
+        .transpose()?;
 
     fs::create_dir_all(&config.dir)?;
     let prefix = format!("{}-{}", env!("CARGO_PKG_VERSION"), config.seed);
@@ -151,9 +152,9 @@ pub fn run(args: &[String]) -> io::Result<()> {
         config.play.nodes,
         config.positions,
         config.seed,
-        match book.len() {
-            0 => "random openings".to_string(),
-            n => format!("openings from {n} book positions"),
+        match &openings {
+            None => "random openings".to_string(),
+            Some(openings) => format!("{} openings", openings.0.len()),
         },
         config.dir.join(format!("{prefix}-*.txt")).display(),
     );
@@ -170,8 +171,8 @@ pub fn run(args: &[String]) -> io::Result<()> {
             .into_iter()
             .map(|file| {
                 let rng = Rng(seeds.next_u64());
-                let (config, book, progress) = (&config, &book, &progress);
-                scope.spawn(move || play_games(file, rng, config, book, progress))
+                let (config, openings, progress) = (&config, openings.as_ref(), &progress);
+                scope.spawn(move || play_games(file, rng, config, openings, progress))
             })
             .collect();
 
@@ -217,7 +218,7 @@ fn play_games(
     file: File,
     mut rng: Rng,
     config: &Config,
-    book: &[Board],
+    openings: Option<&Openings>,
     progress: &Progress,
 ) -> io::Result<()> {
     let mut out = BufWriter::new(file);
@@ -225,7 +226,7 @@ fn play_games(
     let mut ordering = MoveOrdering::new();
 
     while progress.positions.load(Ordering::Relaxed) < config.positions {
-        let Some(game) = play_game(&mut rng, book, &mut tt, &mut ordering, config.play) else {
+        let Some(game) = play_game(&mut rng, openings, &mut tt, &mut ordering, config.play) else {
             continue;
         };
         for (fen, score) in &game.positions {
@@ -277,12 +278,12 @@ struct Game {
 /// check, with a quiet best move and without a mate in sight.
 fn play_game(
     rng: &mut Rng,
-    book: &[Board],
+    openings: Option<&Openings>,
     tt: &mut TranspositionTable,
     ordering: &mut MoveOrdering,
     play: Play,
 ) -> Option<Game> {
-    let (mut board, mut history) = random_opening(rng, book)?;
+    let (mut board, mut history) = random_opening(rng, openings)?;
     tt.clear();
     ordering.clear();
 
@@ -363,14 +364,13 @@ fn play_game(
     Some(Game { positions, result })
 }
 
-/// A few random legal moves from the starting position, or fewer from a random position
-/// of `book` if it has any, with the hashes of the positions before the last one, or
-/// `None` when they ended the game
-fn random_opening(rng: &mut Rng, book: &[Board]) -> Option<(Board, Vec<ZobristHash>)> {
-    let (mut board, plies) = if book.is_empty() {
-        (Board::startpos(), RANDOM_PLIES)
-    } else {
-        (book[rng.below(book.len())].clone(), BOOK_RANDOM_PLIES)
+/// A few random legal moves from the starting position, or fewer from a random one of
+/// `openings`, with the hashes of the positions before the last one, or `None` when they
+/// ended the game
+fn random_opening(rng: &mut Rng, openings: Option<&Openings>) -> Option<(Board, Vec<ZobristHash>)> {
+    let (mut board, plies) = match openings {
+        None => (Board::startpos(), RANDOM_PLIES),
+        Some(openings) => (openings.random(rng).clone(), OPENING_RANDOM_PLIES),
     };
     let mut history = Vec::new();
 
@@ -386,25 +386,36 @@ fn random_opening(rng: &mut Rng, book: &[Board]) -> Option<(Board, Vec<ZobristHa
     Some((board, history))
 }
 
-/// The positions of an EPD file, one per line, of which only the first four fields
-/// of a FEN count: EPD has no clocks, so they start at 0 and 1
-fn read_book(path: &Path) -> io::Result<Vec<Board>> {
-    let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
-    let book = fs::read_to_string(path)?
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-        .map(|(i, line)| {
-            let fields: Vec<&str> = line.split_whitespace().take(4).collect();
-            Board::from_fen(&format!("{} 0 1", fields.join(" ")))
-                .map_err(|e| invalid(format!("{}:{}: {e:?}", path.display(), i + 1)))
-        })
-        .collect::<io::Result<Vec<_>>>()?;
+/// Positions to start games from, as fastchess's `-openings format=epd` reads them: not
+/// a book of moves to play, which is [`crate::book`]. Never empty.
+#[derive(Debug)]
+struct Openings(Vec<Board>);
 
-    if book.is_empty() {
-        return Err(invalid(format!("no positions in {}", path.display())));
+impl Openings {
+    /// One position per line, of which only the first four fields of a FEN count: EPD
+    /// has no clocks, so they start at 0 and 1
+    fn from_epd(path: &Path) -> io::Result<Self> {
+        let invalid = |message: String| io::Error::new(io::ErrorKind::InvalidData, message);
+        let positions = fs::read_to_string(path)?
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| !line.trim().is_empty())
+            .map(|(i, line)| {
+                let fields: Vec<&str> = line.split_whitespace().take(4).collect();
+                Board::from_fen(&format!("{} 0 1", fields.join(" ")))
+                    .map_err(|e| invalid(format!("{}:{}: {e:?}", path.display(), i + 1)))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+
+        if positions.is_empty() {
+            return Err(invalid(format!("no positions in {}", path.display())));
+        }
+        Ok(Self(positions))
     }
-    Ok(book)
+
+    fn random(&self, rng: &mut Rng) -> &Board {
+        &self.0[rng.below(self.0.len())]
+    }
 }
 
 /// The result, when the game is over by the rules. `history` has the hashes of the
@@ -501,7 +512,7 @@ mod tests {
         let mut rng = Rng(seed);
         let (mut tt, mut ordering) = (TranspositionTable::new(1), MoveOrdering::new());
         (0..10)
-            .find_map(|_| play_game(&mut rng, &[], &mut tt, &mut ordering, play))
+            .find_map(|_| play_game(&mut rng, None, &mut tt, &mut ordering, play))
             .expect("not every opening is lost")
     }
 
@@ -538,25 +549,26 @@ mod tests {
         }
     }
 
-    // openings from a book
+    // openings from an EPD file
 
     #[test]
-    fn a_book_has_the_positions_of_an_epd_file() {
-        let path = env::temp_dir().join(format!("runner-chess-book-{}.epd", std::process::id()));
+    fn openings_are_the_positions_of_an_epd_file() {
+        let path =
+            env::temp_dir().join(format!("runner-chess-openings-{}.epd", std::process::id()));
         fs::write(
             &path,
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - bm e5;\n\n\
              4k3/8/8/8/8/8/8/R3K3 w Q -\n",
         )
         .unwrap();
-        let book = read_book(&path).unwrap();
-        assert_eq!(book.len(), 2);
-        assert_eq!(book[1].to_fen(), "4k3/8/8/8/8/8/8/R3K3 w Q - 0 1");
+        let openings = Openings::from_epd(&path).unwrap();
+        assert_eq!(openings.0.len(), 2);
+        assert_eq!(openings.0[1].to_fen(), "4k3/8/8/8/8/8/8/R3K3 w Q - 0 1");
 
         for bad in ["4k3/8/8/8/8/8/8/R3K3 w Q -\nnot a position\n", "\n"] {
             fs::write(&path, bad).unwrap();
             assert_eq!(
-                read_book(&path).unwrap_err().kind(),
+                Openings::from_epd(&path).unwrap_err().kind(),
                 io::ErrorKind::InvalidData
             );
         }
@@ -564,16 +576,16 @@ mod tests {
     }
 
     #[test]
-    fn a_book_opening_is_a_book_position_and_a_few_random_moves() {
-        let book = [board(
+    fn a_game_starts_from_one_of_the_openings_and_a_few_random_moves() {
+        let openings = Openings(vec![board(
             "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3",
-        )];
+        )]);
         let mut rng = Rng(1);
         for _ in 0..10 {
-            let (_, history) = random_opening(&mut rng, &book).unwrap();
-            assert_eq!(history[0], book[0].hash());
+            let (_, history) = random_opening(&mut rng, Some(&openings)).unwrap();
+            assert_eq!(history[0], openings.0[0].hash());
             assert!(
-                (BOOK_RANDOM_PLIES..=BOOK_RANDOM_PLIES + 1).contains(&history.len()),
+                (OPENING_RANDOM_PLIES..=OPENING_RANDOM_PLIES + 1).contains(&history.len()),
                 "{}",
                 history.len()
             );
@@ -638,7 +650,7 @@ mod tests {
         assert!(parse(&["--threads", "2"]).is_err());
         assert!(parse(&["data", "--threads"]).is_err());
         assert!(parse(&["data", "--depth", "5"]).is_err());
-        assert!(parse(&["data", "--book"]).is_err());
+        assert!(parse(&["data", "--openings"]).is_err());
 
         let config = parse(&["data", "--threads", "3", "--nodes", "800", "--seed", "9"]).unwrap();
         assert_eq!(
@@ -656,8 +668,8 @@ mod tests {
             (config.play.variety, config.play.variety_plies),
             (Some(40), 12)
         );
-        assert_eq!(config.book, None);
-        let config = parse(&["data", "--book", "book.epd"]).unwrap();
-        assert_eq!(config.book, Some(PathBuf::from("book.epd")));
+        assert_eq!(config.openings, None);
+        let config = parse(&["data", "--openings", "openings.epd"]).unwrap();
+        assert_eq!(config.openings, Some(PathBuf::from("openings.epd")));
     }
 }

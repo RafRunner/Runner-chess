@@ -14,13 +14,13 @@
       "name": "book",
       "positions": 500000,
       "nodes": 5000,
-      "book": "engines/books/popularpos_lichess_v3.epd"
+      "openings": "engines/books/popularpos_lichess_v3.epd"
     },
     {
       "name": "attack",
       "positions": 250000,
       "nodes": 10000,
-      "book": "data/attack-starts-1.7.0.epd"
+      "openings": "data/attack-starts-1.7.0.epd"
     }
   ]
 }

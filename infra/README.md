@@ -6,7 +6,7 @@ stays without dependencies.
 `RunnerChess` is the one stack, and holds nothing that costs while idle:
 
 - a bucket for all of it, which `cdk destroy` keeps: `sources/` the engines the
-  instances build, `books/`, `job.json`, `datagen/`, `prepared/`, `validation/`,
+  instances build, `openings/`, `job.json`, `datagen/`, `prepared/`, `validation/`,
   `sprt/`, `bench/` and `logs/`. What is in `prepared/` expires after 30 days, since a
   prepare job makes it again from `datagen/`; validation sets live in `validation/`;
 - an Auto Scaling group of Spot workers, c8g, m8g, c7g or m7g.4xlarge, where the m ones
@@ -58,7 +58,7 @@ npm run job -- stop
 
 A job file, as in `worker/jobs/`, has the source of the engine and the node count of
 its `bench search`, which every worker checks, the size of a chunk, and parts, each
-with its positions, its nodes a move and maybe a book, a path from the repository. Every
+with its positions, its nodes a move and maybe openings for `datagen --openings`, a path from the repository. Every
 worker plays, chunk after chunk, the first part that the bucket doesn't have all the
 positions of yet, and uploads the chunk as
 `datagen/<job>/<part>/<seed>-<positions>.txt.zst`:

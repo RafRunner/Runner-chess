@@ -84,8 +84,8 @@ interface Part {
   name: string;
   positions: number;
   nodes: number;
-  /** A path from the repository here, a key under books/ in the bucket */
-  book?: string;
+  /** datagen's --openings: a path from the repository here, a key under openings/ in the bucket */
+  openings?: string;
   /** datagen's --variety, in centipawns, for the first varietyPlies plies (20) */
   variety?: number;
   varietyPlies?: number;
@@ -120,7 +120,7 @@ type Job = {
       /** `<seconds>+<increment>`, at the speed of `referenceNps` */
       tc: string;
       bounds: [number, number];
-      book: string;
+      openings: string;
       referenceNps: number;
       npsDepth: number;
     }
@@ -203,8 +203,8 @@ async function datagen(bucket: string, group: string, file: string | undefined, 
   }
 
   for (const part of job.parts) {
-    if (part.book) {
-      part.book = await uploadBook(bucket, part.book);
+    if (part.openings) {
+      part.openings = await uploadOpenings(bucket, part.openings);
     }
   }
   job.sourceKey = await uploadSource(s3, bucket, job.source);
@@ -226,7 +226,7 @@ async function sprt(bucket: string, group: string, sources: string[], option: Op
     baseline: { name: baselineName, source: baseline },
     tc: option('tc') ?? '10+0.1',
     bounds: (option('bounds') ?? '0,10').split(',').map(Number) as [number, number],
-    book: await uploadBook(bucket, 'engines/books/8moves_v3.pgn'),
+    openings: await uploadOpenings(bucket, 'engines/books/8moves_v3.pgn'),
     referenceNps: Number(option('reference-nps') ?? referenceNps(baselineName)),
     npsDepth: NPS_DEPTH,
   };
@@ -478,14 +478,14 @@ async function fetchPrepared(bucket: string, name: string, size: number) {
   console.log(`${(size / POSITION_BYTES).toLocaleString('en-US')} positions in ${out}`);
 }
 
-/** Uploads a book of the repository under books/, unless there already, and gives its name there */
-async function uploadBook(bucket: string, path: string): Promise<string> {
+/** Uploads openings of the repository under openings/, unless there already, and gives their name there */
+async function uploadOpenings(bucket: string, path: string): Promise<string> {
   const name = basename(path);
-  const book = readFileSync(join(repo, path));
+  const openings = readFileSync(join(repo, path));
   // the ETag of an object put at once is its MD5
-  const md5 = `"${createHash('md5').update(book).digest('hex')}"`;
-  if ((await head(bucket, `books/${name}`))?.ETag !== md5) {
-    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: `books/${name}`, Body: book }));
+  const md5 = `"${createHash('md5').update(openings).digest('hex')}"`;
+  if ((await head(bucket, `openings/${name}`))?.ETag !== md5) {
+    await s3.send(new PutObjectCommand({ Bucket: bucket, Key: `openings/${name}`, Body: openings }));
   }
   return name;
 }
