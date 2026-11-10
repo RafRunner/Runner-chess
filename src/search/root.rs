@@ -76,11 +76,10 @@ impl Searcher<'_> {
         }
 
         // an iteration cut short has scores of two depths
-        if let (Some(best), Some(margin), false) = (
-            best_move,
-            self.variety.as_ref().map(|v| v.margin).filter(|&m| m > 0),
-            self.stopped,
-        ) {
+        if let (Some(best), Some(margin)) =
+            (best_move, self.variety.as_ref().map(|v| v.margin.abs()))
+            && !self.stopped
+        {
             return Ok(Some(self.close_move(board, best, margin, &root_moves)));
         }
 
@@ -126,6 +125,10 @@ impl Searcher<'_> {
                 }
                 _ => (),
             }
+        }
+
+        if total == 0 {
+            return best_move;
         }
 
         let mut pick = self
