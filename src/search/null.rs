@@ -5,16 +5,10 @@ use crate::{
 
 impl Searcher<'_> {
     /// The side to move is so far ahead that even passing the turn keeps it above beta:
-    /// a shallower search confirms it. `static_eval` is `None` in check, where passing is
-    /// illegal. Not on the principal variation, whose score has to be exact
-    pub(super) fn null_move_pruning(
-        &mut self,
-        node: NodeInfo<'_>,
-        static_eval: Option<Score>,
-    ) -> Option<Score> {
+    /// a shallower search confirms it. Not in check, where passing is illegal, nor on the
+    /// principal variation, whose score has to be exact
+    pub(super) fn null_move_pruning(&mut self, node: NodeInfo<'_>, eval: Score) -> Option<Score> {
         let board = node.board;
-        let eval = static_eval?;
-
         if node.ply > 0
             && !node.is_pv()
             && node.depth >= 3

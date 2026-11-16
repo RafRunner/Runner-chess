@@ -233,15 +233,9 @@ impl<'search> Searcher<'search> {
 
         if let Some(eval) = static_eval
             && let Some(score) = Self::reverse_futility_pruning(node, eval)
+                .or_else(|| self.null_move_pruning(node, eval))
         {
             return score;
-        }
-
-        // the table says the value is at most something below beta: passing won't get there
-        let below_beta =
-            entry.is_some_and(|e| e.bound == Bound::Upper && e.score.from_tt(node.ply) < node.beta);
-        if !below_beta && let Some(null_cut) = self.null_move_pruning(node, static_eval) {
-            return null_cut;
         }
 
         let mut best = -Score::INF;
@@ -256,6 +250,7 @@ impl<'search> Searcher<'search> {
             .into_iterator(node.board);
         let mut legal_moves = 0;
         let info = node.board.check_info(in_check);
+
         for mv in moves.by_ref() {
             // decided before making the move, since most moves that get here are pruned
             let gives_check = node.board.gives_check_with(mv, &info);
