@@ -8,6 +8,39 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.10.0 - 2026-11-17
+
+Options and tooling: with the defaults, the engine plays as 1.9.0.
+
+### Added
+- Pondering: the `Ponder` option, `bestmove` with the reply the search expects, `go
+  ponder` with the clock held until `ponderhit`, from when the budget counts as if the
+  search had started then, and `stop` while pondering.
+- `EvalNoise` (0 to 50 centipawns, 0 by default): a number added to every static
+  evaluation, from the hash of the position and a seed of each game, so that games
+  don't repeat.
+- `Variety` (0 to 1200 centipawns, 0 by default): one of the moves within that margin
+  of the best one in the last full iteration, at random, weighing by how close they are.
+- `datagen --variety <cp>` and `--variety-plies <n>` (20): the `Variety` of the search
+  in the first plies after the opening. A position is kept when the best move of its
+  search is quiet, whatever the move played.
+- A README, and the GPL-3.0 as the license.
+
+### Changed
+- `OwnBook` is off by default: rating lists and match runners use their own openings.
+- `datagen --openings` instead of `--book`, as fastchess names a file of start
+  positions.
+- `infra/`: the bucket expires prepared data after 30 days, and abandoned multipart
+  uploads after one; validation sets live in `validation/`.
+
+### Measured
+- Bench: 22463, as 1.9.0, and the same node count at depth 13 on every commit since.
+  The same speed: 4.04 to 4.14 million nodes a second on the search bench at depth 16,
+  against 4.01 to 4.09 for 1.9.0.
+- Tried and left out: data played with `--variety 40` in the first 20 plies, against
+  the same amount without, 42.8 million positions each, trained as net-012: +2.3 ±
+  14.1 Elo in 920 games, neutral. The margin barely changes the games.
+
 ## 1.9.0 - 2026-11-05
 
 ### Changed
