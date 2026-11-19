@@ -204,6 +204,17 @@ impl Board {
 
         board.sanity_check()?;
 
+        // The ep square might have been set even if no pawn can capture
+        if board
+            .en_passant
+            .is_some_and(|sq| !board.can_take_ep(sq, board.side_to_move()))
+        {
+            board.en_passant = None;
+        }
+        board.hash = ZobristHash::hash(&board);
+
+        board.check_invariants()?;
+
         Ok(board)
     }
 
@@ -273,7 +284,8 @@ impl Board {
         let mut null = self.clone();
         null.side_to_move = self.side_to_move().oposite();
         null.hash = self.hash.toggle_turn_key();
-        null.halfmove_clock = 0; // so the repetition scans don’t reach past the null move, which no real line can
+        // so the repetition scans don’t reach past the null move, which no real line can
+        null.halfmove_clock = 0;
 
         if let Some(sq) = self.en_passant() {
             null.en_passant = None;
@@ -298,10 +310,10 @@ impl Board {
         !can_take_ep.is_empty()
     }
 
-    /// Rejects/fixes positions that would break the engine: desynced mailbox and
+    /// Rejects positions that would break the engine: desynced mailbox and
     /// bitboards, or out-of-bounds indexing. Positions that are unreachable but
-    /// harmless (9 pawns, same-colored bishops, ...) are accepted on purpose.
-    fn sanity_check(&mut self) -> Result<(), BoardInconsistencyError> {
+    /// harmless (9 pawns, ...) are accepted on purpose.
+    fn sanity_check(&self) -> Result<(), BoardInconsistencyError> {
         let us = self.side_to_move();
         let them = us.oposite();
         let white_to_move = us == Color::White;
@@ -320,11 +332,6 @@ impl Board {
             return Err(BoardInconsistencyError::PawnOnBackRank);
         }
 
-        // TODO (only if the move list has a fixed capacity): at most 16 pieces
-        // per side and 8 pawns. Reachable positions have at most 218 legal
-        // moves, but a FEN with a dozen queens can overflow the list.
-        // TODO (only if check evasion assumes it): at most 2 checkers on the
-        // side to move.
         use CastlingRights as CR;
         let rules = [
             (CR::WHITE_SHORT, Color::White, Square::E1, Square::H1),
@@ -365,21 +372,11 @@ impl Board {
             if self.mailbox[pawn_square] != Some(Piece::new(them, PieceKind::Pawn)) {
                 return Err(BoardInconsistencyError::EnPassantWithoutPawn(sq));
             }
-
-            // The ep square might have been set even if no pawn can capture
-            if !self.can_take_ep(sq, us) {
-                self.en_passant = None;
-            }
         }
-
-        // only now that the en passant square is final
-        self.hash = ZobristHash::hash(self);
 
         if self.is_in_check(them) {
             return Err(BoardInconsistencyError::KingCanBeCaptured(them));
         }
-
-        self.check_invariants()?;
 
         Ok(())
     }
