@@ -342,7 +342,6 @@ impl<'search> Searcher<'search> {
             return static_eval;
         }
         if static_eval > node.alpha {
-            // Found something better
             node.alpha = static_eval;
         }
 

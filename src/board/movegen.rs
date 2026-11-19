@@ -92,7 +92,6 @@ impl Board {
         let our_pieces = self.by_color(us);
         let occupied = self.all_pieces_bb();
 
-        // Normal Pieces
         let kinds = [
             PieceKind::Knight,
             PieceKind::Bishop,
@@ -142,7 +141,6 @@ impl Board {
         let them = us.oposite();
         let occupied = self.all_pieces_bb();
 
-        // Castling
         let castle_checks = [
             (
                 Color::White,

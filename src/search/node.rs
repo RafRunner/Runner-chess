@@ -92,12 +92,10 @@ impl<'board> NodeInfo<'board> {
             *best = score;
 
             if *best > self.alpha {
-                // We found something better, so we raise the floor. The window closes and we cut more
                 self.alpha = *best;
 
                 // the window closed: a beta cutoff
                 if self.alpha >= self.beta {
-                    // Opponent has something better guaranteed, therefore we can cut the analysis here
                     return Outcome::Cut;
                 }
 

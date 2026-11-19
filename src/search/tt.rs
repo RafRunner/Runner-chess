@@ -88,7 +88,7 @@ impl Entry {
 type Bucket = [Option<Entry>; 2];
 
 pub struct TranspositionTable {
-    buckets: Vec<Bucket>, // any length: the index scales the hash to it
+    buckets: Vec<Bucket>,
     /// Of the current search: entries of earlier ones give way to the new ones
     generation: u8,
 }
@@ -192,8 +192,6 @@ impl TranspositionTable {
 }
 
 /// Asks Linux to back the reserved memory of `table` with pages of 2 MB instead of 4 KB.
-/// Each probe lands on a random bucket, and with small pages nearly every one also misses
-/// the TLB: the prefetches of the search took 11.8% of its time, and 5.6% with huge pages.
 /// Only a hint: where the kernel has them off, the pages stay small
 #[cfg(target_os = "linux")]
 fn ask_for_huge_pages(table: &mut Vec<Bucket>) {

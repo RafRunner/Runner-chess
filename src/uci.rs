@@ -95,16 +95,13 @@ impl Write for Stdout {
     }
 }
 
-/// What a search learns and the next one starts from: the table and the move ordering
+/// What a search learns and the next one starts from.
 type SearchMemory = (TranspositionTable, MoveOrdering);
 
-/// What the search thread gives back when it ends: the table and the ordering, and
-/// whether it could write everything
+/// What the search thread gives back when it ends.
 type SearchResult = (SearchMemory, io::Result<()>);
 
-/// The engine's side of the protocol. Searches run in their own thread, so that `stop`
-/// and `isready` still get read; everything goes to `out`, which each search gets a
-/// copy of.
+/// The engine's side of the protocol.
 pub struct Uci<W> {
     board: Board,
     /// The positions of the game before `board`, oldest first, for repetitions.
@@ -115,7 +112,6 @@ pub struct Uci<W> {
     hash_mb: usize,
     /// The search running, which gives them back once it ends
     search: Option<JoinHandle<SearchResult>>,
-    /// The search running is a `go infinite`, which only ends with `stop`
     infinite: bool,
     /// Set by `stop` and `quit` to end the search early
     stop: Arc<AtomicBool>,
@@ -132,7 +128,6 @@ pub struct Uci<W> {
     book: Option<Book>,
     /// The `OwnBook` option: whether the book plays the moves it has
     own_book: bool,
-    /// Picks among the moves of the book, differently in every run
     book_rng: Rng,
     out: W,
     debug: bool,
@@ -175,8 +170,6 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
         &self.board
     }
 
-    /// Tells the GUI why a command got ignored, where its log shows it: a position that
-    /// didn't take leaves the engine on the last one, and its moves illegal
     pub fn report(&mut self, error: &UciError) -> io::Result<()> {
         // some GUIs send empty lines
         if matches!(error, UciError::EmptyInput) {
@@ -346,61 +339,70 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
             None => (rest, None),
         };
 
-        let name = name.join(" ");
-        if name.eq_ignore_ascii_case("ownbook") {
-            self.own_book = match value.as_deref().map(str::to_ascii_lowercase).as_deref() {
-                Some("true") => true,
-                Some("false") => false,
-                _ => {
-                    return Err(UciError::UnexpectedArgs(
-                        "OwnBook is true or false".to_string(),
-                    ));
-                }
-            };
-        } else if name.eq_ignore_ascii_case("bookfile") {
-            // a book that doesn't open leaves none, rather than the one before
-            self.book = None;
-            let path = value.unwrap_or_default();
-            // back to the engine's own
-            if path.is_empty() || path == "<empty>" {
-                self.book = Some(Book::builtin());
-                return Ok(());
+        match name.join(" ").to_ascii_lowercase().as_str() {
+            "ownbook" => {
+                self.own_book = match value.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                    Some("true") => true,
+                    Some("false") => false,
+                    _ => {
+                        return Err(UciError::UnexpectedArgs(
+                            "OwnBook is true or false".to_string(),
+                        ));
+                    }
+                };
             }
-            let book = Book::open(&path).map_err(|e| UciError::Book(path.clone(), e))?;
-            writeln!(self.out, "info string book {path}, {} entries", book.len())?;
-            self.book = Some(book);
-        } else if name.eq_ignore_ascii_case("evalnoise") {
-            self.eval_noise.amplitude = value
-                .and_then(|value| value.parse::<i16>().ok())
-                .filter(|noise| (0..=MAX_EVAL_NOISE).contains(noise))
-                .ok_or_else(|| {
-                    UciError::UnexpectedArgs(format!("EvalNoise goes from 0 to {MAX_EVAL_NOISE}"))
-                })?;
-        } else if name.eq_ignore_ascii_case("hash") {
-            let megabytes = value
-                .and_then(|value| value.parse::<usize>().ok())
-                .filter(|megabytes| (1..=MAX_HASH_MB).contains(megabytes))
-                .ok_or_else(|| {
-                    UciError::UnexpectedArgs(format!("Hash goes from 1 to {MAX_HASH_MB} MB"))
-                })?;
+            "bookfile" => {
+                // a book that doesn't open leaves none, rather than the one before
+                self.book = None;
+                let path = value.unwrap_or_default();
+                // back to the engine's own
+                if path.is_empty() || path == "<empty>" {
+                    self.book = Some(Book::builtin());
+                    return Ok(());
+                }
+                let book = Book::open(&path).map_err(|e| UciError::Book(path.clone(), e))?;
+                writeln!(self.out, "info string book {path}, {} entries", book.len())?;
+                self.book = Some(book);
+            }
+            "evalnoise" => {
+                self.eval_noise.amplitude = value
+                    .and_then(|value| value.parse::<i16>().ok())
+                    .filter(|noise| (0..=MAX_EVAL_NOISE).contains(noise))
+                    .ok_or_else(|| {
+                        UciError::UnexpectedArgs(format!(
+                            "EvalNoise goes from 0 to {MAX_EVAL_NOISE}"
+                        ))
+                    })?;
+            }
+            "hash" => {
+                let megabytes = value
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .filter(|megabytes| (1..=MAX_HASH_MB).contains(megabytes))
+                    .ok_or_else(|| {
+                        UciError::UnexpectedArgs(format!("Hash goes from 1 to {MAX_HASH_MB} MB"))
+                    })?;
 
-            self.wait_search()?;
-            self.hash_mb = megabytes;
-            let (tt, ordering) = self
-                .search_memory
-                .take()
-                .expect("the values are back whenever no search is running");
-            // the old table goes first, so that both never take the memory at once
-            drop(tt);
-            self.search_memory = Some((TranspositionTable::new(megabytes), ordering));
-        } else if name.eq_ignore_ascii_case("variety") {
-            self.variety = value
-                .and_then(|value| value.parse::<i16>().ok())
-                .filter(|variety| (0..=MAX_VARIETY).contains(variety))
-                .ok_or_else(|| {
-                    UciError::UnexpectedArgs(format!("Variety goes from 0 to {MAX_VARIETY}"))
-                })?;
-        }
+                self.wait_search()?;
+                self.hash_mb = megabytes;
+                let (tt, ordering) = self
+                    .search_memory
+                    .take()
+                    .expect("the values are back whenever no search is running");
+                // the old table goes first, so that both never take the memory at once
+                drop(tt);
+                self.search_memory = Some((TranspositionTable::new(megabytes), ordering));
+            }
+            "variety" => {
+                self.variety = value
+                    .and_then(|value| value.parse::<i16>().ok())
+                    .filter(|variety| (0..=MAX_VARIETY).contains(variety))
+                    .ok_or_else(|| {
+                        UciError::UnexpectedArgs(format!("Variety goes from 0 to {MAX_VARIETY}"))
+                    })?;
+            }
+            _ => (),
+        };
+
         Ok(())
     }
 
@@ -437,8 +439,7 @@ impl<W: Write + Clone + Send + 'static> Uci<W> {
 
     /// `go [wtime <ms>] [btime <ms>] [winc <ms>] [binc <ms>] [movestogo <n>] [depth <n>]
     /// [movetime <ms>] [nodes <n>] [infinite] [ponder]`: plays the book's move if it has
-    /// one, or else starts a search in its own thread, with a copy of the game, and the
-    /// table and the ordering, which come back in `wait_search`. A `go ponder` searches
+    /// one, or else starts a search in its own thread. A `go ponder` searches
     /// the position after the move it expects the opponent to play, its clock held until
     /// `ponderhit`, and writes no `bestmove` before that or `stop`
     fn go_search(&mut self, args: &[&str], start: Instant) -> Result<(), UciError> {
@@ -607,9 +608,7 @@ impl Search<'_> {
     }
 }
 
-/// The reply the search expects to `best`, for the GUI to ponder on: the move of the
-/// table after it, if it has one among the legal moves there, as an entry of another
-/// position with the same hash may have any move
+/// The move the engine wants to ponder on. For now we only look at the tt
 fn ponder_move(board: &Board, best: Move, tt: &TranspositionTable) -> Option<Move> {
     let after = board.make_legal_move(best)?;
     let reply = tt.probe(after.hash())?.best_move?;

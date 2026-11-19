@@ -21,15 +21,12 @@ impl Board {
             "{mv}: capture flag doesn't match the board"
         );
 
-        // the hash is worked out in a local and written once, at the end
         let mut hash = self.hash;
         if let Some(ep) = self.en_passant {
             hash = hash.toggle_en_passant_key(ep);
         }
         next.en_passant = None;
 
-        // every kind of move takes what is on `to` and puts the piece there, promoted
-        // or not; castling and en passant then move or take a second piece
         if let Some(captured) = target {
             next.lift(captured, to);
             hash = hash.toggle_piece_key(captured, to);
@@ -72,7 +69,6 @@ impl Board {
             _ => (),
         }
 
-        // Housekeeping
         next.castling = self.castling.update_move(mv);
         next.side_to_move = them;
         next.hash = hash
@@ -80,7 +76,6 @@ impl Board {
             .toggle_castling_key(next.castling())
             .toggle_turn_key();
 
-        // Clocks
         if piece.kind() == PieceKind::Pawn || mv.is_capture() {
             next.halfmove_clock = 0;
         } else {

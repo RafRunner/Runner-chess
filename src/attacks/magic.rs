@@ -1,3 +1,7 @@
+//! Magic bitboards: the attacks of a slider only depend on the pieces on its lines, the
+//! blockers. Multiplying them by the right number, the magic, gathers their bits at the
+//! top of the product, which then indexes a table with the attacks for each of them
+
 use std::sync::LazyLock;
 
 use crate::{
@@ -11,6 +15,8 @@ pub(super) static MAGIC_BISHOPS: LazyLock<MagicTable> =
     LazyLock::new(|| MagicTable::new_bishops(1337));
 pub(super) static MAGIC_ROOKS: LazyLock<MagicTable> = LazyLock::new(|| MagicTable::new_rooks(1337));
 
+/// The squares where a blocker changes the attacks of a bishop, and how many they are.
+/// The border stays out: the last square of a ray is attacked whether it's empty or not
 fn bishop_mask_and_bits() -> ([BitBoard; 64], [u8; 64]) {
     let border = BitBoard::RANK_1 | BitBoard::FILE_A | BitBoard::RANK_8 | BitBoard::FILE_H;
     let mut mask = [BitBoard::EMPTY; 64];
@@ -24,6 +30,8 @@ fn bishop_mask_and_bits() -> ([BitBoard; 64], [u8; 64]) {
     (mask, bits)
 }
 
+/// The same for a rook, where each ray only drops its own last square: a rook on the
+/// border still has the rest of that border to be blocked on
 fn rook_mask_and_bits() -> ([BitBoard; 64], [u8; 64]) {
     let mut mask = [BitBoard::EMPTY; 64];
     let mut bits = [0u8; 64];
@@ -44,9 +52,9 @@ fn rook_mask_and_bits() -> ([BitBoard; 64], [u8; 64]) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Magic {
     mask: BitBoard,
-    bits: u8,
+    bits: u8, // squares of the mask, so the square has 2^bits slots
     magic: u64,
-    offset: usize,
+    offset: usize, // where the slots of the square start in the table
 }
 
 impl Magic {
@@ -62,13 +70,13 @@ impl Magic {
 
 pub(super) struct MagicTable {
     magics: [Magic; 64],
-    attacks: Vec<BitBoard>,
+    attacks: Vec<BitBoard>, // the slots of every square, one after the other
 }
 
 impl MagicTable {
     pub(super) fn new_bishops(seed: u64) -> Self {
         let (masks, bits) = bishop_mask_and_bits();
-        let mut attacks = Vec::with_capacity(5_248);
+        let mut attacks = Vec::with_capacity(5_248); // the sum of 2^bits of the 64 squares
         let magics = find_magic(Rng(seed), masks, bits, rays::bishop_attacks, &mut attacks);
         Self { magics, attacks }
     }
@@ -93,6 +101,9 @@ impl MagicTable {
     }
 }
 
+/// Finds a magic for each square by trial and error: random numbers, until one sends
+/// every set of blockers to a slot that no set with other attacks shares. Two sets with
+/// the same attacks may share one
 fn find_magic(
     mut rng: Rng,
     masks: [BitBoard; 64],
@@ -109,6 +120,8 @@ fn find_magic(
         let mut attacks = Vec::new();
         let mut subset = BitBoard::EMPTY;
 
+        // every subset of the mask, by the carry-rippler: subtracting the mask carries
+        // through the squares outside it
         loop {
             occupied.push(subset);
             attacks.push(attack_fn(sq, subset));
@@ -120,11 +133,13 @@ fn find_magic(
         }
 
         loop {
+            // numbers with few bits are far more likely to be magics
             let magic = rng.next_u64() & rng.next_u64() & rng.next_u64();
-            // Bad magic
+            // too few bits reach the top of the product to tell the blockers apart
             if (mask.raw().wrapping_mul(magic) >> 56).count_ones() < 6 {
                 continue;
             }
+            // empty is a free slot: a slider always attacks something
             let mut table = vec![BitBoard::EMPTY; 1 << this_bits];
 
             let mut ok = true;
@@ -134,7 +149,6 @@ fn find_magic(
 
                 if table[index] == BitBoard::EMPTY {
                     table[index] = attacks[idx];
-                    // destructive conflict
                 } else if table[index] != attacks[idx] {
                     ok = false;
                     break;
