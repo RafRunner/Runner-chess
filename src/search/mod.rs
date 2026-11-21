@@ -422,6 +422,7 @@ impl<'search> Searcher<'search> {
     fn enter(&mut self, parent: &Board, child: &NodeInfo<'_>, mv: Option<Move>) {
         self.tt.prefetch(child.board.hash());
         self.accumulators.push(parent, child.board, mv);
+        self.ordering.enter(child.ply, parent, mv);
         self.push_hash(child.board.hash());
     }
 

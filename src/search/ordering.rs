@@ -1,15 +1,25 @@
 use crate::{
     board::Board,
     chess_move::{Move, MoveKind, PromotionPiece},
-    piece::{Color, PieceKind},
+    piece::{Color, Piece, PieceKind},
     score::Score,
     search::NodeInfo,
+    square::Square,
 };
+
+/// How good each quiet move, by piece and target square, proved after one move
+type Continuation = [[i16; 64]; 12];
 
 pub struct MoveOrdering {
     killers: [[Option<Move>; 2]; Score::MAX_PLY as usize],
     // history is 32 KB. We store it in a box to avoid copying all values on move
     history: Box<[[[i32; 64]; 64]; 2]>,
+    /// Continuation history: a [`Continuation`] for each move, by piece and target
+    /// square, that came one or two plies before. 1.2 MB
+    continuations: Box<[[Continuation; 64]; 12]>,
+    /// The piece and target square of the move that led to each ply of the line being
+    /// searched: `None` at the root and after a null move
+    line: [Option<(Piece, Square)>; Score::MAX_PLY as usize + 2],
 }
 
 impl MoveOrdering {
@@ -26,6 +36,11 @@ impl MoveOrdering {
         Self {
             killers: [[None; 2]; Score::MAX_PLY as usize],
             history: Box::new([[[0; 64]; 64]; 2]),
+            continuations: vec![[[[0; 64]; 12]; 64]; 12]
+                .into_boxed_slice()
+                .try_into()
+                .expect("12 pieces"),
+            line: [None; Score::MAX_PLY as usize + 2],
         }
     }
 
@@ -39,11 +54,44 @@ impl MoveOrdering {
                 }
             }
         }
+        for bonus in self
+            .continuations
+            .as_flattened_mut()
+            .as_flattened_mut()
+            .as_flattened_mut()
+        {
+            *bonus /= 2;
+        }
+        self.line = [None; Score::MAX_PLY as usize + 2];
     }
 
     pub fn clear(&mut self) {
         self.killers = [[None; 2]; Score::MAX_PLY as usize];
         *self.history = [[[0; 64]; 64]; 2];
+        for bonus in self
+            .continuations
+            .as_flattened_mut()
+            .as_flattened_mut()
+            .as_flattened_mut()
+        {
+            *bonus = 0;
+        }
+        self.line = [None; Score::MAX_PLY as usize + 2];
+    }
+
+    /// `mv`, made on `parent`, leads to the node at `ply` (`None` passes)
+    pub(super) fn enter(&mut self, ply: u32, parent: &Board, mv: Option<Move>) {
+        self.line[ply as usize] =
+            mv.map(|mv| (parent.piece_at(mv.from()).expect("a piece moves"), mv.to()));
+    }
+
+    /// The moves that came one and two plies before the node at `ply`
+    fn before(&self, ply: u32) -> [Option<(Piece, Square)>; 2] {
+        let ply = ply as usize;
+        [
+            self.line[ply],
+            ply.checked_sub(1).and_then(|ply| self.line[ply]),
+        ]
     }
 
     pub(super) fn on_beta_cutoff(&mut self, node: NodeInfo, mv: Move, quiets_tried: &[Move]) {
@@ -58,10 +106,27 @@ impl MoveOrdering {
         let bonus = (300 * node.depth as i32 - 250).min(Self::MAX_BONUS);
 
         self.update_history(node.board.side_to_move(), mv, bonus);
+        self.update_continuations(node, mv, bonus);
 
         for &mv in quiets_tried {
             self.update_history(node.board.side_to_move(), mv, -bonus);
+            self.update_continuations(node, mv, -bonus);
         }
+    }
+
+    fn update_continuations(&mut self, node: NodeInfo, mv: Move, bonus: i32) {
+        let piece = node.board.piece_at(mv.from()).expect("a piece moves");
+        for (before, sq) in self.before(node.ply).into_iter().flatten() {
+            let entry = &mut self.continuations[before][sq][piece][mv.to()];
+            let h = i32::from(*entry);
+            *entry = (h + bonus - h * bonus.abs() / Self::MAX_BONUS) as i16;
+        }
+    }
+
+    /// The tables of the moves that came one and two plies before the node at `ply`
+    fn continuations_at(&self, ply: u32) -> [Option<&Continuation>; 2] {
+        self.before(ply)
+            .map(|before| before.map(|(piece, sq)| &self.continuations[piece][sq]))
     }
 
     pub(super) fn is_killer(&self, mv: Move, ply: u32) -> bool {
@@ -78,15 +143,27 @@ impl MoveOrdering {
         history[mv.from()][mv.to()] += bonus - h * bonus.abs() / Self::MAX_BONUS;
     }
 
-    /// Killers first, then by history
-    fn quiet_key(&self, board: &Board, ply: u32, mv: Move) -> i32 {
-        match self.killers[ply as usize]
+    /// Killers first, then by history and by `continuations`, of the node
+    fn quiet_key(
+        &self,
+        board: &Board,
+        ply: u32,
+        continuations: [Option<&Continuation>; 2],
+        mv: Move,
+    ) -> i32 {
+        if let Some(idx) = self.killers[ply as usize]
             .iter()
             .position(|&killer| killer == Some(mv))
         {
-            Some(idx) => Self::KILLER_BASE + (1 - idx as i32),
-            None => self.history_bonus(mv, board.side_to_move()),
+            return Self::KILLER_BASE + (1 - idx as i32);
         }
+        let piece = board.piece_at(mv.from()).expect("a piece moves");
+        let continuation: i32 = continuations
+            .into_iter()
+            .flatten()
+            .map(|table| i32::from(table[piece][mv.to()]))
+            .sum();
+        self.history_bonus(mv, board.side_to_move()) + continuation
     }
 
     /// Captures and promotions by the material they win, then by the cheaper piece
@@ -217,8 +294,9 @@ impl MovePicker {
         picker.generated.clear();
         board.generate_quiets_into(&mut picker.generated);
         generated_tt_move |= tt_move.is_some_and(|mv| picker.generated.contains(&mv));
+        let continuations = ordering.continuations_at(ply);
         pack_into(&picker.generated, &mut picker.quiets, |mv| {
-            ordering.quiet_key(board, ply, mv)
+            ordering.quiet_key(board, ply, continuations, mv)
         });
 
         picker.tt_move = tt_move.filter(|_| generated_tt_move);
@@ -491,7 +569,7 @@ mod tests {
         tt_move: Option<Move>,
     ) -> Vec<Move> {
         let key = |mv: Move| match mv.is_quiet() {
-            true => ordering.quiet_key(board, ply, mv),
+            true => ordering.quiet_key(board, ply, ordering.continuations_at(ply), mv),
             false => MoveOrdering::noisy_key(board, mv),
         };
         let mut moves = board.generate_noisy();
