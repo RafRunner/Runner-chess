@@ -112,6 +112,7 @@ pub struct Uci<W> {
     hash_mb: usize,
     /// The search running, which gives them back once it ends
     search: Option<JoinHandle<SearchResult>>,
+    /// The search running is a `go infinite`, which only ends with `stop`
     infinite: bool,
     /// Set by `stop` and `quit` to end the search early
     stop: Arc<AtomicBool>,
