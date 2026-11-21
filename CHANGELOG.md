@@ -752,6 +752,15 @@ These keep the nodes of the bench, so `hyperfine` on `bench search 17` decides t
 - **Accumulators updated lazily**, only when an evaluation asks for them: just 5.3% of
   the updates got skipped, as nearly every node evaluates, quiescence always, and the
   bookkeeping cost as much as it saved.
+  Again with the table in quiescence, where a cut could skip them: 2.4% slower on the
+  M4, 2.6% on Zen 4 and 6.0% on Graviton4, to depth 16 on 600 positions of the ruler
+  (`engines/tools/ttd.py`). In `engines/tools/patches/lazy-accumulators.patch`.
+- **The evaluation after the table's cut in quiescence**, to skip it where the table
+  cuts: 5% slower on the M4, and 1.7% on Zen 4 and 1.9% on Graviton4 with the table on
+  huge pages. The evaluation is what gives the prefetch time to arrive, and waiting for
+  the memory costs more than the evaluations saved. With the accumulators updated
+  lazily nothing is left in between, and it is 10 to 12% slower on all three. A static
+  evaluation stored in the table would have to pay for this order.
 - **The best move picked one at a time** instead of sorting the list of moves: 10.6%
   slower. The nodes that don't cut go through all their moves, the ones pruned too,
   and picking each of them goes through the rest.
@@ -805,6 +814,17 @@ These keep the nodes of the bench, so `hyperfine` on `bench search 17` decides t
   stability of the best move.
 - **Root moves ordered by the nodes each took**: neutral against 1.0.1, +4.4 ± 14.3 Elo
   counting only the last search of each move, -4.7 ± 12.7 adding them up.
+
+- **A much shallower search keeping the deeper entry of its position**, giving it only
+  its move, without the table in quiescence: +5.1 ± 10.0 Elo against 1.10.0 in 1220
+  games, noise. The rule fires in about 1% of the stores of a position already there.
+  It went in with the table in quiescence, whose entries of depth 0 it holds back.
+- **Delta pruning in quiescence**, skipping a capture when the static evaluation, the
+  piece taken and a margin stay under alpha: with a margin of 500, +1.4 ± 13.3 Elo
+  against 1.10.0 in 760 games, where the same search without it got +26.2 ± 12.6 and
+  +16.6 ± 9.9. With 200 the error on the ruler went from 77 to 81. `best` has to rise
+  to the bound of the capture skipped, or the table stores an upper bound too low. In
+  `engines/tools/patches/delta-pruning.patch`.
 
 ### The network and its data
 
