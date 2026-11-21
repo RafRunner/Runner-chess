@@ -50,15 +50,12 @@ impl Searcher<'_> {
 /// `static_eval` is `None` in check, where every evasion gets searched.
 pub(super) fn prunes_quiet(
     node: NodeInfo<'_>,
-    static_eval: Option<Score>,
+    static_eval: Score,
     best: Score,
     quiets_tried: usize,
     mv: Move,
     gives_check: bool,
 ) -> bool {
-    let Some(static_eval) = static_eval else {
-        return false;
-    };
     if node.ply == 0 || best <= -Score::MAX_EVAL || !mv.is_quiet() || gives_check {
         return false;
     }
@@ -127,7 +124,8 @@ mod tests {
             ..NodeInfo::new(&board, depth, 3, Score::new(alpha), Score::new(alpha + 1))
         };
         let check = board.gives_check(mv);
-        prunes_quiet(node, eval.map(Score::new), best, quiets, mv, check)
+        eval.map(Score::new)
+            .is_some_and(|eval| prunes_quiet(node, eval, best, quiets, mv, check))
     }
 
     #[test]
@@ -172,7 +170,7 @@ mod tests {
     fn checks_and_captures_never_get_skipped() {
         let board = board("4k3/8/8/8/8/8/3p4/R3K3 w - - 0 1");
         let node = NodeInfo::new(&board, 1, 3, Score::new(0), Score::new(1));
-        let eval = Some(Score::new(-1000));
+        let eval = Score::new(-1000);
         for uci in ["a1a8", "e1d2"] {
             let mv = find_move(&board, uci);
             let check = board.gives_check(mv);

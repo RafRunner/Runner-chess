@@ -218,7 +218,8 @@ impl<'search> Searcher<'search> {
         // internal iterative reduction: without a move from the table, the order is a
         // guess, and the node probably wasn't important before. A shallower search is
         // cheaper, and leaves a move for the next iteration
-        if tt_move.is_none() && node.depth >= IIR_MIN_DEPTH {
+        let iir = entry.is_none_or(|e| e.best_move.is_none() || e.depth == 0);
+        if iir && node.depth >= IIR_MIN_DEPTH {
             node.depth -= 1;
         }
 
@@ -254,15 +255,14 @@ impl<'search> Searcher<'search> {
         for mv in moves.by_ref() {
             // decided before making the move, since most moves that get here are pruned
             let gives_check = node.board.gives_check_with(mv, &info);
-            let legal = node.board.is_legal_with(mv, &info);
-            if futility::prunes_quiet(node, static_eval, best, quiets_tried.len(), mv, gives_check)
-                || futility::prunes_by_see(node, best, mv, gives_check)
-            {
-                // the index of the moves after it counts every legal move
-                legal_moves += usize::from(legal);
+            if !node.board.is_legal_with(mv, &info) {
                 continue;
             }
-            if !legal {
+            if static_eval.is_some_and(|eval| {
+                futility::prunes_quiet(node, eval, best, quiets_tried.len(), mv, gives_check)
+            }) || futility::prunes_by_see(node, best, mv, gives_check)
+            {
+                legal_moves += 1;
                 continue;
             }
 
@@ -336,19 +336,40 @@ impl<'search> Searcher<'search> {
         }
         self.nodes += 1;
 
-        let static_eval = self.evaluate(node);
+        let original_alpha = node.alpha;
+
+        // before the probe, even if it then cuts: it gives the prefetch time to arrive,
+        // and the search was 5.6% faster for it
+        let eval = self.evaluate(node);
+
+        let entry = self.tt.probe(node.board.hash());
+        if let Some(score) = self.tt_cut(entry, node) {
+            return score;
+        }
+        let tt_move = entry.and_then(|e| e.best_move);
+
+        let static_eval = entry.map_or(eval, |entry| entry.refine(eval));
         if static_eval >= node.beta {
             // Not capturing is already too good for the opponent. No point in continuing
+            self.tt.store(
+                node.board.hash(),
+                node.depth,
+                static_eval.to_tt(node.ply),
+                Bound::Lower,
+                None,
+            );
             return static_eval;
         }
         if static_eval > node.alpha {
             node.alpha = static_eval;
         }
 
-        let mut best = static_eval;
         let ply = node.ply as usize;
         let buffers = mem::take(&mut self.move_buffers[ply]);
-        let mut moves = MovePicker::new_captures(node.board, buffers).into_iterator(node.board);
+        let mut best = static_eval;
+        let mut best_move = None;
+        let mut moves =
+            MovePicker::new_captures(node.board, tt_move, buffers).into_iterator(node.board);
 
         // only worked out once a capture comes, since most nodes here have none
         let mut info = None;
@@ -367,21 +388,35 @@ impl<'search> Searcher<'search> {
                 break;
             }
 
-            if node.update(&mut best, score) == Outcome::Cut {
-                break;
+            match node.update(&mut best, score) {
+                Outcome::Worse => (),
+                Outcome::Raised => {
+                    best_move = Some(mv);
+                }
+                Outcome::Cut => {
+                    best_move = Some(mv);
+                    break;
+                }
             }
         }
         self.move_buffers[ply] = moves.into_buffers();
+
+        if !self.stopped {
+            let bound = Bound::new(best, original_alpha, node.beta);
+            self.tt.store(
+                node.board.hash(),
+                node.depth,
+                best.to_tt(node.ply),
+                bound,
+                best_move,
+            );
+        }
 
         best
     }
 
     /// The score of `child`, reached by `mv` (`None` passes), for the side to move here
     fn search_child(&mut self, parent: &Board, child: NodeInfo<'_>, mv: Option<Move>) -> Score {
-        // quiescence doesn't look at the table
-        if child.depth > 0 {
-            self.tt.prefetch(child.board.hash());
-        }
         self.enter(parent, &child, mv);
         let score = -self.negamax(child);
         self.leave();
@@ -397,6 +432,7 @@ impl<'search> Searcher<'search> {
     }
 
     fn enter(&mut self, parent: &Board, child: &NodeInfo<'_>, mv: Option<Move>) {
+        self.tt.prefetch(child.board.hash());
         self.accumulators.push(parent, child.board, mv);
         self.push_hash(child.board.hash());
     }
@@ -461,7 +497,11 @@ impl<'search> Searcher<'search> {
     /// depend on the way to it
     fn tt_cut(&self, entry: Option<Entry>, node: NodeInfo<'_>) -> Option<Score> {
         let entry = entry?;
-        if node.ply == 0 || u32::from(entry.depth) < node.depth || self.has_appeared(node.board) {
+        if node.ply == 0
+            || node.is_pv()
+            || u32::from(entry.depth) < node.depth
+            || self.has_appeared(node.board)
+        {
             return None;
         }
 
@@ -692,11 +732,11 @@ mod tests {
         })
     }
 
-    /// The score `tt_cut` cuts with for `board` at `depth` and `ply`, with the whole
-    /// window open.
+    /// The score `tt_cut` cuts with for `board` at `depth` and `ply`, on a null window
+    /// at a draw
     fn tt_cut_at(searcher: &Searcher, board: &Board, depth: u32, ply: u32) -> Option<Score> {
         let entry = searcher.tt.probe(board.hash());
-        let node = NodeInfo::new(board, depth, ply, -Score::INF, Score::INF);
+        let node = NodeInfo::new(board, depth, ply, Score::DRAW, Score::new(1));
         searcher.tt_cut(entry, node)
     }
 
@@ -704,19 +744,26 @@ mod tests {
     fn the_bound_decides_the_cutoff() {
         // the value is exactly 100
         assert_eq!(
-            tt_cutoff(Bound::Exact, 100, 150, 200),
+            tt_cutoff(Bound::Exact, 100, 150, 151),
             Some(Score::new(100))
         );
-        assert_eq!(tt_cutoff(Bound::Exact, 100, 0, 50), Some(Score::new(100)));
+        assert_eq!(tt_cutoff(Bound::Exact, 100, 49, 50), Some(Score::new(100)));
         // at least 100: it's enough when beta is below
-        assert_eq!(tt_cutoff(Bound::Lower, 100, 0, 50), Some(Score::new(100)));
-        assert_eq!(tt_cutoff(Bound::Lower, 100, 0, 200), None);
+        assert_eq!(tt_cutoff(Bound::Lower, 100, 49, 50), Some(Score::new(100)));
+        assert_eq!(tt_cutoff(Bound::Lower, 100, 199, 200), None);
         // at most 100: it's enough when alpha is above
         assert_eq!(
-            tt_cutoff(Bound::Upper, 100, 150, 200),
+            tt_cutoff(Bound::Upper, 100, 150, 151),
             Some(Score::new(100))
         );
-        assert_eq!(tt_cutoff(Bound::Upper, 100, 0, 200), None);
+        assert_eq!(tt_cutoff(Bound::Upper, 100, 99, 100), None);
+    }
+
+    #[test]
+    fn the_principal_variation_never_cuts() {
+        assert_eq!(tt_cutoff(Bound::Exact, 100, 0, 200), None);
+        assert_eq!(tt_cutoff(Bound::Lower, 100, 0, 50), None);
+        assert_eq!(tt_cutoff(Bound::Upper, 100, 150, 200), None);
     }
 
     #[test]

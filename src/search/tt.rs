@@ -18,8 +18,7 @@ use crate::{chess_move::Move, score::Score, zobrist::ZobristHash};
 pub enum Bound {
     /// The score fell inside the window: it is the real value
     Exact,
-    /// A move reached beta and cut the search: the real value is at least the score,
-    /// maybe more, since the remaining moves were never searched
+    /// A move reached beta and cut the search: the real value is at least the score
     Lower,
     /// No move beat alpha: the real value is at most the score
     Upper,
@@ -55,6 +54,7 @@ impl Entry {
         score: Score,
         bound: Bound,
         best_move: Option<Move>,
+        generation: u8,
     ) -> Self {
         Self {
             key: hash,
@@ -62,7 +62,7 @@ impl Entry {
             score,
             depth: depth.min(u8::MAX.into()) as u8,
             bound,
-            generation: 0,
+            generation,
         }
     }
 
@@ -140,10 +140,7 @@ impl TranspositionTable {
         let generation = self.generation;
         let index = self.index(hash);
         let bucket = &mut self.buckets[index];
-        let mut new = Entry {
-            generation,
-            ..Entry::new(hash, depth, score, bound, best_move)
-        };
+        let mut new = Entry::new(hash, depth, score, bound, best_move, generation);
 
         // the same position goes where it was, keeping its move if this search has none
         let same = bucket.iter().position(|e| e.is_some_and(|e| e.key == hash));
@@ -151,9 +148,25 @@ impl TranspositionTable {
             Some(deepest) if deepest.generation == generation && deepest.depth > new.depth => 1,
             _ => 0,
         });
-        if let Some(old) = bucket[slot]
+
+        // a quiescence entry doesn't push out a deeper one of this search
+        if same.is_none()
+            && slot == 1
+            && new.depth == 0
+            && bucket[1].is_some_and(|e| e.generation == generation && e.depth > 0)
+        {
+            return;
+        }
+
+        if let Some(old) = &mut bucket[slot]
             && old.key == hash
         {
+            // a much shallower search of this search keeps the deeper entry, but not its move.
+            let shallow = new.depth == 0 && old.depth > 0 || new.depth + 3 <= old.depth;
+            if shallow && new.bound != Bound::Exact && new.generation == old.generation {
+                old.best_move = new.best_move.or(old.best_move);
+                return;
+            }
             new.best_move = new.best_move.or(old.best_move);
         }
         // the entry it pushes out of the first slot may still be the latest of the rest
@@ -356,6 +369,80 @@ mod tests {
     }
 
     #[test]
+    fn a_much_shallower_search_keeps_the_deeper_entry_but_gives_its_move() {
+        let board = board(Board::STARTPOS);
+        let [e4, d4] = ["e2e4", "d2d4"].map(|uci| find_move(&board, uci));
+        let mut tt = TranspositionTable::with_buckets(1);
+
+        tt.store(board.hash(), 8, Score::new(30), Bound::Lower, Some(e4));
+        tt.store(board.hash(), 5, Score::new(10), Bound::Lower, Some(d4));
+        let entry = tt.probe(board.hash()).unwrap();
+        assert_eq!(
+            (entry.depth, entry.score, entry.bound),
+            (8, Score::new(30), Bound::Lower)
+        );
+        assert_eq!(entry.best_move, Some(d4));
+
+        // without a move, the deeper one keeps its own
+        tt.store(board.hash(), 0, Score::new(10), Bound::Upper, None);
+        assert_eq!(tt.probe(board.hash()).unwrap().best_move, Some(d4));
+
+        // less than 3 plies shallower replaces it
+        tt.store(board.hash(), 6, Score::new(20), Bound::Upper, None);
+        assert_eq!(tt.probe(board.hash()).unwrap().depth, 6);
+    }
+
+    #[test]
+    fn an_exact_score_or_a_new_search_replaces_a_deeper_entry() {
+        let mut tt = TranspositionTable::with_buckets(1);
+        let hash = hash(Board::STARTPOS);
+
+        tt.store(hash, 8, Score::new(30), Bound::Lower, None);
+        tt.store(hash, 1, Score::new(10), Bound::Exact, None);
+        assert_eq!(tt.probe(hash).unwrap().depth, 1);
+
+        tt.store(hash, 8, Score::new(30), Bound::Lower, None);
+        tt.new_search();
+        tt.store(hash, 1, Score::new(10), Bound::Upper, None);
+        assert_eq!(tt.probe(hash).unwrap().depth, 1);
+    }
+
+    #[test]
+    fn a_quiescence_entry_only_replaces_another_of_the_same_position() {
+        let mut tt = TranspositionTable::with_buckets(1);
+        let hash = hash(Board::STARTPOS);
+
+        tt.store(hash, 1, Score::new(30), Bound::Lower, None);
+        tt.store(hash, 0, Score::new(10), Bound::Lower, None);
+        assert_eq!(tt.probe(hash).unwrap().depth, 1);
+
+        // in a new search, and then by another of the quiescence
+        tt.new_search();
+        tt.store(hash, 0, Score::new(10), Bound::Upper, None);
+        assert_eq!(tt.probe(hash).unwrap().depth, 0);
+        tt.store(hash, 0, Score::new(20), Bound::Lower, None);
+        let entry = tt.probe(hash).unwrap();
+        assert_eq!((entry.score, entry.bound), (Score::new(20), Bound::Lower));
+    }
+
+    #[test]
+    fn a_quiescence_entry_does_not_push_out_a_deeper_one_of_the_search() {
+        let mut tt = TranspositionTable::with_buckets(1);
+        let [deep, shallow, quiescence] = three_positions();
+
+        tt.store(deep, 8, Score::DRAW, Bound::Exact, None);
+        tt.store(shallow, 2, Score::DRAW, Bound::Exact, None);
+        tt.store(quiescence, 0, Score::DRAW, Bound::Lower, None);
+        assert!(tt.probe(quiescence).is_none());
+        assert!(tt.probe(shallow).is_some());
+
+        // the entries of an earlier search give way
+        tt.new_search();
+        tt.store(quiescence, 0, Score::DRAW, Bound::Lower, None);
+        assert!(tt.probe(quiescence).is_some());
+    }
+
+    #[test]
     fn clear_empties_the_table() {
         let mut tt = TranspositionTable::new(1);
         let hash = hash(Board::STARTPOS);
@@ -390,7 +477,7 @@ mod tests {
     #[test]
     fn the_bound_says_when_the_score_refines_the_static_eval() {
         let refine = |bound, score: i32, eval: i32| {
-            let entry = Entry::new(ZobristHash::empty(), 5, Score::new(score), bound, None);
+            let entry = Entry::new(ZobristHash::empty(), 5, Score::new(score), bound, None, 0);
             entry.refine(Score::new(eval))
         };
 
@@ -408,6 +495,7 @@ mod tests {
             Score::mate_in(3),
             Bound::Exact,
             None,
+            0,
         );
         assert_eq!(mate.refine(Score::new(10)), Score::new(10));
     }

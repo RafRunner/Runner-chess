@@ -187,7 +187,7 @@ pub(super) struct MoveBuffers {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stage {
-    TtMove,
+    TtMove { keep_losing: bool },
     SortNoisy { keep_losing: bool },
     GoodNoisy { keep_losing: bool },
     SortQuiets,
@@ -205,7 +205,7 @@ impl MovePicker {
         ply: u32,
         buffers: MoveBuffers,
     ) -> Self {
-        let mut picker = Self::empty(Stage::TtMove, buffers);
+        let mut picker = Self::empty(Stage::TtMove { keep_losing: true }, buffers);
         let mut generated_tt_move = false;
 
         board.generate_noisy_into(&mut picker.generated);
@@ -226,10 +226,13 @@ impl MovePicker {
     }
 
     /// Only the captures that don't lose material in the exchange, for quiescence: the
-    /// others won't improve on standing pat
-    pub(super) fn new_captures(board: &Board, buffers: MoveBuffers) -> Self {
-        let mut picker = Self::empty(Stage::SortNoisy { keep_losing: false }, buffers);
+    /// others won't improve on standing pat. The table's move goes first if it's one of
+    /// the captures, whatever it loses: a search already found it the best there
+    pub(super) fn new_captures(board: &Board, tt_move: Option<Move>, buffers: MoveBuffers) -> Self {
+        let mut picker = Self::empty(Stage::TtMove { keep_losing: false }, buffers);
         board.generate_captures_into(&mut picker.generated);
+        // only a capture this generates: the table's move may be quiet, from negamax
+        picker.tt_move = tt_move.filter(|mv| picker.generated.contains(mv));
         pack_into(&picker.generated, &mut picker.noisy, |mv| {
             MoveOrdering::noisy_key(board, mv)
         });
@@ -274,8 +277,8 @@ impl MovePicker {
         let tt_move = self.tt_move;
         loop {
             match self.stage {
-                Stage::TtMove => {
-                    self.stage = Stage::SortNoisy { keep_losing: true };
+                Stage::TtMove { keep_losing } => {
+                    self.stage = Stage::SortNoisy { keep_losing };
                     if tt_move.is_some() {
                         return tt_move;
                     }
@@ -614,8 +617,8 @@ mod tests {
         let promotions = "1n2k3/P7/1r6/8/8/8/8/4K3 w - - 0 1";
         for fen in PERFT_POSITIONS.into_iter().chain([promotions]) {
             let board = board(fen);
-            let captures =
-                MovePicker::new_captures(&board, MoveBuffers::default()).into_iterator(&board);
+            let captures = MovePicker::new_captures(&board, None, MoveBuffers::default())
+                .into_iterator(&board);
             let captures = legal(&board, captures.collect());
             let expected: Vec<Move> = ordered(fen)
                 .into_iter()
@@ -624,6 +627,45 @@ mod tests {
 
             assert_eq!(captures, expected, "{fen}");
         }
+    }
+
+    /// The legal moves the quiescence gets from `fen`, with `tt_move` from the table
+    fn captures_after(fen: &str, tt_move: Option<&str>) -> Vec<String> {
+        let board = board(fen);
+        let tt_move = tt_move.map(|uci| find_move(&board, uci));
+        let captures = MovePicker::new_captures(&board, tt_move, MoveBuffers::default())
+            .into_iterator(&board)
+            .collect();
+        legal(&board, captures)
+            .into_iter()
+            .map(Move::to_uci)
+            .collect()
+    }
+
+    #[test]
+    fn the_tt_move_comes_first_in_the_quiescence_and_only_once() {
+        let captures = captures_after(KIWIPETE, None);
+        let last = captures.last().unwrap();
+        let after = captures_after(KIWIPETE, Some(last));
+
+        assert_eq!(&after[0], last);
+        assert_eq!(after[1..], captures[..captures.len() - 1]);
+    }
+
+    #[test]
+    fn a_quiet_tt_move_stays_out_of_the_quiescence() {
+        assert_eq!(
+            captures_after(KIWIPETE, Some("a2a3")),
+            captures_after(KIWIPETE, None)
+        );
+    }
+
+    #[test]
+    fn a_tt_move_that_loses_material_still_gets_searched() {
+        // Qxd5 exd5: the queen for a pawn
+        let fen = "4k3/8/4p3/3p4/8/8/8/3QK3 w - - 0 1";
+        assert!(captures_after(fen, None).is_empty());
+        assert_eq!(captures_after(fen, Some("d1d5")), ["d1d5"]);
     }
 
     // killers
