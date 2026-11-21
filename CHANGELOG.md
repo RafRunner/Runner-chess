@@ -8,6 +8,34 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.11.0 - 2026-11-21
+
+The transposition table in quiescence.
+
+### Changed
+- Quiescence uses the table: it probes and cuts on any bound, off the principal
+  variation, tries the table's move first when it is a capture, stands pat on the
+  static evaluation refined by the entry, and stores with depth 0 and the alpha from
+  before standing pat. An entry of depth 0 never cuts in `negamax`.
+- A search 3 plies or more shallower than the entry of its position keeps it, and only
+  gives it its move, unless its bound is exact or the entry is from an earlier search.
+  An entry of quiescence never replaces a deeper one of its position, nor pushes a
+  deeper one of this search out of the second slot of a bucket.
+- No table cutoffs on the principal variation: only the root was left out.
+- Internal iterative reduction also where the entry comes from quiescence.
+- The evaluation comes before the table probe, in quiescence and in `negamax`: it
+  gives the prefetch time to arrive (see "Tried and left out").
+
+### Measured
+- Bench: 19987, from 22463.
+- Strength: +17.3 ± 9.8 Elo against 1.10.0 in 1266 games at 10+0.1, SPRT [0, 10]
+  passed, after +26.2 ± 12.6 in 852, also passed. Both before the evaluation moved in
+  `negamax`, which keeps the tree.
+- To depth 16 on 600 positions of the ruler (`engines/tools/ttd.py`): 150.4 million
+  nodes, from 161.3. In time, 2.5% faster than 1.10.0 on Graviton4 and the same on Zen
+  4 and the M4, then 2.3%, 1.4% and 2.9% faster with the evaluation before the probe in
+  `negamax`.
+
 ## 1.10.0 - 2026-11-17
 
 Options and tooling: with the defaults, the engine plays as 1.9.0.
