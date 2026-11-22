@@ -8,6 +8,25 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.12.0 - 2026-11-22
+
+Continuation history.
+
+### Added
+- Continuation history: for each quiet move, how it did after the move one ply before
+  and after the move two plies before, each in a table indexed by that move's piece and
+  square and by its own (1.2 MB of `i16`). It learns at beta cutoffs with the bonus and
+  the gravity of the history, and is added to it in the order of the quiet moves. The
+  late move reductions still look at the history alone.
+
+### Measured
+- Bench: 20293, from 19987.
+- Strength: +31.8 ± 13.4 Elo against 1.11.0 in 646 games at 10+0.1, SPRT [0, 10]
+  passed, after +20.9 ± 10.9 in 1050 against 1.11.0 without the evaluation before the
+  probe in `negamax`, also passed.
+- To depth 16 on 600 positions of the ruler: about the same nodes (151.0 million, from
+  150.4) and 4.5% slower, so the gain shows only in games.
+
 ## 1.11.0 - 2026-11-21
 
 The transposition table in quiescence.
