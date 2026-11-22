@@ -160,6 +160,16 @@ impl MoveOrdering {
         {
             return Self::KILLER_BASE + (1 - idx as i32);
         }
+        self.quiet_history(board, continuations, mv)
+    }
+
+    /// History plus what `continuations` say of `mv`
+    fn quiet_history(
+        &self,
+        board: &Board,
+        continuations: [Option<&Continuation>; 2],
+        mv: Move,
+    ) -> i32 {
         let piece = board.piece_at(mv.from()).expect("a piece moves");
         let continuation: i32 = continuations
             .into_iter()
@@ -167,6 +177,11 @@ impl MoveOrdering {
             .map(|table| i32::from(table[piece][mv.to()]))
             .sum();
         self.history_bonus(mv, board.side_to_move()) + continuation
+    }
+
+    /// History and continuation history of the quiet `mv` at `node`
+    pub(super) fn quiet_history_at(&self, node: NodeInfo, mv: Move) -> i32 {
+        self.quiet_history(node.board, self.continuations_at(node.ply), mv)
     }
 
     /// Captures and promotions by the material they win, then by the cheaper piece

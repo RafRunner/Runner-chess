@@ -37,7 +37,7 @@ impl Searcher<'_> {
         }
 
         let reduce = if self.is_reducible(node, mv, move_idx, gives_check) {
-            let history = self.ordering.history_bonus(mv, node.board.side_to_move());
+            let history = self.ordering.quiet_history_at(node, mv);
             // a ply more off the principal variation, whose moves are expected to fail
             // low anyway
             let extra = if node.is_pv() { 0 } else { 1 };
