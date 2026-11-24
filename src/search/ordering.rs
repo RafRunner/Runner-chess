@@ -3,7 +3,7 @@ use crate::{
     chess_move::{Move, MoveKind, PromotionPiece},
     piece::{Color, Piece, PieceKind},
     score::Score,
-    search::NodeInfo,
+    search::{NodeInfo, correction::Corrections},
     square::Square,
 };
 
@@ -20,6 +20,7 @@ pub struct MoveOrdering {
     /// The piece and target square of the move that led to each ply of the line being
     /// searched: `None` at the root and after a null move
     line: [Option<(Piece, Square)>; Score::MAX_PLY as usize + 2],
+    pub(super) corrections: Corrections,
 }
 
 impl MoveOrdering {
@@ -41,6 +42,7 @@ impl MoveOrdering {
                 .try_into()
                 .expect("12 pieces"),
             line: [None; Score::MAX_PLY as usize + 2],
+            corrections: Corrections::new(),
         }
     }
 
@@ -76,6 +78,7 @@ impl MoveOrdering {
         {
             *bonus = 0;
         }
+        self.corrections.clear();
         self.line = [None; Score::MAX_PLY as usize + 2];
     }
 

@@ -1,3 +1,4 @@
+mod correction;
 mod draw;
 mod futility;
 mod limits;
@@ -306,6 +307,24 @@ impl<'search> Searcher<'search> {
         if !self.stopped {
             let bound = Bound::new(best, original_alpha, node.beta);
             self.store(node, best, bound, best_move);
+
+            // a capture changes the material, which the eval can't be blamed for, and
+            // a bound only teaches when the eval is on its wrong side
+            if let Some(eval) = raw_eval
+                && best_move.is_none_or(|mv| mv.is_quiet())
+                && !best.is_mate()
+                && match bound {
+                    Bound::Exact => true,
+                    Bound::Lower => best > eval,
+                    Bound::Upper => best < eval,
+                }
+            {
+                let error = i32::from(best.centipawns().unwrap_or(0))
+                    - i32::from(eval.centipawns().unwrap_or(0));
+                self.ordering
+                    .corrections
+                    .update(node.board, node.depth, error);
+            }
         }
 
         best
@@ -453,8 +472,10 @@ impl<'search> Searcher<'search> {
     /// `node` has to be the current one, whose accumulators are on top
     fn evaluate(&self, node: NodeInfo<'_>) -> Score {
         let score = eval::evaluate(node.board, self.current_accumulators());
-        self.noise
-            .map_or(score, |noise| noise.apply(node.board, score))
+        let score = self
+            .noise
+            .map_or(score, |noise| noise.apply(node.board, score));
+        self.ordering.corrections.correct(node.board, score)
     }
 
     fn check_hard_budget(&mut self) -> bool {
