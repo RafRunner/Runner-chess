@@ -8,6 +8,28 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.13.0 - 2026-11-24
+
+Correction history, and `improving` from the raw evaluation.
+
+### Added
+- Pawn correction history: how far the searches of the positions with each pawn
+  structure ended from their static evaluation, by side to move (64 KB). A node learns
+  when its best move is quiet, its score isn't a mate and its bound is on the far side
+  of the evaluation, deeper searches weighing more. Every static evaluation gets up to
+  64 centipawns of it, except without pawns, where the dead draws stay exact.
+
+### Changed
+- `improving` compares the raw evaluations, not the ones refined by the table entry,
+  which could be the score of a search.
+
+### Measured
+- Bench: 19711, from 20293 (20080 with `improving` alone).
+- Strength: correction history, +14.8 ± 9.3 Elo in 1644 games at 10+0.1, SPRT [0, 10]
+  passed, on a c8g.16xlarge with 60 games at a time and wins adjudicated at 600
+  centipawns. `improving`, +4.3 ± 6.2 against 1.12.0 in 3240 games (LOS 91%), SPRT
+  stopped at LLR 0.88 and taken for the sign.
+
 ## 1.12.0 - 2026-11-22
 
 Continuation history.
