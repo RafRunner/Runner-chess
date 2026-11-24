@@ -229,8 +229,9 @@ impl<'search> Searcher<'search> {
         }
 
         let static_eval = raw_eval.map(|eval| entry.map_or(eval, |entry| entry.refine(eval)));
-        self.static_evals[node.ply as usize] = static_eval;
-        node.improving = self.is_improving(node.ply, static_eval);
+        // the raw one, so that `improving` compares two evals, not an eval with a score
+        self.static_evals[node.ply as usize] = raw_eval;
+        node.improving = self.is_improving(node.ply, raw_eval);
 
         if let Some(eval) = static_eval
             && let Some(score) = Self::reverse_futility_pruning(node, eval)
