@@ -67,10 +67,15 @@ impl Searcher<'_> {
                 .map_or(0, |r| r.nodes);
             let best_share = best_nodes as f64 / self.nodes.max(1) as f64;
             // pondering, it goes on until `ponderhit` or `stop`
-            if self
-                .clock()
-                .is_some_and(|now| self.budget.soft_reached(depth, self.nodes, best_share, now))
-            {
+            if self.clock().is_some_and(|now| {
+                self.budget.soft_reached(
+                    depth,
+                    self.nodes,
+                    best_share,
+                    board.fullmove_counter(),
+                    now,
+                )
+            }) {
                 break;
             }
         }

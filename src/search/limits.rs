@@ -72,6 +72,8 @@ impl Ponder {
 
 const DEFAULT_DEPTH: u32 = 7;
 const MOVE_OVERHEAD: Duration = Duration::from_millis(50);
+const OPENING_SCALE: f64 = 0.75;
+const OPENING_MOVES: u16 = 15;
 
 /// What the search obeys, worked out from `Limits` when the search starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +86,8 @@ pub struct Budget {
     pub soft_nodes: Option<u64>,
     /// Stop in the middle of an iteration after this many nodes
     pub nodes: Option<u64>,
+
+    is_exact: bool,
 }
 
 impl Budget {
@@ -109,13 +113,15 @@ impl Budget {
 
         match (limits.movetime, limits.time[us]) {
             (Some(movetime), _) => {
+                budget.is_exact = true;
                 budget.soft = Some(start + movetime / Self::SOFT_FACTOR);
                 budget.hard = Some(start + movetime.saturating_sub(MOVE_OVERHEAD));
 
                 budget.depth = limits.depth.unwrap_or(Score::MAX_PLY);
             }
             (None, Some(time)) => {
-                let moves = limits.movestogo.unwrap_or(25);
+                budget.is_exact = limits.movestogo.is_some();
+                let moves = limits.movestogo.unwrap_or(20);
                 // more than an increment a move, so the clock runs down until the caps,
                 // which keep a reserve of a few increments
                 let movetime = (time / moves + limits.inc[us] * moves / 4).min(time / 4);
@@ -142,6 +148,7 @@ impl Budget {
             hard: None,
             soft_nodes: None,
             nodes: None,
+            is_exact: false,
         }
     }
 
@@ -160,24 +167,36 @@ impl Budget {
     }
 
     /// No new iteration after `depth`, at `now`, with `nodes` searched and `best_share`
-    /// of them taken by the best move
+    /// of them taken by the best move, at move `fullmove_counter` of the game
     pub(super) fn soft_reached(
         &self,
         depth: u32,
         nodes: u64,
         best_share: f64,
+        fullmove_counter: u16,
         now: Instant,
     ) -> bool {
         let time = self.soft.is_some_and(|soft| {
             if depth < Self::SHARE_DEPTH {
                 return now >= soft;
             }
-            let scale = (Self::SHARE_OFFSET - best_share) * Self::SHARE_SCALE;
+            let mut scale = (Self::SHARE_OFFSET - best_share) * Self::SHARE_SCALE;
+            if !self.is_exact {
+                scale *= opening_scale(fullmove_counter);
+            }
             now - self.start >= (soft - self.start).mul_f64(scale)
         });
 
         time || self.soft_nodes.is_some_and(|soft| nodes >= soft)
     }
+}
+
+/// The share of the soft limit that a move of the opening gets: `OPENING_SCALE` at the
+/// start, growing in a line to all of it at move `OPENING_MOVES`. What it saves stays on
+/// the clock, for the moves after it
+fn opening_scale(fullmove_counter: u16) -> f64 {
+    let progress = f64::from(fullmove_counter.min(OPENING_MOVES)) / f64::from(OPENING_MOVES);
+    OPENING_SCALE + (1.0 - OPENING_SCALE) * progress
 }
 
 #[cfg(test)]
@@ -349,14 +368,46 @@ mod tests {
         let at = |millis| start + ms(millis);
 
         // the first iterations only look at the clock
-        assert!(!budget.soft_reached(7, 0, 1.0, at(990)));
-        assert!(budget.soft_reached(7, 0, 0.0, at(1_000)));
+        assert!(!budget.soft_reached(7, 0, 1.0, OPENING_MOVES, at(990)));
+        assert!(budget.soft_reached(7, 0, 0.0, OPENING_MOVES, at(1_000)));
 
         // 90% of the nodes stops at 0.81 of it, 10% at 1.89
-        assert!(!budget.soft_reached(8, 0, 0.9, at(800)));
-        assert!(budget.soft_reached(8, 0, 0.9, at(820)));
-        assert!(!budget.soft_reached(8, 0, 0.1, at(1_880)));
-        assert!(budget.soft_reached(8, 0, 0.1, at(1_900)));
+        assert!(!budget.soft_reached(8, 0, 0.9, OPENING_MOVES, at(800)));
+        assert!(budget.soft_reached(8, 0, 0.9, OPENING_MOVES, at(820)));
+        assert!(!budget.soft_reached(8, 0, 0.1, OPENING_MOVES, at(1_880)));
+        assert!(budget.soft_reached(8, 0, 0.1, OPENING_MOVES, at(1_900)));
+    }
+
+    #[test]
+    fn the_opening_gets_less_of_the_soft_limit() {
+        // the soft limit is 1 s, and half of the nodes makes it 1.35 s
+        let stops = |limits, fullmove, millis| {
+            let (budget, start) = budget(limits, Color::White);
+            budget.soft_reached(8, 0, 0.5, fullmove, start + ms(millis))
+        };
+        let clock = || Limits {
+            time: [Some(ms(80_000)), None],
+            ..Limits::default()
+        };
+
+        // 0.767 of it at the first move, 0.9 at move 9, all of it from move 15 on
+        assert!(!stops(clock(), 1, 1_020) && stops(clock(), 1, 1_050));
+        assert!(!stops(clock(), 9, 1_200) && stops(clock(), 9, 1_230));
+        assert!(!stops(clock(), 15, 1_340) && stops(clock(), 15, 1_360));
+        assert!(!stops(clock(), 60, 1_340) && stops(clock(), 60, 1_360));
+
+        // a time given for this move, or for a number of them, isn't saved for later
+        let movetime = || Limits {
+            movetime: Some(ms(4_000)),
+            ..Limits::default()
+        };
+        let movestogo = || Limits {
+            time: [Some(ms(80_000)), None],
+            movestogo: Some(20),
+            ..Limits::default()
+        };
+        assert!(!stops(movetime(), 1, 1_340) && stops(movetime(), 1, 1_360));
+        assert!(!stops(movestogo(), 1, 1_340) && stops(movestogo(), 1, 1_360));
     }
 
     #[test]
@@ -365,11 +416,11 @@ mod tests {
         let now = Instant::now();
         for (depth, share) in [(3, 0.5), (10, 0.0), (10, 1.0)] {
             assert!(
-                !budget.soft_reached(depth, 999, share, now),
+                !budget.soft_reached(depth, 999, share, OPENING_MOVES, now),
                 "{depth} {share}"
             );
             assert!(
-                budget.soft_reached(depth, 1_000, share, now),
+                budget.soft_reached(depth, 1_000, share, OPENING_MOVES, now),
                 "{depth} {share}"
             );
         }
