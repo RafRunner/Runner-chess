@@ -107,7 +107,8 @@ here at once, in another order.
 
 ### sprt
 
-A match of fastchess on one worker, as `scripts/match.sh --sprt` plays here: the engine
+A match of fastchess on one worker, played by `scripts/match.sh` itself, which the job
+takes from here, so what changes there changes here without a deploy: the engine
 against the baseline, git refs or `worktree`, from `8moves_v3.pgn`, until the SPRT
 [0, 10] decides, or `--bounds`. The worker builds both engines and fastchess 1.8.2, the
 version of the repository's SPRTs, and plays as many games at once as it has vCPUs but

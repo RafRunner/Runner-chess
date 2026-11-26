@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tarfile
 import time
@@ -217,66 +218,70 @@ def chunks(s3, prefix):
 
 
 def sprt(s3, job, instance):
-    """The match of the job, from where the state in the bucket left it, if anywhere"""
+    """The match of the job, from where the state in the bucket left it, if anywhere,
+    played by the scripts/match.sh the job came with, as the matches of the repository"""
     prefix = f"sprt/{job['name']}"
-    engine = build(s3, job["engine"]["sourceKey"], "engine")
-    baseline = build(s3, job["baseline"]["sourceKey"], "baseline")
+    match = WORK / "sprt"
+    match.mkdir(exist_ok=True)
+    script = match / "match.sh"
+    s3.download_file(BUCKET, f"{prefix}/match.sh", str(script))
+    # the script names each engine after its file
+    engine = match / job["engine"]["name"]
+    baseline = match / job["baseline"]["name"]
+    shutil.copy(build(s3, job["engine"]["sourceKey"], "engine"), engine)
+    shutil.copy(build(s3, job["baseline"]["sourceKey"], "baseline"), baseline)
     fastchess = build_fastchess()
     openings = fetch_openings(s3, job["openings"])
 
-    match = WORK / "sprt"
-    match.mkdir(exist_ok=True)
-    state, games, out = match / "state.json", match / "games.pgn", match / "fastchess.log"
     # the paths of a resumed match are those it started with, the same on every worker
+    state, games, out = match / "match.json", match / "match.pgn", match / "match.log"
+    names = {state: "state.json", games: "games.pgn", out: "fastchess.log"}
     if download_if_there(s3, f"{prefix}/state.json", state):
         download_if_there(s3, f"{prefix}/games.pgn", games)
         download_if_there(s3, f"{prefix}/fastchess.log", out)
         log(f"resuming {prefix} from its state")
-        command = [fastchess, "-config", f"file={state}", f"outname={state}"]
+        command = ["bash", script, "--resume", match / "match"]
     else:
         tc = scaled_tc(job["tc"], job["referenceNps"], bench(baseline, job["npsDepth"])[1])
         log(f"{job['tc']} at the speed of the reference is {tc} here")
         low, high = job["bounds"]
         command = [
-            fastchess,
-            "-engine", f"cmd={engine}", f"name={job['engine']['name']}",
-            "-engine", f"cmd={baseline}", f"name={job['baseline']['name']}",
-            "-each", f"tc={tc}", "option.OwnBook=false",
-            "-openings", f"file={openings}", "format=pgn", "order=random",
-            "-rounds", "5000", "-games", "2", "-repeat",
+            "bash", script, "--bounds", f"{low},{high}", "--tc", tc,
             # a core for fastchess and the system
-            "-concurrency", str(os.cpu_count() - 1),
-            "-sprt", f"elo0={low}", f"elo1={high}", "alpha=0.05", "beta=0.05",
-            "-pgnout", f"file={games}",
-            "-config", f"outname={state}",
-            "-autosaveinterval", "10",
+            "--concurrency", str(os.cpu_count() - 1),
+            "--book", openings, "--out", match / "match",
+            engine, baseline,
+            "--", "-autosaveinterval", "10",
         ]
 
     def upload():
-        for path in (state, games, out):
+        for path, name in names.items():
             if path.exists():
-                s3.upload_file(str(path), BUCKET, f"{prefix}/{path.name}")
+                s3.upload_file(str(path), BUCKET, f"{prefix}/{name}")
         upload_log(instance)
 
-    with out.open("a") as output:
-        log(" ".join(map(str, command)))
-        process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT)
-        while True:
+    log(" ".join(map(str, command)))
+    # its own session: stopping has to reach fastchess behind the script
+    process = subprocess.Popen(
+        command, stdout=subprocess.DEVNULL, stderr=LOG.open("a"), start_new_session=True,
+        env=dict(os.environ, PATH=f"{fastchess.parent}:{os.environ['PATH']}"),
+    )
+    while True:
+        try:
+            process.wait(timeout=60)
+            break
+        except subprocess.TimeoutExpired:
+            upload()
             try:
-                process.wait(timeout=60)
-                break
-            except subprocess.TimeoutExpired:
+                read_job(s3, playing=job)
+            except Stopped:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait()
                 upload()
-                try:
-                    read_job(s3, playing=job)
-                except Stopped:
-                    process.terminate()
-                    process.wait()
-                    upload()
-                    raise
+                raise
     upload()
     if process.returncode != 0:
-        raise RuntimeError(f"fastchess ended with {process.returncode}")
+        raise RuntimeError(f"the match ended with {process.returncode}")
 
     results = [
         line for line in out.read_text().splitlines()

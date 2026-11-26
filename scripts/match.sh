@@ -3,6 +3,9 @@
 # the Elo of <engine> relative to <baseline>.
 #
 #   scripts/match.sh [options] <engine> <baseline> [-- <fastchess args>...]
+#   scripts/match.sh --resume <match>
+#
+# The SPRT job of infra/ plays with this script too, so that both play the same match.
 #
 # <engine> and <baseline> are versions built by scripts/build-engine.sh (v0.1.0
 # means engines/runner-chess-v0.1.0) or paths to any UCI engine. Every opening
@@ -20,12 +23,16 @@
 #                       as soon as <engine> is shown to be no worse than <baseline>,
 #                       or 10 Elo worse. Refactors that keep the bench node count
 #                       don't need a match at all
-#                       (both measure fastchess's normalized Elo)
+#   --bounds <lo>,<hi>  an SPRT between any two Elo, as 0,5 for a small gain
+#                       (all three measure fastchess's normalized Elo)
 #   --concurrency <n>   games played at the same time (default: half the CPUs)
 #   --book <book>       a .pgn or .epd of openings, by path or by name in
 #                       engines/books (default: 8moves_v3.pgn). A shorter one, like
 #                       2moves_v2.pgn, leaves the opening to the engines' clocks
 #   --no-adjudication   play every game to its end, for changes to how games get won
+#   --out <match>       where the match goes: <match>.pgn, .json (fastchess's state) and
+#                       .log (default: engines/games/<engine>-vs-<baseline>-<date>)
+#   --resume <match>    go on with an interrupted match, from its <match>.json
 set -euo pipefail
 
 usage() {
@@ -33,7 +40,8 @@ usage() {
     exit "${1:-0}"
 }
 
-repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+# not from git: the workers of infra/ have this script without a repository
+repo=$(cd "$(dirname "$0")/.." && pwd)
 engines="$repo/engines"
 default_book="$engines/books/8moves_v3.pgn"
 book=$default_book
@@ -43,6 +51,8 @@ limit="tc=10+0.1"
 rounds=""
 sprt=""
 resign="movecount=3 score=600 twosided=true"
+out=""
+resume=""
 concurrency=$(($(getconf _NPROCESSORS_ONLN) / 2))
 if ((concurrency < 1)); then
     concurrency=1
@@ -57,6 +67,12 @@ while [[ $# -gt 0 ]]; do
     --rounds) rounds=${2:?--rounds needs a number} && shift 2 ;;
     --sprt) sprt="elo0=0 elo1=10 alpha=0.05 beta=0.05" && shift ;;
     --non-regression) sprt="elo0=-10 elo1=0 alpha=0.05 beta=0.05" && shift ;;
+    --bounds)
+        bounds=${2:?--bounds needs two Elo, as 0,5}
+        sprt="elo0=${bounds%,*} elo1=${bounds#*,} alpha=0.05 beta=0.05" && shift 2
+        ;;
+    --out) out=${2:?--out needs a path} && shift 2 ;;
+    --resume) resume=${2:?--resume needs a match} && shift 2 ;;
     --concurrency) concurrency=${2:?--concurrency needs a number} && shift 2 ;;
     --book) book=${2:?--book needs a book} && shift 2 ;;
     --no-adjudication) resign="" && shift ;;
@@ -65,16 +81,23 @@ while [[ $# -gt 0 ]]; do
     *) versions+=("$1") && shift ;;
     esac
 done
+if ! command -v fastchess >/dev/null; then
+    echo "fastchess not found, see https://github.com/Disservin/fastchess" >&2
+    exit 1
+fi
+
+if [[ -n $resume ]]; then
+    resume=${resume%.json}
+    # outname again: a resumed fastchess goes back to config.json otherwise
+    fastchess -config file="$resume.json" outname="$resume.json" | tee -a "$resume.log"
+    exit
+fi
+
 if [[ ${#versions[@]} -ne 2 ]]; then
     usage 1
 fi
 if [[ -z $rounds ]]; then
     rounds=$([[ -n $sprt ]] && echo 5000 || echo 200)
-fi
-
-if ! command -v fastchess >/dev/null; then
-    echo "fastchess not found, see https://github.com/Disservin/fastchess" >&2
-    exit 1
 fi
 
 # a version name or a path, as the command fastchess runs
@@ -111,14 +134,17 @@ if [[ ! -f $book ]]; then
     mv "$download_dir/8moves_v3.pgn" "$book"
 fi
 
-mkdir -p "$engines/games"
-pgn="$engines/games/$engine_name-vs-$baseline_name-$(date +%Y%m%d-%H%M%S).pgn"
+if [[ -z $out ]]; then
+    out="$engines/games/$engine_name-vs-$baseline_name-$(date +%Y%m%d-%H%M%S)"
+fi
+mkdir -p "$(dirname "$out")"
+pgn="$out.pgn"
 # fastchess autosaves the match there every 20 games, instead of config.json in
 # the current directory
-state="${pgn%.pgn}.json"
-log="${pgn%.pgn}.log"
+state="$out.json"
+log="$out.log"
 echo "games saved to $pgn, and this output to $log"
-echo "if interrupted, resume with: fastchess -config file=$state"
+echo "if interrupted, resume with: scripts/match.sh --resume $out"
 
 # word splitting of $sprt and $resign is on purpose: they hold several fastchess arguments
 # shellcheck disable=SC2086

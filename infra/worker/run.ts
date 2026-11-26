@@ -17,8 +17,8 @@
  * group can have by default, unless the bucket already has every position of it.
  * `--name` gives the job of the file another name, and so other chunks.
  *
- * `sprt` plays a match of fastchess on one worker until the SPRT decides, as
- * scripts/match.sh --sprt does here. The engine and the baseline are git refs, or
+ * `sprt` plays a match of fastchess on one worker until the SPRT decides, with
+ * scripts/match.sh as it is here, which goes with the job. The engine and the baseline are git refs, or
  * `worktree` for the working tree as it is, a network not committed included. The time
  * control is the one of this computer: each worker scales it by how much slower it
  * searches than the baseline does here, `engines/runner-chess-<baseline>`, or than
@@ -232,6 +232,14 @@ async function sprt(bucket: string, group: string, sources: string[], option: Op
   };
   job.engine.sourceKey = await uploadSource(s3, bucket, engine);
   job.baseline.sourceKey = await uploadSource(s3, bucket, baseline);
+  // the worker plays with the script of here, whatever the refs have
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: `sprt/${job.name}/match.sh`,
+      Body: readFileSync(join(repo, 'scripts/match.sh')),
+    }),
+  );
   // one fastchess plays the whole match
   await begin(bucket, group, job, 1, option);
 }
