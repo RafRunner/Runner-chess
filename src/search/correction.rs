@@ -35,8 +35,8 @@ impl Corrections {
         if white | black == 0 {
             return None;
         }
-        let key = white.wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            ^ black.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+        let key =
+            white.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ black.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
         Some((board.side_to_move(), (key >> 50) as usize))
     }
 
