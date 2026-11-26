@@ -56,6 +56,12 @@ pub struct Searcher<'search> {
     /// for every one
     move_buffers: Vec<MoveBuffers>,
     quiets_tried: Vec<Vec<Move>>,
+    /// The move each ply leaves out, while it checks whether the table's move is singular
+    excluded: Vec<Option<Move>>,
+    /// How many moves of the line down to each ply got two plies more for being singular
+    doubles: Vec<u8>,
+    /// The move about to be entered is one of those
+    doubling: bool,
     tt: &'search mut TranspositionTable,
     ordering: &'search mut MoveOrdering,
     /// The index of the hash of the root position on the hashes vec
@@ -82,6 +88,27 @@ pub(crate) struct Variety {
     pub(crate) rng: Rng,
 }
 
+/// Singular extensions only at this depth or more, with an entry at most
+/// SINGULAR_DEPTH_MARGIN plies shallower, and the other moves have to stay
+/// SINGULAR_MARGIN 64ths of a centipawn a ply of depth below its score
+const SINGULAR_MIN_DEPTH: u32 = 8;
+const SINGULAR_DEPTH_MARGIN: u32 = 3;
+const SINGULAR_MARGIN: i32 = 64;
+/// Two plies more when the other moves stay this many centipawns further below, off
+/// the principal variation and at most SINGULAR_MAX_DOUBLES times in a line
+const SINGULAR_DOUBLE_MARGIN: i16 = 20;
+const SINGULAR_MAX_DOUBLES: u8 = 6;
+
+#[derive(Debug, PartialEq, Eq)]
+enum Singular {
+    No,
+    /// By one ply, or by two when the other moves are far below
+    Extend(i32),
+    /// Not singular, and the node is expected to fail high with it anyway
+    Reduce,
+    Cut(Score),
+}
+
 impl<'search> Searcher<'search> {
     pub fn new(
         budget: Budget,
@@ -102,6 +129,9 @@ impl<'search> Searcher<'search> {
                 .map(|_| MoveBuffers::default())
                 .collect(),
             quiets_tried: vec![Vec::new(); Score::MAX_PLY as usize + 1],
+            excluded: vec![None; Score::MAX_PLY as usize + 1],
+            doubles: vec![0; Score::MAX_PLY as usize + 2],
+            doubling: false,
             tt,
             ordering,
             root_index: 0,
@@ -215,7 +245,14 @@ impl<'search> Searcher<'search> {
         let in_check = node.in_check;
         let raw_eval = (!node.in_check).then(|| self.evaluate(node));
 
-        let entry = self.tt.probe(node.board.hash());
+        // the entry is of the search with the excluded move, which this one must answer
+        // without
+        let excluded = self.excluded[node.ply as usize];
+        let entry = if excluded.is_some() {
+            None
+        } else {
+            self.tt.probe(node.board.hash())
+        };
         if let Some(score) = self.tt_cut(entry, node) {
             return score;
         }
@@ -225,7 +262,7 @@ impl<'search> Searcher<'search> {
         // guess, and the node probably wasn't important before. A shallower search is
         // cheaper, and leaves a move for the next iteration
         let iir = entry.is_none_or(|e| e.best_move.is_none() || e.depth == 0);
-        if iir && node.depth >= IIR_MIN_DEPTH {
+        if iir && excluded.is_none() && node.depth >= IIR_MIN_DEPTH {
             node.depth -= 1;
         }
 
@@ -235,10 +272,24 @@ impl<'search> Searcher<'search> {
         node.improving = self.is_improving(node.ply, raw_eval);
 
         if let Some(eval) = static_eval
-            && let Some(score) = Self::reverse_futility_pruning(node, eval)
-                .or_else(|| self.null_move_pruning(node, eval))
+            && let Some(score) = Self::reverse_futility_pruning(node, eval).or_else(|| {
+                excluded
+                    .is_none()
+                    .then(|| self.null_move_pruning(node, eval))
+                    .flatten()
+            })
         {
             return score;
+        }
+
+        let extension = match self.singular(node, entry) {
+            Singular::Cut(score) => return score,
+            Singular::Extend(plies) => plies,
+            Singular::Reduce => -1,
+            Singular::No => 0,
+        };
+        if self.stopped {
+            return Score::DRAW;
         }
 
         let mut best = -Score::INF;
@@ -257,7 +308,7 @@ impl<'search> Searcher<'search> {
         for mv in moves.by_ref() {
             // decided before making the move, since most moves that get here are pruned
             let gives_check = node.board.gives_check_with(mv, &info);
-            if !node.board.is_legal_with(mv, &info) {
+            if Some(mv) == excluded || !node.board.is_legal_with(mv, &info) {
                 continue;
             }
             if static_eval.is_some_and(|eval| {
@@ -272,7 +323,16 @@ impl<'search> Searcher<'search> {
             let idx = legal_moves;
             legal_moves += 1;
 
-            let score = self.search_move(node, mv, idx, &next, gives_check);
+            let searched = if Some(mv) == tt_move {
+                self.doubling = extension == 2;
+                NodeInfo {
+                    depth: node.depth.saturating_add_signed(extension),
+                    ..node
+                }
+            } else {
+                node
+            };
+            let score = self.search_move(searched, mv, idx, &next, gives_check);
 
             if self.stopped {
                 break;
@@ -297,14 +357,18 @@ impl<'search> Searcher<'search> {
         self.quiets_tried[ply] = quiets_tried;
 
         if legal_moves == 0 {
-            best = if in_check {
+            best = if excluded.is_some() {
+                // the excluded move may be the only one
+                original_alpha
+            } else if in_check {
                 Score::mated_in(node.ply)
             } else {
                 Score::DRAW
             };
         }
 
-        if !self.stopped {
+        // without the excluded move, the score isn't the one of the position
+        if !self.stopped && excluded.is_none() {
             let bound = Bound::new(best, original_alpha, node.beta);
             self.store(node, best, bound, best_move);
 
@@ -417,6 +481,57 @@ impl<'search> Searcher<'search> {
         best
     }
 
+    /// Whether the move of `entry` is singular at `node`: the only one that comes near
+    /// its score, which a shallower search of the other moves, on a null window a
+    /// little below it, tells. That move is worth a ply more. And when the others reach
+    /// even beta, the node fails high whatever the move does (multi-cut)
+    fn singular(&mut self, node: NodeInfo<'_>, entry: Option<Entry>) -> Singular {
+        let ply = node.ply as usize;
+        let Some(entry) = entry else {
+            return Singular::No;
+        };
+        let score = entry.score.from_tt(node.ply);
+        if node.ply == 0
+            || node.depth < SINGULAR_MIN_DEPTH
+            || entry.best_move.is_none()
+            || entry.bound == Bound::Upper
+            || u32::from(entry.depth) + SINGULAR_DEPTH_MARGIN < node.depth
+            || score.is_mate()
+            // forcing lines would extend each other without end
+            || node.ply >= 2 * (self.completed_depth + 1)
+        {
+            return Singular::No;
+        }
+
+        let singular_beta = score - (node.depth as i32 * SINGULAR_MARGIN / 64) as i16;
+        let verification = NodeInfo {
+            depth: (node.depth - 1) / 2,
+            alpha: singular_beta - 1,
+            beta: singular_beta,
+            ..node
+        };
+        self.excluded[ply] = entry.best_move;
+        let others = self.negamax(verification);
+        self.excluded[ply] = None;
+
+        if self.stopped {
+            Singular::No
+        } else if others < singular_beta - SINGULAR_DOUBLE_MARGIN
+            && !node.is_pv()
+            && self.doubles[ply] < SINGULAR_MAX_DOUBLES
+        {
+            Singular::Extend(2)
+        } else if others < singular_beta {
+            Singular::Extend(1)
+        } else if singular_beta >= node.beta {
+            Singular::Cut(singular_beta)
+        } else if score >= node.beta {
+            Singular::Reduce
+        } else {
+            Singular::No
+        }
+    }
+
     fn store(&mut self, node: NodeInfo<'_>, score: Score, bound: Bound, best_move: Option<Move>) {
         let score = score.to_tt(node.ply);
         self.tt
@@ -443,6 +558,9 @@ impl<'search> Searcher<'search> {
         self.tt.prefetch(child.board.hash());
         self.accumulators.push(parent, child.board, mv);
         self.ordering.enter(child.ply, parent, mv);
+        let doubling = mem::take(&mut self.doubling);
+        self.doubles[child.ply as usize] =
+            self.doubles[child.ply as usize - 1] + u8::from(doubling);
         self.push_hash(child.board.hash());
     }
 
@@ -792,6 +910,44 @@ mod tests {
             // and the root never cuts, it has to return a move
             assert_eq!(tt_cut_at(searcher, &board, 2, 0), None);
         });
+    }
+
+    /// What `singular` says of `fen`, searched 8 plies deep one ply from the root, with
+    /// `uci` in the table as worth `score`, and whether the entry is still that one
+    fn singular_at(fen: &str, uci: &str, score: i32, beta: i32) -> (Singular, bool) {
+        let board = board(fen);
+        let mv = crate::test_utils::find_move(&board, uci);
+        with_searcher(Budget::depth(None), |searcher| {
+            start_at(searcher, &board);
+            searcher
+                .tt
+                .store(board.hash(), 8, Score::new(score), Bound::Lower, Some(mv));
+            let entry = searcher.tt.probe(board.hash());
+            let node = NodeInfo::new(&board, 8, 1, Score::new(beta - 1), Score::new(beta));
+
+            let singular = searcher.singular(node, entry);
+            let kept = searcher.tt.probe(board.hash()).and_then(|e| e.best_move) == Some(mv);
+            (singular, kept)
+        })
+    }
+
+    #[test]
+    fn the_only_move_that_holds_is_singular() {
+        // taking the queen is all there is, by far: two plies more off the principal variation
+        let queen_hangs = "4k3/8/8/8/8/5q2/6P1/4K3 w - - 0 1";
+        assert_eq!(
+            singular_at(queen_hangs, "g2f3", 100, 500),
+            (Singular::Extend(2), true)
+        );
+    }
+
+    #[test]
+    fn many_moves_that_reach_beta_cut_without_the_one_of_the_table() {
+        // a queen up whatever White plays
+        let winning = "4k3/8/8/8/8/8/3Q4/4K3 w - - 0 1";
+        let (singular, kept) = singular_at(winning, "d2d4", 300, 100);
+        assert!(matches!(singular, Singular::Cut(_)), "{singular:?}");
+        assert!(kept);
     }
 
     #[test]
