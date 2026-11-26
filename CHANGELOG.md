@@ -8,6 +8,36 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.14.0 - 2026-11-26
+
+Singular extensions, and continuation history in the reductions.
+
+### Added
+- Singular extensions: at depth 8 or more, with a move of the table from a search at
+  most 3 plies shallower, the node is searched again without it, to half the depth and
+  on a null window a centipawn a ply below its score. If no other move gets there, it
+  is searched a ply deeper, and two when they stay 20 centipawns further below, off
+  the principal variation and at most 6 times in a line. If the others reach even
+  beta, the node cuts (multi-cut), and if only the score of the table does, the move
+  gets a ply less. The search without the move doesn't probe nor store in the table.
+
+### Changed
+- The late move reductions look at the history plus the continuation history, the key
+  of the order of the quiet moves, with the divisor tuned for the history alone.
+- Less of the soft limit in the opening: 75% at the first move, growing in a line to
+  all of it at move 15, unless the time is for this move (`movetime`) or for a number
+  of them (`movestogo`). And 20 moves to go by default, from 25. Not measured.
+
+### Measured
+- Bench: 19726, from 19711: singular extensions start deeper than its depth 6. To depth
+  16 they search 2,880,539 nodes, from 1,971,454.
+- Strength, each against the version before it at 10+0.1, SPRT [0, 10] passed:
+  continuation history in the reductions, +9.3 ± 6.8 Elo in 2914 games; the extension
+  with multi-cut, +14.0 ± 8.6 in 1568; the ply less and the two plies more, +17.5 ± 9.3
+  in 1074.
+- The ply less alone was neutral: +1.7 ± 8.4 in 1678 games, stopped at LLR -0.24, with
+  the tree 38% larger than without singular extensions, from 88%.
+
 ## 1.13.0 - 2026-11-24
 
 Correction history, and `improving` from the raw evaluation.
