@@ -37,6 +37,10 @@ Singular extensions, and continuation history in the reductions.
   in 1074.
 - The ply less alone was neutral: +1.7 ± 8.4 in 1678 games, stopped at LLR -0.24, with
   the tree 38% larger than without singular extensions, from 88%.
+- Tried and left out, against this version: capture history, by piece, square and
+  victim, as the tiebreak of MVV-LVA in place of the attacker, -0.4 ± 10.0 Elo in 1000
+  games; and also moving the SEE threshold of the captures in `negamax`, -0.7 ± 10.0
+  in 1022, for 1.5% fewer nodes a second. Both stopped as neutral.
 
 ## 1.13.0 - 2026-11-24
 

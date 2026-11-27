@@ -54,14 +54,20 @@ once per node.
 
 **Search:**
 - iterative deepening with aspiration windows, and principal variation search
-- a transposition table of two-entry buckets, which ages out older searches
+- a transposition table of two-entry buckets, which ages out older searches and also
+  holds the positions of quiescence
 - quiescence search on the captures that don't lose material (SEE)
 - null move pruning, reverse futility pruning, futility and late move pruning, and
   SEE pruning
+- singular extensions, with multi-cut, double extensions and negative extensions
 - late move reductions adjusted by history, and internal iterative reduction
-- staged move ordering: the table move, good captures by MVV-LVA, killers, history,
-  then the losing captures
-- time management that stops earlier the larger the share of nodes the best move takes
+- staged move ordering: the table move, good captures by MVV-LVA, killers, quiet
+  moves by history and continuation history (the moves one and two plies back), then
+  the losing captures
+- a correction history, indexed by the pawn structure, which adjusts the static
+  evaluation by how far the search ended from it in similar positions
+- time management that stops earlier the larger the share of nodes the best move
+  takes, and spends less in the opening
 - pondering
 
 **Evaluation:** an NNUE network, `(768x4hm -> 256)x2 -> 1x8`, with four king buckets
