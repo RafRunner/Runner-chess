@@ -1,0 +1,33 @@
+name: tt-align
+on:
+  push:
+    branches: [exp/tt-align]
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    env:
+      RUSTFLAGS: -C target-cpu=x86-64-v3 -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: aligned }
+      - uses: actions/checkout@v4
+        with: { ref: master, path: master }
+      - run: lscpu | head -20
+      - name: Where glibc starts a big allocation
+        run: |
+          cat > a.rs <<'RS'
+          fn main() { for mb in [1usize, 16, 64, 256] { let v: Vec<[u64; 4]> = Vec::with_capacity(mb * 1024 * 1024 / 32); println!("{mb} MB: ptr mod 64 = {}", v.as_ptr() as usize % 64); } }
+          RS
+          rustc -O -C target-feature=+crt-static a.rs && ./a
+      - run: cargo build --release --target x86_64-unknown-linux-gnu --manifest-path master/Cargo.toml
+      - run: cargo build --release --target x86_64-unknown-linux-gnu --manifest-path aligned/Cargo.toml
+      - name: Bench, interleaved
+        run: |
+          for round in $(seq 1 25); do
+            for e in master aligned; do
+              $e/target/x86_64-unknown-linux-gnu/release/runner-chess bench search 19 | awk -v e=$e '/Total time/ { t = $NF } /Nodes searched/ { n = $NF } END { print e, n, t }'
+            done
+          done | tee times.txt
+          for e in master aligned; do
+            awk -v e=$e '$1 == e { print $3 }' times.txt | sort -n | awk -v e=$e '{ a[NR] = $1 } END { print e, "min", a[1], "median", a[int((NR + 1) / 2)], "ms" }'
+          done
