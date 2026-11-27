@@ -1,0 +1,95 @@
+name: release
+
+# A tag builds the binaries of that version and publishes them as a release. Run by
+# hand, it only builds them, as artifacts of the run.
+on:
+  push:
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --release
+
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86-64-v3 has AVX2 and BMI2, any Intel since Haswell and AMD since Zen;
+          # x86-64-v2 goes back to SSE4.2 and POPCNT, for what is older
+          - { name: linux-x86-64-v3, os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, cpu: x86-64-v3, static: true }
+          - { name: linux-x86-64-v2, os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, cpu: x86-64-v2, static: true }
+          - { name: linux-arm64, os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, cpu: generic, static: true }
+          - { name: windows-x86-64-v3, os: windows-latest, target: x86_64-pc-windows-msvc, cpu: x86-64-v3, static: true }
+          - { name: windows-x86-64-v2, os: windows-latest, target: x86_64-pc-windows-msvc, cpu: x86-64-v2, static: true }
+          - { name: macos-arm64, os: macos-14, target: aarch64-apple-darwin, cpu: apple-m1, static: false }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        env:
+          RUSTFLAGS: -C target-cpu=${{ matrix.cpu }}${{ matrix.static && ' -C target-feature=+crt-static' || '' }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # The node count is the same on every CPU, so a build that searches another
+      # tree is broken
+      - name: Bench
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          expected=$(awk -v v="## $version " 'index($0, v) == 1 { found = 1 } found && /^- Bench: / { sub(/,.*/, "", $3); print $3; exit }' CHANGELOG.md)
+          nodes=$(target/${{ matrix.target }}/release/runner-chess bench search | awk '/^Nodes searched/ { print $NF }')
+          echo "bench $nodes, CHANGELOG.md says $expected for $version"
+          [[ -n $expected && $nodes == "$expected" ]]
+
+      - name: Name the binary
+        id: binary
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          file=runner-chess-$version-${{ matrix.name }}${{ runner.os == 'Windows' && '.exe' || '' }}
+          cp target/${{ matrix.target }}/release/runner-chess${{ runner.os == 'Windows' && '.exe' || '' }} "$file"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ steps.binary.outputs.file }}
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [test, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: binaries
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [[ $version != "$TAG" ]]; then
+            echo "the tag is $TAG, and Cargo.toml says $version" >&2
+            exit 1
+          fi
+          awk -v v="## $TAG " 'index($0, v) == 1 { found = 1; next } found && /^## / { exit } found' CHANGELOG.md > notes.md
+          (cd binaries && sha256sum runner-chess-* > SHA256SUMS)
+          gh release create "$TAG" binaries/* --title "runner-chess $TAG" --notes-file notes.md
