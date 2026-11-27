@@ -84,8 +84,59 @@ impl Entry {
 
 /// Two entries share each slot of the table. The first keeps the deepest of the current
 /// search, which saved the most work, and the second the latest of the rest, which is
-/// likely to be needed again soon
-type Bucket = [Option<Entry>; 2];
+/// likely to be needed again soon.
+///
+/// Aligned to its size, so that none crosses a cache line, whatever the allocator
+/// gives: glibc starts a big allocation 16 bytes into its page
+#[derive(Clone, Copy)]
+#[repr(align(32))]
+struct Bucket([Option<Entry>; 2]);
+
+impl Bucket {
+    const EMPTY: Self = Self([None; 2]);
+
+    fn find(&self, hash: ZobristHash) -> Option<Entry> {
+        self.0.into_iter().flatten().find(|entry| entry.key == hash)
+    }
+
+    fn store(&mut self, mut new: Entry) {
+        let Self(slots) = self;
+        let (hash, generation) = (new.key, new.generation);
+
+        // the same position goes where it was, keeping its move if this search has none
+        let same = slots.iter().position(|e| e.is_some_and(|e| e.key == hash));
+        let slot = same.unwrap_or_else(|| match slots[0] {
+            Some(deepest) if deepest.generation == generation && deepest.depth > new.depth => 1,
+            _ => 0,
+        });
+
+        // a quiescence entry doesn't push out a deeper one of this search
+        if same.is_none()
+            && slot == 1
+            && new.depth == 0
+            && slots[1].is_some_and(|e| e.generation == generation && e.depth > 0)
+        {
+            return;
+        }
+
+        if let Some(old) = &mut slots[slot]
+            && old.key == hash
+        {
+            // a much shallower search of this search keeps the deeper entry, but not its move.
+            let shallow = new.depth == 0 && old.depth > 0 || new.depth + 3 <= old.depth;
+            if shallow && new.bound != Bound::Exact && new.generation == old.generation {
+                old.best_move = new.best_move.or(old.best_move);
+                return;
+            }
+            new.best_move = new.best_move.or(old.best_move);
+        }
+        // the entry it pushes out of the first slot may still be the latest of the rest
+        if same.is_none() && slot == 0 {
+            slots[1] = slots[0];
+        }
+        slots[slot] = Some(new);
+    }
+}
 
 pub struct TranspositionTable {
     buckets: Vec<Bucket>,
@@ -104,7 +155,7 @@ impl TranspositionTable {
         let mut table = Vec::with_capacity(buckets);
         ask_for_huge_pages(&mut table);
         // only now written, so that the kernel picks the size of the pages on this touch
-        table.resize(buckets, [None; 2]);
+        table.resize(buckets, Bucket::EMPTY);
         Self {
             buckets: table,
             generation: 0,
@@ -112,7 +163,7 @@ impl TranspositionTable {
     }
 
     pub fn clear(&mut self) {
-        self.buckets.fill([None; 2]);
+        self.buckets.fill(Bucket::EMPTY);
         self.generation = 0;
     }
 
@@ -123,10 +174,7 @@ impl TranspositionTable {
     }
 
     pub fn probe(&self, hash: ZobristHash) -> Option<Entry> {
-        self.buckets[self.index(hash)]
-            .into_iter()
-            .flatten()
-            .find(|entry| entry.key == hash)
+        self.buckets[self.index(hash)].find(hash)
     }
 
     pub fn store(
@@ -137,43 +185,9 @@ impl TranspositionTable {
         bound: Bound,
         best_move: Option<Move>,
     ) {
-        let generation = self.generation;
+        let new = Entry::new(hash, depth, score, bound, best_move, self.generation);
         let index = self.index(hash);
-        let bucket = &mut self.buckets[index];
-        let mut new = Entry::new(hash, depth, score, bound, best_move, generation);
-
-        // the same position goes where it was, keeping its move if this search has none
-        let same = bucket.iter().position(|e| e.is_some_and(|e| e.key == hash));
-        let slot = same.unwrap_or_else(|| match bucket[0] {
-            Some(deepest) if deepest.generation == generation && deepest.depth > new.depth => 1,
-            _ => 0,
-        });
-
-        // a quiescence entry doesn't push out a deeper one of this search
-        if same.is_none()
-            && slot == 1
-            && new.depth == 0
-            && bucket[1].is_some_and(|e| e.generation == generation && e.depth > 0)
-        {
-            return;
-        }
-
-        if let Some(old) = &mut bucket[slot]
-            && old.key == hash
-        {
-            // a much shallower search of this search keeps the deeper entry, but not its move.
-            let shallow = new.depth == 0 && old.depth > 0 || new.depth + 3 <= old.depth;
-            if shallow && new.bound != Bound::Exact && new.generation == old.generation {
-                old.best_move = new.best_move.or(old.best_move);
-                return;
-            }
-            new.best_move = new.best_move.or(old.best_move);
-        }
-        // the entry it pushes out of the first slot may still be the latest of the rest
-        if same.is_none() && slot == 0 {
-            bucket[1] = bucket[0];
-        }
-        bucket[slot] = Some(new);
+        self.buckets[index].store(new);
     }
 
     /// Asks the memory for the bucket of `hash` without waiting for it, so that it's in
@@ -249,6 +263,12 @@ mod tests {
     fn an_entry_takes_16_bytes() {
         assert_eq!(size_of::<Option<Entry>>(), 16);
         assert_eq!(size_of::<Bucket>(), 32);
+    }
+
+    #[test]
+    fn no_bucket_crosses_a_cache_line() {
+        let tt = TranspositionTable::new(1);
+        assert_eq!(tt.buckets.as_ptr() as usize % size_of::<Bucket>(), 0);
     }
 
     #[test]
