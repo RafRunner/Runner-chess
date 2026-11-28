@@ -8,6 +8,27 @@ Every version is a git tag, built into `engines/` by `scripts/build-engine.sh`.
 - **Strength** is what was measured with `scripts/match.sh` against the previous
   version, unless stated otherwise. Where nothing is listed, no match was recorded.
 
+## 1.14.1 - 2026-11-28
+
+The same search, faster on Linux, and the first version with binaries in a release.
+
+### Changed
+- The buckets of the transposition table are aligned to their 32 bytes, so that none
+  crosses a cache line: glibc starts a big allocation 16 bytes into its page, which
+  left half of them on two lines, the second one out of the prefetch.
+
+### Added
+- `.github/workflows/release.yml`: a tag builds the binaries for Linux and Windows
+  (x86-64-v3 and x86-64-v2), Linux arm64 and macOS arm64, checks the bench of each
+  against the one written here, and publishes them as a release.
+
+### Measured
+- Bench: 19726, the same.
+- Speed, 25 interleaved rounds of `bench search 19` on a Linux runner of GitHub (Xeon
+  6975P-C, x86-64-v3, static glibc): a median of 3842 ms, from 4278, 10% less, for the
+  same 8,810,779 nodes. On macOS the table was aligned already, and nothing changes.
+  Not measured on Windows.
+
 ## 1.14.0 - 2026-11-26
 
 Singular extensions, and continuation history in the reductions.
